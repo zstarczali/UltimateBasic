@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo init *)",
+      "Bash(cargo build *)",
+      "Bash(cd F:\\\\\\\\Development\\\\\\\\NextBasic)",
+      "Bash(cargo run *)",
+      "Bash(cargo test *)",
+      "Bash(ls \"F:\\\\Development\\\\C64AssemblyExpert\" 2>&1)",
+      "WebFetch(domain:sta.c64.org)",
+      "Bash(Get-ChildItem \"F:\\\\Development\\\\C64AssemblyExpert\\\\knowledge\\\\sources\\\\pdfs\")",
+      "Bash(Select-Object Name, Length, Extension)",
+      "PowerShell(Get-ChildItem \"F:\\\\Development\\\\C64AssemblyExpert\" -Recurse | Where-Object { $_.Extension -ne \".md\" -and $_.Extension -ne \".asm\" } | Select-Object FullName, Length | Format-Table -AutoSize)",
+      "Bash(cat > *)"
+    ]
+  }
+}

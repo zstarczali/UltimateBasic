@@ -1,0 +1,102 @@
+# Ultimate Basic - Uj funkciok bemutato
+# const, label/goto, poke/peek, rnd, abs, min, max, sgn
+
+# Konstansok
+const BORDER = $D020
+const BG = $D021
+const RASTER = $D012
+
+# Valtozok
+var x = 20
+var y = 12
+var score = 0
+var color = 1
+var dx = 0
+var dy = 0
+var sg = 0
+
+cls
+color text 14
+color border 6
+color bg 6
+print "  ULTIMATE BASIC DEMO"
+print "  =================="
+print ""
+print "  Nyomj billentyut!"
+print "  Q = kilepes"
+print "  SPACE = pont + rnd szin"
+print "  1-5 = hatter szin"
+print ""
+
+label main_loop
+
+  # Billentyu lekerdezese getch-vel
+  var key = getch
+
+  # Q = kilepes (kis q = 17, nagy Q = 81)
+  if key == 81 then
+    goto exit
+  end
+
+  if key == 17 then
+    goto exit
+  end
+
+  # SPACE = pontszerzes + random szin
+  if key == 32 then
+    score = score + rnd()
+    color = rnd()
+    color = color and 15
+    poke BORDER, color
+    print "  PONT: ", score, "  SZIN: ", color
+  end
+
+  # Szam billentyuk: hatter szin
+  if key == 49 then
+    poke BG, 0
+    print "  HATTER: fekete"
+  end
+
+  if key == 50 then
+    poke BG, 1
+    print "  HATTER: feher"
+  end
+
+  if key == 51 then
+    poke BG, 2
+    print "  HATTER: piros"
+  end
+
+  if key == 52 then
+    poke BG, 6
+    print "  HATTER: kek"
+  end
+
+  if key == 53 then
+    poke BG, 5
+    print "  HATTER: zold"
+  end
+
+  # abs() - tavolsag a kozep ponttol
+  dx = abs(x - 20)
+  dy = abs(y - 12)
+
+  # min/max - hatarok
+  x = min(x, 39)
+  x = max(x, 0)
+
+  # sgn() - irany
+  sg = sgn(score)
+
+  goto main_loop
+
+label exit
+  cls
+  color border 6
+  color bg 6
+  color text 14
+  print ""
+  print "  VEGE!"
+  print "  Osszpont: ", score
+  print "  Tavolsag: dx=", dx, " dy=", dy
+  print "  Sgn(score)=", sg

@@ -1,0 +1,8 @@
+[package]
+name = "ultimate-basic"
+version = "0.2.0"
+edition = "2024"
+description = "Ultimate Basic – C64 BASIC compiler to 6502 machine code"
+authors = ["NextBasic Team"]
+
+[dependencies]
