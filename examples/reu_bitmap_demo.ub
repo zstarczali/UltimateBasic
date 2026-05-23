@@ -5,7 +5,7 @@
 # ── Foprogram ────────────────────────────────────────────────────────────
 cls
 
-if reu_present() == 0 then
+if reudet() == 0 then
     print "NEM TALALHATO REU!"
     print "VICE: SETTINGS > HARDWARE > RAM EXPANSION MODULE"
     print ""

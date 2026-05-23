@@ -348,7 +348,7 @@ impl Parser {
                 };
                 Some(Stmt::AsmBytes(bytes))
             }
-            Token::IntToStr => {
+            Token::NumStr => {
                 self.advance();
                 let var = if let Token::Ident(n) = self.advance() { n } else { return None; };
                 if self.peek() == &Token::Comma { self.advance(); }
@@ -518,63 +518,69 @@ impl Parser {
             }
             Token::Sprite => {
                 self.advance();
-                let id = self.parse_expr();
-                if self.peek() == &Token::Comma { self.advance(); }
-                let x = self.parse_expr();
-                if self.peek() == &Token::Comma { self.advance(); }
-                let y = self.parse_expr();
-                let data_addr = if self.peek() == &Token::Comma {
-                    self.advance();
-                    Some(self.parse_expr())
-                } else {
-                    None
-                };
-                self.expect_newline();
-                Some(Stmt::Sprite { id, x, y, data_addr })
+                match self.peek() {
+                    Token::On => {
+                        self.advance();
+                        let id = self.parse_expr();
+                        self.expect_newline();
+                        Some(Stmt::SpriteOn { id })
+                    }
+                    Token::Off => {
+                        self.advance();
+                        let id = self.parse_expr();
+                        self.expect_newline();
+                        Some(Stmt::SpriteOff { id })
+                    }
+                    Token::Color => {
+                        self.advance();
+                        let id = self.parse_expr();
+                        if self.peek() == &Token::Comma { self.advance(); }
+                        let color = self.parse_expr();
+                        self.expect_newline();
+                        Some(Stmt::SpriteColor { id, color })
+                    }
+                    Token::Multi => {
+                        self.advance();
+                        let id = self.parse_expr();
+                        if self.peek() == &Token::Comma { self.advance(); }
+                        let on = matches!(self.advance(), Token::On);
+                        self.expect_newline();
+                        Some(Stmt::SpriteMulticolor { id, on })
+                    }
+                    _ => {
+                        let id = self.parse_expr();
+                        if self.peek() == &Token::Comma { self.advance(); }
+                        let x = self.parse_expr();
+                        if self.peek() == &Token::Comma { self.advance(); }
+                        let y = self.parse_expr();
+                        let data_addr = if self.peek() == &Token::Comma {
+                            self.advance();
+                            Some(self.parse_expr())
+                        } else {
+                            None
+                        };
+                        self.expect_newline();
+                        Some(Stmt::Sprite { id, x, y, data_addr })
+                    }
+                }
             }
-            Token::SpriteOn => {
+            Token::Sprdef => {
                 self.advance();
-                let id = self.parse_expr();
-                self.expect_newline();
-                Some(Stmt::SpriteOn { id })
-            }
-            Token::SpriteOff => {
-                self.advance();
-                let id = self.parse_expr();
-                self.expect_newline();
-                Some(Stmt::SpriteOff { id })
-            }
-            Token::SpriteColor => {
-                self.advance();
-                let id = self.parse_expr();
-                if self.peek() == &Token::Comma { self.advance(); }
-                let color = self.parse_expr();
-                self.expect_newline();
-                Some(Stmt::SpriteColor { id, color })
-            }
-            Token::SpriteMulticolor => {
-                self.advance();
-                let id = self.parse_expr();
-                if self.peek() == &Token::Comma { self.advance(); }
-                let on = matches!(self.advance(), Token::On);
-                self.expect_newline();
-                Some(Stmt::SpriteMulticolor { id, on })
-            }
-            Token::SpriteDef => {
-                self.advance();
-                // id: compile-time constant 0-7
                 let id = match self.parse_expr() {
                     Expr::Number(n) => n as u8,
-                    _ => panic!("sprite_def: id must be a constant"),
+                    _ => panic!("sprdef: id must be a constant"),
                 };
-                // bytes: comma-separated constant values (1-63; shorter → zero-padded)
+                self.expect_newline();
+                // bytes: newline-separated rows, comma-separated within rows, until 'end'
                 let mut bytes: Vec<u8> = Vec::new();
-                while self.peek() == &Token::Comma {
-                    self.advance();
+                loop {
+                    while self.peek() == &Token::Newline { self.advance(); }
+                    if self.peek() == &Token::End { self.advance(); break; }
                     match self.parse_expr() {
                         Expr::Number(n) => bytes.push(n as u8),
-                        _ => panic!("sprite_def: byte values must be constants"),
+                        _ => panic!("sprdef: byte values must be constants"),
                     }
+                    if self.peek() == &Token::Comma { self.advance(); }
                 }
                 self.expect_newline();
                 Some(Stmt::SpriteDef { id, bytes })
@@ -763,7 +769,24 @@ impl Parser {
                 if self.peek() == &Token::RParen { self.advance(); } // skip )
                 Expr::Getch
             }
-            Token::ReuPresent => {
+            Token::Inkey => {
+                if self.peek() == &Token::LParen { self.advance(); } // skip (
+                if self.peek() == &Token::RParen { self.advance(); } // skip )
+                Expr::Inkey
+            }
+            Token::StrLen => {
+                if self.peek() == &Token::LParen { self.advance(); }
+                let arg = self.parse_expr();
+                if self.peek() == &Token::RParen { self.advance(); }
+                Expr::StrLen(Box::new(arg))
+            }
+            Token::Asc => {
+                if self.peek() == &Token::LParen { self.advance(); }
+                let arg = self.parse_expr();
+                if self.peek() == &Token::RParen { self.advance(); }
+                Expr::Asc(Box::new(arg))
+            }
+            Token::ReuDet => {
                 if self.peek() == &Token::LParen { self.advance(); } // skip (
                 if self.peek() == &Token::RParen { self.advance(); } // skip )
                 Expr::ReuPresent
@@ -1211,10 +1234,10 @@ mod tests {
         assert!(matches!(&stmts[0], Stmt::AsmBytes(b) if b.len() == 2));
     }
 
-    // ── IntToStr ─────────────────────────────────────────────────────────
+    // ── IntToStr (numstr) ────────────────────────────────────────────────
 
-    #[test] fn int_to_str() {
-        let stmts = parse("int_to_str score, $0340");
+    #[test] fn numstr_stmt() {
+        let stmts = parse("numstr score, $0340");
         assert!(matches!(&stmts[0], Stmt::IntToStr { var, addr } if var == "score" && *addr == 0x0340));
     }
 

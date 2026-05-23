@@ -1,37 +1,96 @@
 # joystick_demo.ub – Hardware sprite controlled by joystick port 2
 #
-# sprite_def automatically:
-#   - aligns to the next 64-byte boundary (here: $0840 → page $21)
-#   - embeds 63 bytes of sprite pixel data
-#   - emits LDA #page / STA $07F8 to register the data pointer at startup
+# Sprite 0 : yellow arrow  – player, moved by joystick port 2
+# Sprite 1 : red +          – fixed target; collision flashes border red
 #
 # Controls (VICE: numpad or joystick):
-#   port-2 up/down/left/right  – move sprite
-#   fire                       – cycle sprite colour
+#   port-2 up/down/left/right  – move arrow
+#   fire                       – cycle arrow colour
+#   Q                          – quit
 
-sprite_def 0,   0,126,0,  0,255,0,  1,255,128,  3,255,192,  7,255,224,  15,255,240,  31,255,248,  31,255,248,  31,255,248,  31,255,248,  31,255,248,  15,255,240,  7,255,224,  3,255,192,  1,255,128,  0,255,0,  0,126,0,  0,0,0,  0,0,0,  0,0,0,  0,0,0
+sprdef 0
+  0,126,0
+  0,255,0
+  1,255,128
+  3,255,192
+  7,255,224
+  15,255,240
+  31,255,248
+  31,255,248
+  31,255,248
+  31,255,248
+  31,255,248
+  15,255,240
+  7,255,224
+  3,255,192
+  1,255,128
+  0,255,0
+  0,126,0
+  0,0,0
+  0,0,0
+  0,0,0
+  0,0,0
+end
+
+# sprite 1 – red + sign (24×21, centred vertical/horizontal bars)
+# byte1 = $3C = 0011 1100 → 4-pixel-wide vertical bar at pixel columns 10–13
+sprdef 1
+  0,60,0
+  0,60,0
+  0,60,0
+  0,60,0
+  0,60,0
+  0,60,0
+  0,60,0
+  0,60,0
+  255,255,255
+  255,255,255
+  255,255,255
+  255,255,255
+  255,255,255
+  0,60,0
+  0,60,0
+  0,60,0
+  0,60,0
+  0,60,0
+  0,60,0
+  0,60,0
+  0,60,0
+end
 
 cls
 color border 14    # light blue border
 color bg 6         # blue background
 color text 1       # white text
 
+print ""
 print "  JOYSTICK DEMO"
 print "  BY NULTIMATE BASIC"
 print ""
 print "  MOVE  : PORT 2 / NUMPAD"
 print "  FIRE  : CYCLE COLOUR"
-print ""
-print "  RUN/STOP TO QUIT"
+print "  HIT + : BORDER FLASHES RED"
+print "  Q TO QUIT"
 
-var sx  = 152      # sprite X, stays in range 24..253
-var sy  = 100      # sprite Y, stays in range 50..228
-var col = 7        # sprite colour (yellow to start)
+var sx  = 152      # sprite 0 X
+var sy  = 100      # sprite 0 Y
+var col = 7        # sprite colour (yellow)
 var j   = 0        # joystick state
+var hit = 0        # collision flash timer
 
-sprite 0, sx, sy   # set initial position (data pointer already set by sprite_def)
-sprite_color 0, col
-sprite_on 0
+var tx  = 200      # red + X
+var ty  = 130      # red + Y
+var txd = 1        # X direction: 1=right, 0=left
+var tyd = 1        # Y direction: 1=down,  0=up
+
+sprite 0, sx, sy
+sprite color 0, col
+sprite on 0
+
+# moving red + target
+sprite 1, tx, ty
+sprite color 1, 2  # red
+sprite on 1
 
 # ── game loop – raster-synced for smooth 50 Hz movement ──────────────────────
 label gameloop
@@ -55,10 +114,41 @@ label gameloop
   if j and 16 then                   # fire – cycle colour 0..15
     col = col + 1
     col = col and 15
-    sprite_color 0, col
+    sprite color 0, col
   end
 
-  sprite 0, sx, sy  # update VIC-II position registers
+  sprite 0, sx, sy  # update player position
+
+  # bounce red + sprite
+  if txd then
+    tx = tx + 2
+    if tx >= 251 then txd = 0 end
+  else
+    tx = tx - 2
+    if tx <= 26 then txd = 1 end
+  end
+  if tyd then
+    ty = ty + 2
+    if ty >= 226 then tyd = 0 end
+  else
+    ty = ty - 2
+    if ty <= 52 then tyd = 1 end
+  end
+  sprite 1, tx, ty
+
+  # collision detection: $D01E bit0=sprite0, bit1=sprite1 (read-clears)
+  var h = sprhit()
+  if h then hit = 5 end
+
+  if hit then
+    color border 2      # red flash
+    hit = hit - 1
+  else
+    color border 14     # restore light blue
+  end
+
+  var k = inkey()
+  if k == 81 then bye end    # Q (PETSCII $51 = 81) kilep
 
   goto gameloop
 

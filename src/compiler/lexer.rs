@@ -29,13 +29,16 @@ pub enum Token {
     Sys,
     Asm,
     StrToInt,
-    IntToStr,
+    NumStr,
     Color,
     Text,
     Border,
     Bg,
     Getch,
-    ReuPresent,  // reu_present() — inline REU detection, returns 0 or 1
+    Inkey,
+    StrLen,  // len()
+    Asc,     // asc()
+    ReuDet,      // reudet() — inline REU detection, returns 0 or 1
     And,
     Or,
     Not,
@@ -45,14 +48,10 @@ pub enum Token {
     Wait,
     Raster,
     Sound,
-    Sprite,          // sprite id, x, y [, data_addr]
-    SpriteOn,        // sprite_on id
-    SpriteOff,       // sprite_off id
-    SpriteColor,     // sprite_color id, color
-    SpriteMulticolor,// sprite_multicolor id, on/off
-    SpriteHit,       // sprite_hit()  — $D01E sprite-sprite collision
-    SpriteBgHit,     // sprite_bg_hit() — $D01F sprite-background collision
-    SpriteDef,       // sprite_def id, b0..b62 — align+embed sprite data, init $07F8+id
+    Sprite,      // sprite id, x, y [, data_addr] / sprite on/off/color/multi
+    SpriteHit,   // sprhit()   — $D01E sprite-sprite collision
+    SpriteBgHit, // sprbghit() — $D01F sprite-background collision
+    Sprdef,      // sprdef id ... end — align+embed sprite data, init $07F8+id
     Int,
     Str,
     Float,
@@ -266,13 +265,16 @@ impl Lexer {
             "sys"        => Token::Sys,
             "asm"        => Token::Asm,
             "str_to_int" => Token::StrToInt,
-            "int_to_str" => Token::IntToStr,
+            "numstr"     => Token::NumStr,
             "color"      => Token::Color,
             "text"       => Token::Text,
             "border"     => Token::Border,
             "bg"         => Token::Bg,
             "getch"      => Token::Getch,
-            "reu_present" => Token::ReuPresent,
+            "inkey"      => Token::Inkey,
+            "len"        => Token::StrLen,
+            "asc"        => Token::Asc,
+            "reudet"      => Token::ReuDet,
             "and"        => Token::And,
             "or"         => Token::Or,
             "not"        => Token::Not,
@@ -317,14 +319,10 @@ impl Lexer {
             "include"    => Token::Include,
             "data"       => Token::Data,
             "read"       => Token::Read,
-            "sprite"            => Token::Sprite,
-            "sprite_on"         => Token::SpriteOn,
-            "sprite_off"        => Token::SpriteOff,
-            "sprite_color"      => Token::SpriteColor,
-            "sprite_multicolor" => Token::SpriteMulticolor,
-            "sprite_hit"        => Token::SpriteHit,
-            "sprite_bg_hit"     => Token::SpriteBgHit,
-            "sprite_def"       => Token::SpriteDef,
+            "sprite"     => Token::Sprite,
+            "sprhit"     => Token::SpriteHit,
+            "sprbghit"   => Token::SpriteBgHit,
+            "sprdef"     => Token::Sprdef,
             "rem"        => {
                 while !matches!(self.peek(), None | Some('\n')) { self.advance(); }
                 if self.peek() == Some('\n') { self.advance(); }
@@ -404,7 +402,7 @@ mod tests {
     #[test] fn kw_off()  { assert_eq!(tokenize("off")[0],  Token::Off); }
     #[test] fn kw_fast()  {assert_eq!(tokenize("fast")[0],  Token::Fast);}
     #[test] fn kw_str_to_int(){assert_eq!(tokenize("str_to_int")[0],Token::StrToInt);}
-    #[test] fn kw_int_to_str(){assert_eq!(tokenize("int_to_str")[0],Token::IntToStr);}
+    #[test] fn kw_numstr(){assert_eq!(tokenize("numstr")[0],Token::NumStr);}
     #[test] fn kw_const()  { assert_eq!(tokenize("const")[0], Token::Const); }
     #[test] fn kw_label()  { assert_eq!(tokenize("label")[0], Token::Label); }
     #[test] fn kw_goto()   { assert_eq!(tokenize("goto")[0],  Token::Goto); }
@@ -427,7 +425,7 @@ mod tests {
     #[test] fn kw_hex()    { assert_eq!(tokenize("hex")[0],   Token::Hex); }
     #[test] fn kw_bin()    { assert_eq!(tokenize("bin")[0],   Token::Bin); }
     #[test] fn kw_reu()    { assert_eq!(tokenize("reu")[0],   Token::Reu); }
-    #[test] fn kw_reu_present() { assert_eq!(tokenize("reu_present")[0], Token::ReuPresent); }
+    #[test] fn kw_reudet() { assert_eq!(tokenize("reudet")[0], Token::ReuDet); }
     #[test] fn kw_gcls()   { assert_eq!(tokenize("gcls")[0],  Token::Gcls); }
     #[test] fn kw_bye()    { assert_eq!(tokenize("bye")[0],   Token::Bye); }
     #[test] fn kw_exit()   { assert_eq!(tokenize("exit")[0],  Token::Bye); }

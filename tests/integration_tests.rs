@@ -430,7 +430,7 @@ fn reu_fetch_uses_b1_command() {
 #[test]
 fn reu_present_returns_one_when_not_checked() {
     // reu_present() emits 31 bytes of inline 6502 — verify key opcodes are present.
-    let prg = compile_raw("var r = reu_present()");
+    let prg = compile_raw("var r = reudet()");
     let bytes = &prg[2..];
     // Must contain STA $DF04 ($8D $04 $DF) — write test
     let has_sta = bytes.windows(3).any(|w| w == &[0x8D, 0x04, 0xDF]);
@@ -693,7 +693,7 @@ end
 
 #[test]
 fn int_to_str_compiles() {
-    let src = "var score = 42\nint_to_str score, $0340";
+    let src = "var score = 42\nnumstr score, $0340";
     let res = compile(src, &CompileOptions { basic_stub: false });
     assert!(res.errors.is_empty());
 }
@@ -1215,6 +1215,48 @@ fn rnd_compiles() {
     assert!(res.errors.is_empty());
     let bytes = &res.prg[2..];
     assert!(bytes.contains(&0x0A));
+    // post-whitening: EOR $D012 = $4D $12 $D0
+    let has_eor = bytes.windows(3).any(|w| w == &[0x4D, 0x12, 0xD0]);
+    assert!(has_eor, "rnd() should post-whiten with EOR $D012");
+}
+
+#[test]
+fn len_of_string_literal() {
+    let prg = compile_raw("var n = len(\"HELLO\")");
+    let bytes = &prg[2..];
+    // compile-time: LDA #5
+    let has_lda5 = bytes.windows(2).any(|w| w == &[0xA9, 0x05]);
+    assert!(has_lda5, "len(\"HELLO\") should emit LDA #5");
+}
+
+#[test]
+fn len_of_string_var() {
+    let prg = compile_raw("var s = \"HI\"\nvar n = len(s)");
+    let bytes = &prg[2..];
+    // loop: INY ($C8) + LDA (ptr),Y ($B1) + BNE + TYA ($98)
+    assert!(bytes.contains(&0xC8), "len(s) should emit INY");
+    assert!(bytes.contains(&0x98), "len(s) should emit TYA");
+    let has_lda_ind = bytes.contains(&0xB1);
+    assert!(has_lda_ind, "len(s) should emit LDA (ptr),Y");
+}
+
+#[test]
+fn asc_of_string_literal() {
+    let prg = compile_raw("var c = asc(\"A\")");
+    let bytes = &prg[2..];
+    // 'A' in PETSCII = 65 ($41)
+    let has_lda_a = bytes.windows(2).any(|w| w == &[0xA9, 0x41]);
+    assert!(has_lda_a, "asc(\"A\") should emit LDA #$41");
+}
+
+#[test]
+fn asc_of_string_var() {
+    let prg = compile_raw("var s = \"Q\"\nvar c = asc(s)");
+    let bytes = &prg[2..];
+    // LDY #0 ($A0 $00) + LDA (ptr),Y ($B1 ptr)
+    let has_ldy0 = bytes.windows(2).any(|w| w == &[0xA0, 0x00]);
+    assert!(has_ldy0, "asc(s) should emit LDY #0");
+    assert!(bytes.contains(&0xB1), "asc(s) should emit LDA (ptr),Y");
 }
 
 #[test]
@@ -1594,8 +1636,8 @@ fn sprite_with_data_addr_writes_pointer() {
 
 #[test]
 fn sprite_on_sets_d015_bit() {
-    // sprite_on 0 → LDA $D015; ORA #$01; STA $D015
-    let prg = compile_raw("sprite_on 0");
+    // sprite on 0 → LDA $D015; ORA #$01; STA $D015
+    let prg = compile_raw("sprite on 0");
     let bytes = &prg[2..];
     // LDA $D015 = AD 15 D0
     let has_lda = bytes.windows(3).any(|w| w == &[0xAD, 0x15, 0xD0]);
@@ -1610,8 +1652,8 @@ fn sprite_on_sets_d015_bit() {
 
 #[test]
 fn sprite_off_clears_d015_bit() {
-    // sprite_off 0 → LDA $D015; AND #$FE; STA $D015
-    let prg = compile_raw("sprite_off 0");
+    // sprite off 0 → LDA $D015; AND #$FE; STA $D015
+    let prg = compile_raw("sprite off 0");
     let bytes = &prg[2..];
     let has_lda = bytes.windows(3).any(|w| w == &[0xAD, 0x15, 0xD0]);
     assert!(has_lda, "sprite_off should LDA $D015");
@@ -1622,8 +1664,8 @@ fn sprite_off_clears_d015_bit() {
 
 #[test]
 fn sprite_color_writes_d027() {
-    // sprite_color 0, 7 → eval 7 → STA $D027 = 8D 27 D0
-    let prg = compile_raw("sprite_color 0, 7");
+    // sprite color 0, 7 → eval 7 → STA $D027 = 8D 27 D0
+    let prg = compile_raw("sprite color 0, 7");
     let bytes = &prg[2..];
     let has_sta = bytes.windows(3).any(|w| w == &[0x8D, 0x27, 0xD0]);
     assert!(has_sta, "sprite_color 0 should STA $D027");
@@ -1633,8 +1675,8 @@ fn sprite_color_writes_d027() {
 
 #[test]
 fn sprite_color_1_writes_d028() {
-    // sprite_color 1, 3 → STA $D028 = 8D 28 D0
-    let prg = compile_raw("sprite_color 1, 3");
+    // sprite color 1, 3 → STA $D028 = 8D 28 D0
+    let prg = compile_raw("sprite color 1, 3");
     let bytes = &prg[2..];
     let has_sta = bytes.windows(3).any(|w| w == &[0x8D, 0x28, 0xD0]);
     assert!(has_sta, "sprite_color 1 should STA $D028");
@@ -1642,8 +1684,8 @@ fn sprite_color_1_writes_d028() {
 
 #[test]
 fn sprite_multicolor_on_sets_d01c_bit() {
-    // sprite_multicolor 0, on → LDA $D01C; ORA #$01; STA $D01C
-    let prg = compile_raw("sprite_multicolor 0, on");
+    // sprite multi 0, on → LDA $D01C; ORA #$01; STA $D01C
+    let prg = compile_raw("sprite multi 0, on");
     let bytes = &prg[2..];
     let has_lda = bytes.windows(3).any(|w| w == &[0xAD, 0x1C, 0xD0]);
     assert!(has_lda, "sprite_multicolor on should LDA $D01C");
@@ -1655,8 +1697,8 @@ fn sprite_multicolor_on_sets_d01c_bit() {
 
 #[test]
 fn sprite_multicolor_off_clears_d01c_bit() {
-    // sprite_multicolor 0, off → AND #$FE
-    let prg = compile_raw("sprite_multicolor 0, off");
+    // sprite multi 0, off → AND #$FE
+    let prg = compile_raw("sprite multi 0, off");
     let bytes = &prg[2..];
     let has_and = bytes.windows(2).any(|w| w == &[0x29, 0xFE]);
     assert!(has_and, "sprite_multicolor 0,off should AND #$FE on $D01C");
@@ -1664,8 +1706,8 @@ fn sprite_multicolor_off_clears_d01c_bit() {
 
 #[test]
 fn sprite_hit_reads_d01e() {
-    // var h = sprite_hit() → LDA $D01E = AD 1E D0
-    let prg = compile_raw("var h = sprite_hit()");
+    // var h = sprhit() → LDA $D01E = AD 1E D0
+    let prg = compile_raw("var h = sprhit()");
     let bytes = &prg[2..];
     let has_lda = bytes.windows(3).any(|w| w == &[0xAD, 0x1E, 0xD0]);
     assert!(has_lda, "sprite_hit() should LDA $D01E");
@@ -1673,8 +1715,8 @@ fn sprite_hit_reads_d01e() {
 
 #[test]
 fn sprite_bg_hit_reads_d01f() {
-    // var h = sprite_bg_hit() → LDA $D01F = AD 1F D0
-    let prg = compile_raw("var h = sprite_bg_hit()");
+    // var h = sprbghit() → LDA $D01F = AD 1F D0
+    let prg = compile_raw("var h = sprbghit()");
     let bytes = &prg[2..];
     let has_lda = bytes.windows(3).any(|w| w == &[0xAD, 0x1F, 0xD0]);
     assert!(has_lda, "sprite_bg_hit() should LDA $D01F");
@@ -1715,12 +1757,12 @@ fn sprite_word_x_uses_lo_byte_and_runtime_msb() {
 
 #[test]
 fn sprite_def_aligns_to_64_byte_boundary() {
-    // sprite_def 0, <63 bytes>  at $080D → JMP over data, data at $0840 (page $21)
+    // sprdef 0, <63 bytes>  at $080D → JMP over data, data at $0840 (page $21)
     // JMP = 4C lo hi = 3 bytes; $080D+3 = $0810; next 64-boundary = $0840
     let mut bytes63 = vec![0u8; 63];
     bytes63[1] = 0x7E; // row 1 byte 1, easily spotted
     let src = format!(
-        "sprite_def 0, {}",
+        "sprdef 0\n{}\nend",
         bytes63.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(",")
     );
     let prg = compile_raw(&src);
@@ -1743,8 +1785,8 @@ fn sprite_def_aligns_to_64_byte_boundary() {
 
 #[test]
 fn sprite_def_1_uses_d07f9() {
-    // sprite_def 1 → STA $07F9 (= $07F8 + 1)
-    let src = "sprite_def 1, 0,0,0";
+    // sprdef 1 → STA $07F9 (= $07F8 + 1)
+    let src = "sprdef 1\n0,0,0\nend";
     let prg = compile_raw(src);
     let bytes = &prg[2..];
     let has_sta_ptr1 = bytes.windows(3).any(|w| w == &[0x8D, 0xF9, 0x07]);

@@ -6,6 +6,7 @@ pub enum Expr {
     BinOp(Box<Expr>, BinOp, Box<Expr>),
     Not(Box<Expr>),
     Getch,
+    Inkey,    // inkey() — non-blocking $FFE4; 0 = no key, else PETSCII code
     ReuPresent,  // reu_present() — 1 if REU detected, 0 otherwise
     Joy(u8),  // joy(1) or joy(2) — read joystick port, returns inverted bits 0-4
     Sin(Box<Expr>),   // sin(angle) — 8-bit angle 0-255, returns 0-255 (center=128)
@@ -20,8 +21,10 @@ pub enum Expr {
     Sgn(Box<Expr>),
     ArrayGet(String, Box<Expr>), // arr[idx]
     ChrStr(Box<Expr>),           // chr$(n) — character with PETSCII code n
-    SpriteHit,                   // sprite_hit()    — read $D01E (sprite–sprite collision, cleared on read)
-    SpriteBgHit,                 // sprite_bg_hit() — read $D01F (sprite–background collision, cleared on read)
+    SpriteHit,                   // sprhit()    — read $D01E (sprite–sprite collision, cleared on read)
+    SpriteBgHit,                 // sprbghit() — read $D01F (sprite–background collision, cleared on read)
+    StrLen(Box<Expr>),           // len(s)  — length of null-terminated string var, 0–255
+    Asc(Box<Expr>),              // asc(s)  — PETSCII code of first character (0 if empty)
 }
 
 #[derive(Debug, Clone)]

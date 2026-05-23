@@ -345,6 +345,53 @@ impl Codegen {
                 self.emit(0x85); self.emit(0x91);     // STA $91
                 self.emit(0x8A);                      // TXA
             }
+            Expr::Inkey => {
+                // Non-blocking GETIN: single call, returns 0 if no key pressed.
+                self.emit(0x20); self.emit16(0xFFE4); // JSR $FFE4
+            }
+            Expr::StrLen(inner) => {
+                let inner = inner.clone();
+                match inner.as_ref() {
+                    Expr::StringLit(s) => {
+                        // compile-time: length known
+                        self.emit(0xA9); self.emit(s.len() as u8); // LDA #len
+                    }
+                    Expr::Var(name) if matches!(self.var_types.get(name), Some(VarType::Str)) => {
+                        if let Some(ptr) = self.var_addr(name) {
+                            // inline len loop: LDY #$FF; loop: INY; LDA (ptr),Y; BNE loop; TYA
+                            self.emit(0xA0); self.emit(0xFF);  // LDY #$FF
+                            let loop_top = self.current_addr();
+                            self.emit(0xC8);                    // INY
+                            self.emit(0xB1); self.emit(ptr);   // LDA (ptr),Y
+                            self.emit(0xD0);                    // BNE loop
+                            let bne_pos = self.code.len(); self.emit(0x00);
+                            self.patch_bxx(bne_pos, loop_top);
+                            self.emit(0x98);                    // TYA → A = length
+                        } else {
+                            self.emit(0xA9); self.emit(0x00);
+                        }
+                    }
+                    _ => { self.eval_expr(&inner); } // fallback: evaluate as numeric
+                }
+            }
+            Expr::Asc(inner) => {
+                let inner = inner.clone();
+                match inner.as_ref() {
+                    Expr::StringLit(s) => {
+                        let code = s.chars().next().map(|c| ascii_to_petscii(c)).unwrap_or(0);
+                        self.emit(0xA9); self.emit(code);      // LDA #first_char
+                    }
+                    Expr::Var(name) if matches!(self.var_types.get(name), Some(VarType::Str)) => {
+                        if let Some(ptr) = self.var_addr(name) {
+                            self.emit(0xA0); self.emit(0x00);  // LDY #0
+                            self.emit(0xB1); self.emit(ptr);   // LDA (ptr),Y → first char
+                        } else {
+                            self.emit(0xA9); self.emit(0x00);
+                        }
+                    }
+                    _ => { self.eval_expr(&inner); }
+                }
+            }
             Expr::SpriteHit => {
                 // Read $D01E — sprite-sprite collision register (cleared on read).
                 self.emit(0xAD); self.emit16(0xD01E);
@@ -434,7 +481,8 @@ impl Codegen {
                 self.emit(0x65); self.emit(0xFB); // ADC $FB (×5)
                 self.emit(0x18);                   // CLC
                 self.emit(0x69); self.emit(0x01);  // ADC #1
-                self.emit(0x85); self.emit(0xFB);  // STA $FB
+                self.emit(0x85); self.emit(0xFB);  // STA $FB  (store seed)
+                self.emit(0x4D); self.emit(0x12); self.emit(0xD0); // EOR $D012 (post-whiten)
             }
             Expr::Abs(expr) => {
                 let expr = expr.clone();
