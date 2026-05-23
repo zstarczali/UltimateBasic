@@ -57,6 +57,7 @@ w = a or b               # bitwise OR
 v = a xor b              # bitwise XOR
 m = x shl 3              # shift left
 n = x shr 2              # shift right
+r = x mod 40             # 8-bit modulo (remainder); SEC/SBC/BCS loop
 ```
 
 Comparisons: `==`  `!=`  `<`  `>`  `<=`  `>=`  (return 1/0)
@@ -120,6 +121,10 @@ end
 while x < 100
   x = x + 1
 end
+
+repeat               # do-while: body runs at least once
+  x = x + 1
+until x == 100       # exits when condition is true
 ```
 
 ### Labels and goto
@@ -180,6 +185,8 @@ graphics off             # return to text mode
 gcls                     # clear bitmap (fills $2000-$3FFF) + set video matrix colors
 
 plot x, y                # set pixel at (x, y);  x: 0-319,  y: 0-199
+plot erase x, y          # clear pixel (AND ~mask)
+plot xor x, y            # toggle pixel (EOR mask) — flicker-free animation
 circle x, y, r           # midpoint circle centered at (x, y) with radius r; clips off-screen points
 line x1, y1, x2, y2      # Bresenham line from (x1,y1) to (x2,y2); x: 0-255, y: 0-199
 ```
@@ -198,6 +205,9 @@ color border 6           # $D020
 color bg 0               # $D021
 
 display on               # re-enable VIC display ($D011 DEN bit)
+
+cursor 20, 10            # move cursor to col 20, row 10 (KERNAL PLOT $FFF0)
+cursor x, y              # column from variable x (0–39), row from y (0–24)
 display off              # blank display
 ```
 
@@ -247,6 +257,12 @@ sprite off 0             # disable sprite 0 ($D015 &= ~bit0)
 sprite color 0, 7        # sprite 0 color = yellow ($D027)
 sprite multicolor 0, on  # enable multicolor mode for sprite 0 ($D01C |= bit0)
 sprite multicolor 0, off # disable multicolor mode ($D01C &= ~bit0)
+sprite expand x 0, on    # double width ($D01D |= bit0)
+sprite expand x 0, off   # normal width ($D01D &= ~bit0)
+sprite expand y 0, on    # double height ($D017 |= bit0)
+sprite expand y 0, off   # normal height ($D017 &= ~bit0)
+sprite priority 0, on    # behind background ($D01B |= bit0)
+sprite priority 0, off   # in front of background ($D01B &= ~bit0)
 var h = sprite_hit()     # sprite–sprite collision ($D01E, cleared on read)
 var b = sprite_bg_hit()  # sprite–background collision ($D01F, cleared on read)
 ```
@@ -291,11 +307,15 @@ var v = peek(addr_var)   # LDA (addr_var),Y  — if addr_var is word type
 load "PROGRAM"           # KERNAL LOAD: loads file from device 8 to its native address
 load "DATA", $C000       # loads file to a specific address
 load "DATA", ptr         # addr from word variable
+
+save "DATA", $C000, 4096 # KERNAL SAVE from $C000, 4096 bytes → device 8
+save "PROG", start, len  # addr and len from word/int variables
 ```
 
 `load` calls KERNAL `SETNAM`+`SETLFS`+`LOAD` (`$FFBD`/`$FFBA`/`$FFD5`).
 Without address: secondary address 0 (file's own 2-byte header used as load address).
 With address: secondary address 1 (file loaded to specified location).
+`save` calls `SETNAM`+`SETLFS`+`SAVE` (`$FFBD`/`$FFBA`/`$FFD8`). Requires both `addr` and `len`.
 
 ### Math functions
 
