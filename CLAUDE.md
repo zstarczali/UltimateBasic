@@ -9,6 +9,7 @@ cargo build --release
 cargo test
 ultimate-basic build demo.ub -o demo.prg
 ultimate-basic build demo.ub --d64 disk.d64
+ultimate-basic build demo.ub --d64          # auto: demo.d64
 ```
 
 ## Project Structure
@@ -438,9 +439,11 @@ Requires a real REU or emulated REU (VICE: enable Georam/REU). The transfer is s
 # hash comment (existing)
 rem this is also a comment
 var x = 5  ; inline comment
+poke $D020, 6 : color border 6  # colon separates two statements on one line
 ```
 
 `rem` and `;` are treated identically to `#` — everything to end of line is ignored.
+`:` separates multiple statements on one line (like C64 BASIC).
 
 ### Compile-time File Embedding
 
@@ -449,7 +452,78 @@ incbin "sprites.bin"     # embed raw binary bytes at current code position
 include "defs.ub"        # inline another .ub source file (lexed+parsed in place)
 ```
 
-`incbin` embeds the file's bytes verbatim. Useful for sprite data, character sets, music.
+### Disk I/O (runtime)
+
+```basic
+load "PROGRAM"           # KERNAL LOAD from device 8, to file's own load address
+load "DATA", $C000       # load to specific address (secondary address = 1)
+load "DATA", ptr         # address from word variable
+```
+
+Calls `SETNAM` ($FFBD) + `SETLFS` ($FFBA, device 8) + `LOAD` ($FFD5).
+Without address arg: secondary = 0 (file header address used).
+With address arg: secondary = 1, X/Y = lo/hi of target.
+
+### Input
+
+```basic
+input score              # read up to 3 digits from keyboard → 8-bit int var
+input "Name: ", name     # optional prompt string, then read line → string var
+input "Score: ", score   # prompt + int input
+```
+
+`input` uses KERNAL BASIN (`$FFCF`) for blocking, echoed line input with DEL support.
+- **Int var**: accepts only `0`–`9`, max 3 chars; converts digit string → 8-bit value on CR.
+- **String var**: accepts up to 30 chars; stores as null-terminated string in inline buffer; pointer stored in the string var's ZP pair.
+
+### Memory Utilities
+
+```basic
+fill $0400, 1000, 32     # fill 1000 bytes starting at $0400 with value 32
+fill addr, 256, 0        # addr can be word var; len 256 = exactly one full page
+fill ptr, len_word, val  # all operands can be expressions / word vars
+
+memcopy $C000, $0400, 256   # copy 256 bytes from $C000 → $0400
+memcopy src_ptr, dst_ptr, 40 # word vars for source and destination
+```
+
+Both `fill` and `memcopy` support 16-bit lengths (0–65535). When `len` is a numeric literal,
+its high byte = page count, low byte = partial count. For 8-bit expressions, only up to 255
+bytes are copied per call (high byte = 0). Use `word` variables for lengths > 255.
+
+### Raster IRQ
+
+```basic
+irq my_handler           # set raster IRQ at line 0, handler = sub or address
+irq my_handler, 100      # set raster IRQ at raster line 100
+irq $C800, 200           # handler at fixed address $C800, line 200
+irq addr_word            # handler address from a word variable
+```
+
+Sets up a raster IRQ via the BASIC soft vector (`$0314`/`$0315`):
+1. SEI — disable interrupts during setup
+2. Disable CIA1 timer IRQ (`$DC0D = $7F`) — prevents CIA1 from competing
+3. ACK pending VIC IRQ (`$D019`)
+4. Clear raster bit 8 (`$D011 &= $7F`) — restricts trigger lines to 0–255
+5. Write raster line → `$D012`
+6. Enable VIC raster IRQ (`$D01A = $01`)
+7. Write handler lo/hi → `$0314`/`$0315`
+8. CLI — re-enable interrupts
+
+**Handler requirements:** The routine pointed to by `$0314` must end with `JMP $EA81`
+(KERNAL end-of-IRQ — restores A/X/Y and executes RTI). Using plain `RTI` will corrupt
+the stack because the KERNAL's own IRQ entry code already pushed A/X/Y before calling
+the `$0314` vector. The handler should also ACK the VIC IRQ before any other work:
+```basic
+sub my_handler()
+  poke $D019, $FF      # ACK VIC IRQ (write 1s to clear flags)
+  # ... your IRQ work here ...
+  sys $EA81            # JMP to KERNAL end-of-IRQ (restores regs, RTI)
+end
+```
+
+Forward references are supported: `irq my_handler` works even when `my_handler` is defined
+after the `irq` statement (same forward-ref mechanism as `call`).
 Paths are relative to the current working directory.
 
 `include` inlines the parsed statements of another source file. Constants defined in the
@@ -551,7 +625,8 @@ ultimate-basic build <input.ub> [OPTIONS]
   -o, --output <file>   Output .prg file (default: <input>.prg)
   -v, --verbose         Show full ZP layout + code hex dump after build
   --no-stub             Skip the BASIC SYS stub (code loads at $0801)
-  --d64 <file>          Also produce a .d64 disk image
+  --d64 [file]          Also produce a .d64 disk image;
+                          without a filename defaults to <output>.d64
   -h, --help            Show help
 ```
 

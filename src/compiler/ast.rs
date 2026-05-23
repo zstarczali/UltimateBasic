@@ -83,6 +83,11 @@ pub enum Stmt {
     Incbin(String),   // incbin "file" — embed raw binary file bytes inline
     Data(Vec<Expr>),  // data 1,2,3 — constant byte table (read with 'read')
     Read(String),     // read varname — load next data byte into variable
+    Load { filename: String, addr: Option<Expr> }, // load "file" [, addr] — KERNAL LOAD from device 8
+    Input { prompt: Option<String>, var: String }, // input ["prompt",] var — BASIN line input
+    Fill { addr: Expr, len: Expr, val: Expr },     // fill addr, len, val — memory block fill
+    Memcopy { src: Expr, dst: Expr, len: Expr },   // memcopy src, dst, len — memory block copy
+    Irq { handler: Expr, line: Option<Expr> },     // irq handler [, raster_line] — raster IRQ setup
     Reu { op: ReuOp, c64_addr: Expr, reu_bank: Expr, reu_addr: Expr, length: Expr },
     // reu stash/fetch/swap c64_addr, bank, reu_addr, length — DMA transfer to/from REU
     Wait { raster_target: bool, value: Expr }, // wait N (raster lines) / wait raster N (specific line)

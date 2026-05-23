@@ -44,6 +44,7 @@ const BORDER = $D020     # compile-time constant (substituted inline, no ZP slot
 # hash comment
 rem this is also a comment
 var x = 5  ; inline semicolon comment
+var x = 5  : var y = 6  # colon separates statements on one line
 ```
 
 ### Operators
@@ -195,12 +196,16 @@ cls fast                 # fast fill: screen RAM + color RAM + HOME
 color text 14            # text color register $0286
 color border 6           # $D020
 color bg 0               # $D021
+
+display on               # re-enable VIC display ($D011 DEN bit)
+display off              # blank display
 ```
 
 ### Keyboard
 
 ```basic
 var key = getch()        # busy-wait on $FFE4 until key; returns PETSCII code
+var k   = inkey()        # non-blocking: returns PETSCII code, or 0 if no key pressed
 var j = joy(2)           # read joystick port 2; returns inverted bits 0-4
 var j = joy(1)           # read joystick port 1
                          # bit0=up(1) bit1=down(2) bit2=left(4) bit3=right(8) bit4=fire(16)
@@ -237,17 +242,39 @@ Master volume `$D418` always set to `$0F`.
 ```basic
 sprite 0, x, y, $2000    # sprite 0: set X, Y position and data pointer
 sprite 0, x, y           # without data pointer (keeps existing)
-sprite_on  0             # enable sprite 0 ($D015 |= bit0)
-sprite_off 0             # disable sprite 0 ($D015 &= ~bit0)
-sprite_color 0, 7        # sprite 0 color = yellow ($D027)
-sprite_multicolor 0, on  # enable multicolor mode for sprite 0 ($D01C |= bit0)
-sprite_multicolor 0, off # disable multicolor mode ($D01C &= ~bit0)
+sprite on  0             # enable sprite 0 ($D015 |= bit0)
+sprite off 0             # disable sprite 0 ($D015 &= ~bit0)
+sprite color 0, 7        # sprite 0 color = yellow ($D027)
+sprite multicolor 0, on  # enable multicolor mode for sprite 0 ($D01C |= bit0)
+sprite multicolor 0, off # disable multicolor mode ($D01C &= ~bit0)
 var h = sprite_hit()     # sprite–sprite collision ($D01E, cleared on read)
 var b = sprite_bg_hit()  # sprite–background collision ($D01F, cleared on read)
 ```
 
 X supports full 9-bit range (0–319): use a `word` variable for runtime values > 255.
 Sprite data pointer: `data_addr` must be 64-byte aligned; stored as `addr >> 6` at `$07F8+id`.
+
+### Sprite definition
+
+```basic
+sprdef 0
+  $00,$3C,$00,  $00,$FF,$00,  $03,$FF,$C0,  $07,$FF,$E0,
+  $0F,$FF,$F0,  $0F,$FF,$F0,  $1F,$FF,$F8,  $1F,$FF,$F8,
+  $1F,$FF,$F8,  $0F,$FF,$F0,  $0F,$FF,$F0,  $07,$FF,$E0,
+  $03,$FF,$C0,  $00,$FF,$00,  $00,$3C,$00,  $00,$00,$00,
+  $00,$00,$00,  $00,$00,$00,  $00,$00,$00,  $00,$00,$00,
+  $00,$00,$00
+end
+```
+
+`sprdef id ... end` embeds 63 sprite bytes at the next 64-byte-aligned address in the code
+segment, emits a `JMP` over them, and automatically sets `$07F8+id = data_addr >> 6`.
+To use the same shape for multiple sprites, read back the pointer:
+
+```basic
+var pg = peek($07F8)   # pointer set by sprdef 0
+poke $07F9, pg         # copy to sprites 1–7
+```
 
 ### Memory
 
@@ -257,6 +284,18 @@ poke addr_var, 6         # STA (addr_var),Y  — if addr_var is word type
 var v = peek($D012)      # LDA $D012
 var v = peek(addr_var)   # LDA (addr_var),Y  — if addr_var is word type
 ```
+
+### Disk I/O
+
+```basic
+load "PROGRAM"           # KERNAL LOAD: loads file from device 8 to its native address
+load "DATA", $C000       # loads file to a specific address
+load "DATA", ptr         # addr from word variable
+```
+
+`load` calls KERNAL `SETNAM`+`SETLFS`+`LOAD` (`$FFBD`/`$FFBA`/`$FFD5`).
+Without address: secondary address 0 (file's own 2-byte header used as load address).
+With address: secondary address 1 (file loaded to specified location).
 
 ### Math functions
 
@@ -340,6 +379,10 @@ var n = str_to_int("42") # compile-time: Expr::Number(42)
 | `examples/features.ub` | const, label/goto, poke/peek, rnd, math functions |
 | `examples/new_features.ub` | sub params, arrays, word vars, string vars |
 | `examples/bitmap_demo.ub` | 320×200 bitmap, plot, graphics on/off |
+| `examples/joystick_demo.ub` | joystick reading, sprite movement |
+| `examples/mux_demo.ub` | raster sprite multiplexer (3 windows × 8 sprites = 24) |
+| `examples/sprite_mux_orbit.ub` | 24-sprite orbit demo with sprdef + precomputed positions |
+| `examples/reu_bitmap_demo.ub` | REU stash/fetch with bitmap graphics |
 
 ## Architecture
 
@@ -365,7 +408,8 @@ ultimate-basic build <input.ub> [OPTIONS]
   -o, --output <file>   Output .prg file (default: <input>.prg)
   -v, --verbose         Show zero-page layout and code hex dump
   --no-stub             Skip the BASIC SYS stub (code loads at $0801)
-  --d64 <file>          Also produce a .d64 disk image
+  --d64 [file]          Also produce a .d64 disk image;
+                          without a filename defaults to <output>.d64
   -h, --help            Show help
 ```
 

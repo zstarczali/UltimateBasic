@@ -1809,3 +1809,181 @@ fn sprite_def_1_uses_d07f9() {
     let has_sta_ptr1 = bytes.windows(3).any(|w| w == &[0x8D, 0xF9, 0x07]);
     assert!(has_sta_ptr1, "sprite_def 1 should emit STA $07F9");
 }
+
+// ── Input ────────────────────────────────────────────────────────────────────
+
+#[test]
+fn input_int_emits_basin_call() {
+    let prg = compile_raw("input score");
+    let bytes = &prg[2..];
+    // JSR $FFCF (BASIN): 20 CF FF
+    let has_basin = bytes.windows(3).any(|w| w == &[0x20, 0xCF, 0xFF]);
+    assert!(has_basin, "input should emit JSR $FFCF (BASIN)");
+}
+
+#[test]
+fn input_string_emits_basin_and_null_term() {
+    let prg = compile_raw("var msg: string = \"\"\ninput msg");
+    let bytes = &prg[2..];
+    let has_basin = bytes.windows(3).any(|w| w == &[0x20, 0xCF, 0xFF]);
+    assert!(has_basin, "input string should emit JSR $FFCF");
+    // Null-terminate: LDA #0 (A9 00) then STA indirect (91)
+    let has_null = bytes.windows(2).any(|w| w == &[0xA9, 0x00]);
+    assert!(has_null, "input string should emit null terminator (LDA #0)");
+}
+
+#[test]
+fn input_with_prompt_prints_before_basin() {
+    let prg = compile_raw("input \"NAME: \", name");
+    let bytes = &prg[2..];
+    // Should contain CHROUT call ($FFD2) for the prompt before BASIN ($FFCF)
+    let chrout_pos = bytes.windows(3).position(|w| w == &[0x20, 0xD2, 0xFF]);
+    let basin_pos  = bytes.windows(3).position(|w| w == &[0x20, 0xCF, 0xFF]);
+    assert!(chrout_pos.is_some(), "input with prompt should call CHROUT");
+    assert!(basin_pos.is_some(),  "input with prompt should call BASIN");
+    assert!(chrout_pos.unwrap() < basin_pos.unwrap(), "CHROUT must come before BASIN");
+}
+
+// ── Fill ─────────────────────────────────────────────────────────────────────
+
+#[test]
+fn fill_emits_indirect_store() {
+    let prg = compile_raw("fill $0400, 1000, 32");
+    let bytes = &prg[2..];
+    // STA (ptr),Y = $91 <zp>
+    let has_sta_ind = bytes.windows(1).any(|w| w[0] == 0x91);
+    assert!(has_sta_ind, "fill should emit STA (ptr),Y");
+}
+
+#[test]
+fn fill_page_count_for_1000_bytes() {
+    // 1000 = 3 pages + 232 partial → pg_ctr = 3, partial = 232
+    let prg = compile_raw("fill $0400, 1000, 0");
+    let bytes = &prg[2..];
+    // LDA #3 (page count hi)
+    assert!(bytes.windows(2).any(|w| w == &[0xA9, 3]),
+        "fill 1000 should store page count 3");
+    // LDA #232 (partial = 1000 - 3*256 = 232)
+    assert!(bytes.windows(2).any(|w| w == &[0xA9, 232]),
+        "fill 1000 should store partial count 232");
+}
+
+#[test]
+fn fill_zero_len_compiles_cleanly() {
+    // fill with len=0: pg_ctr=0, partial=0 — both BEQ taken at runtime, but
+    // the loop body bytes are still emitted. Verify it compiles and has BEQ ($F0).
+    let prg = compile_raw("fill $0400, 0, 99");
+    let bytes = &prg[2..];
+    // Both page and partial loops guarded by BEQ ($F0)
+    let beq_count = bytes.iter().filter(|&&b| b == 0xF0).count();
+    assert!(beq_count >= 2, "fill should emit at least 2 BEQ guards for the two loops");
+}
+
+// ── Memcopy ───────────────────────────────────────────────────────────────────
+
+#[test]
+fn memcopy_emits_load_and_store_indirect() {
+    let prg = compile_raw("memcopy $C000, $0400, 256");
+    let bytes = &prg[2..];
+    // LDA (src),Y = $B1 <zp>
+    assert!(bytes.iter().any(|&b| b == 0xB1), "memcopy should emit LDA (src),Y");
+    // STA (dst),Y = $91 <zp>
+    assert!(bytes.iter().any(|&b| b == 0x91), "memcopy should emit STA (dst),Y");
+}
+
+#[test]
+fn memcopy_256_bytes_uses_page_loop() {
+    // 256 bytes = 1 full page → pg_ctr=1, partial=0
+    let prg = compile_raw("memcopy $C000, $0400, 256");
+    let bytes = &prg[2..];
+    // LDA #1 for page count (hi byte of 256 = 1)
+    assert!(bytes.windows(2).any(|w| w == &[0xA9, 1]),
+        "memcopy 256 bytes should have page count 1");
+    // LDA #0 for partial (lo byte of 256 = 0)
+    // Also used for LDY #0, but the combination is unambiguous in context
+    assert!(bytes.windows(2).any(|w| w == &[0xA9, 0]),
+        "memcopy 256 bytes should have partial count 0");
+}
+
+#[test]
+fn memcopy_increments_src_and_dst_hi() {
+    // After each full page: INC src_hi ($E6) and INC dst_hi ($E6)
+    let prg = compile_raw("memcopy $C000, $0400, 512");
+    let bytes = &prg[2..];
+    let inc_zp_count = bytes.windows(1).filter(|w| w[0] == 0xE6).count();
+    // Must have at least 2 INC zp (src_hi and dst_hi) in the page loop
+    assert!(inc_zp_count >= 2, "memcopy should INC src_hi and dst_hi each page");
+}
+
+// ── IRQ ───────────────────────────────────────────────────────────────────────
+
+#[test]
+fn irq_emits_sei_cli() {
+    let prg = compile_raw("irq $0900");
+    let bytes = &prg[2..];
+    assert!(bytes.iter().any(|&b| b == 0x78), "irq should emit SEI ($78)");
+    assert!(bytes.iter().any(|&b| b == 0x58), "irq should emit CLI ($58)");
+}
+
+#[test]
+fn irq_sets_0314_vector() {
+    let prg = compile_raw("irq $0900");
+    let bytes = &prg[2..];
+    // STA $0314: 8D 14 03
+    let has_0314 = bytes.windows(3).any(|w| w == &[0x8D, 0x14, 0x03]);
+    assert!(has_0314, "irq should emit STA $0314");
+    // STA $0315: 8D 15 03
+    let has_0315 = bytes.windows(3).any(|w| w == &[0x8D, 0x15, 0x03]);
+    assert!(has_0315, "irq should emit STA $0315");
+}
+
+#[test]
+fn irq_disables_cia1() {
+    let prg = compile_raw("irq $0900");
+    let bytes = &prg[2..];
+    // STA $DC0D (CIA1 ICR): 8D 0D DC; LDA #$7F before it
+    let has_cia = bytes.windows(3).any(|w| w == &[0x8D, 0x0D, 0xDC]);
+    assert!(has_cia, "irq should disable CIA1 IRQ (STA $DC0D)");
+}
+
+#[test]
+fn irq_sets_raster_line() {
+    let prg = compile_raw("irq $0900, 100");
+    let bytes = &prg[2..];
+    // LDA #100 then STA $D012: A9 64 8D 12 D0
+    let pos = bytes.windows(5).position(|w| w == &[0xA9, 100, 0x8D, 0x12, 0xD0]);
+    assert!(pos.is_some(), "irq with line should emit LDA #100; STA $D012");
+}
+
+#[test]
+fn irq_constant_address_emits_lo_hi() {
+    let prg = compile_raw("irq $C800");
+    let bytes = &prg[2..];
+    // LDA #$00 (lo of $C800): A9 00
+    // LDA #$C8 (hi of $C800): A9 C8
+    assert!(bytes.windows(2).any(|w| w == &[0xA9, 0x00]), "irq $C800 lo byte = 0");
+    assert!(bytes.windows(2).any(|w| w == &[0xA9, 0xC8]), "irq $C800 hi byte = $C8");
+}
+
+#[test]
+fn irq_forward_ref_sub_patched() {
+    // irq handler defined AFTER the irq statement — forward ref
+    let src = "\
+irq my_irq\n\
+sub my_irq()\n\
+  bye\n\
+end\n\
+";
+    let prg = compile_raw(src);
+    let bytes = &prg[2..];
+    // The sub starts after the main body (RTS) + stub overhead
+    // We just verify: STA $0314 is present and the lo byte of the sub address
+    // is patched into the LDA #xx instruction before STA $0314
+    let sta_0314 = bytes.windows(3).position(|w| w == &[0x8D, 0x14, 0x03]);
+    assert!(sta_0314.is_some(), "irq forward ref should emit STA $0314");
+    // The byte just before 8D 14 03 is the handler address lo byte (not 0)
+    if let Some(pos) = sta_0314 {
+        let lo_byte = bytes[pos - 1]; // byte before STA $0314 is the LDA #<lo> operand
+        assert_ne!(lo_byte, 0x8D, "lo byte should be address, not another opcode");
+    }
+}

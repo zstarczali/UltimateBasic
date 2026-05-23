@@ -88,6 +88,11 @@ pub enum Token {
     Include,
     Data,
     Read,
+    Load,
+    Input,
+    Fill,
+    Memcopy,
+    Irq,
 
     // Operators
     Plus,
@@ -321,6 +326,11 @@ impl Lexer {
             "include"    => Token::Include,
             "data"       => Token::Data,
             "read"       => Token::Read,
+            "load"       => Token::Load,
+            "input"      => Token::Input,
+            "fill"       => Token::Fill,
+            "memcopy"    => Token::Memcopy,
+            "irq"        => Token::Irq,
             "sprite"     => Token::Sprite,
             "sprhit"     => Token::SpriteHit,
             "sprbghit"   => Token::SpriteBgHit,

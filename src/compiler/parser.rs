@@ -37,7 +37,7 @@ impl Parser {
     }
 
     fn skip_newlines(&mut self) {
-        while self.peek() == &Token::Newline {
+        while matches!(self.peek(), Token::Newline | Token::Colon) {
             self.advance();
         }
     }
@@ -218,12 +218,12 @@ impl Parser {
             Token::Print => {
                 self.advance();
                 let mut args = vec![];
-                // Collect comma-separated exprs until end of line
-                if !matches!(self.peek(), Token::Newline | Token::Eof) {
+                // Collect comma-separated exprs until end of line or colon separator
+                if !matches!(self.peek(), Token::Newline | Token::Eof | Token::Colon) {
                     args.push(self.parse_expr());
                     while self.peek() == &Token::Comma {
                         self.advance();
-                        if !matches!(self.peek(), Token::Newline | Token::Eof) {
+                        if !matches!(self.peek(), Token::Newline | Token::Eof | Token::Colon) {
                             args.push(self.parse_expr());
                         }
                     }
@@ -499,6 +499,64 @@ impl Parser {
                     self.expect_newline();
                     None
                 }
+            }
+            Token::Load => {
+                self.advance();
+                let filename = if let Token::StringLit(s) = self.peek().clone() {
+                    self.advance(); s
+                } else { String::new() };
+                let addr = if self.peek() == &Token::Comma {
+                    self.advance();
+                    Some(self.parse_expr())
+                } else {
+                    None
+                };
+                self.expect_newline();
+                Some(Stmt::Load { filename, addr })
+            }
+            Token::Input => {
+                self.advance();
+                // optional string prompt followed by comma
+                let prompt = if let Token::StringLit(s) = self.peek().clone() {
+                    self.advance();
+                    if self.peek() == &Token::Comma { self.advance(); }
+                    Some(s)
+                } else { None };
+                let var = if let Token::Ident(name) = self.peek().clone() {
+                    self.advance(); name
+                } else { String::new() };
+                self.expect_newline();
+                Some(Stmt::Input { prompt, var })
+            }
+            Token::Fill => {
+                self.advance();
+                let addr = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let len = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let val = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::Fill { addr, len, val })
+            }
+            Token::Memcopy => {
+                self.advance();
+                let src = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let dst = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let len = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::Memcopy { src, dst, len })
+            }
+            Token::Irq => {
+                self.advance();
+                let handler = self.parse_expr();
+                let line = if self.peek() == &Token::Comma {
+                    self.advance();
+                    Some(self.parse_expr())
+                } else { None };
+                self.expect_newline();
+                Some(Stmt::Irq { handler, line })
             }
             Token::Data => {
                 self.advance();
