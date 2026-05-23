@@ -341,11 +341,11 @@ the program.
 ```basic
 sprite 0, x, y, $2000    # sprite 0: set X, Y position and data pointer
 sprite 0, x, y           # without data pointer (keeps existing)
-sprite_on  0             # enable sprite 0 ($D015 |= bit0)
-sprite_off 0             # disable sprite 0 ($D015 &= ~bit0)
-sprite_color 0, 7        # sprite 0 color = yellow ($D027)
-sprite_multicolor 0, on  # enable multicolor mode for sprite 0 ($D01C |= bit0)
-sprite_multicolor 0, off # disable multicolor mode ($D01C &= ~bit0)
+sprite on  0             # enable sprite 0 ($D015 |= bit0)
+sprite off 0             # disable sprite 0 ($D015 &= ~bit0)
+sprite color 0, 7        # sprite 0 color = yellow ($D027)
+sprite multicolor 0, on  # enable multicolor mode for sprite 0 ($D01C |= bit0)
+sprite multicolor 0, off # disable multicolor mode ($D01C &= ~bit0)
 var h = sprite_hit()     # sprite–sprite collision ($D01E, cleared on read)
 var b = sprite_bg_hit()  # sprite–background collision ($D01F, cleared on read)
 ```

@@ -1,0 +1,174 @@
+# sprite_orbit_demo.ub
+#
+# 8 hardware sprites in a circular orbit animation.
+# Inspired by the 32-sprite multiplexer by The Human Code Machine /
+# Masters' Design Group (1994). The original uses dynamic raster IRQs
+# and Y-sort to show 32 virtual sprites; UltimateBasic cannot set up
+# IRQ handlers, so this demo uses all 8 hardware sprites directly.
+#
+# Visual: 8 coloured balls chasing each other in a perfect circle,
+# driven by sin/cos from the built-in lookup table.
+
+cls
+print "8-SPRITE ORBIT DEMO"
+print "INSPIRED BY 32-SPR MUX"
+print "BY THE HUMAN CODE MACHINE"
+print ""
+print "PRESS ANY KEY..."
+var k = getch()
+cls
+color bg 0
+color border 0
+
+# ──────────────────────────────────────────────────────────────
+# Write a filled-circle ball sprite (24×21 px) to $2000
+# All 8 sprite pointers will point to the same shape.
+# Sprite pointer N lives at $07F8+N; value = address / 64.
+# $2000 / 64 = $80
+# ──────────────────────────────────────────────────────────────
+poke $2000, $00  ; row  0
+poke $2001, $3C
+poke $2002, $00
+poke $2003, $00  ; row  1
+poke $2004, $FF
+poke $2005, $00
+poke $2006, $03  ; row  2
+poke $2007, $FF
+poke $2008, $C0
+poke $2009, $07  ; row  3
+poke $200A, $FF
+poke $200B, $E0
+poke $200C, $0F  ; row  4
+poke $200D, $FF
+poke $200E, $F0
+poke $200F, $0F  ; row  5
+poke $2010, $FF
+poke $2011, $F0
+poke $2012, $1F  ; row  6
+poke $2013, $FF
+poke $2014, $F8
+poke $2015, $1F  ; row  7
+poke $2016, $FF
+poke $2017, $F8
+poke $2018, $1F  ; row  8
+poke $2019, $FF
+poke $201A, $F8
+poke $201B, $0F  ; row  9
+poke $201C, $FF
+poke $201D, $F0
+poke $201E, $0F  ; row 10
+poke $201F, $FF
+poke $2020, $F0
+poke $2021, $07  ; row 11
+poke $2022, $FF
+poke $2023, $E0
+poke $2024, $03  ; row 12
+poke $2025, $FF
+poke $2026, $C0
+poke $2027, $00  ; row 13
+poke $2028, $FF
+poke $2029, $00
+poke $202A, $00  ; row 14
+poke $202B, $3C
+poke $202C, $00
+poke $202D, $00  ; rows 15-20 (empty — explicit for uncleared RAM)
+poke $202E, $00
+poke $202F, $00
+poke $2030, $00
+poke $2031, $00
+poke $2032, $00
+poke $2033, $00
+poke $2034, $00
+poke $2035, $00
+poke $2036, $00
+poke $2037, $00
+poke $2038, $00
+poke $2039, $00
+poke $203A, $00
+poke $203B, $00
+poke $203C, $00
+poke $203D, $00
+poke $203E, $00
+poke $203F, $00  ; padding (64th byte, unused)
+
+# All 8 sprite pointers → $80 (= $2000 / 64)
+poke $07F8, $80
+poke $07F9, $80
+poke $07FA, $80
+poke $07FB, $80
+poke $07FC, $80
+poke $07FD, $80
+poke $07FE, $80
+poke $07FF, $80
+
+# ──────────────────────────────────────────────────────────────
+# Sprite colours — 8 distinct non-black C64 colours
+# ──────────────────────────────────────────────────────────────
+sprite color 0, 1   ; white
+sprite color 1, 10  ; light red
+sprite color 2, 3   ; cyan
+sprite color 3, 4   ; purple
+sprite color 4, 5   ; green
+sprite color 5, 6   ; blue
+sprite color 6, 7   ; yellow
+sprite color 7, 14  ; light blue
+
+# Enable all 8 hardware sprites
+sprite on 0
+sprite on 1
+sprite on 2
+sprite on 3
+sprite on 4
+sprite on 5
+sprite on 6
+sprite on 7
+
+# ──────────────────────────────────────────────────────────────
+# Circular orbit using sin/cos:
+#   X(i) = sin(angle + i*32)
+#   Y(i) = sin(angle + i*32 + 64)   ← +64 = quarter turn = cosine
+#
+# sin() returns 0-255, centre 128.  The orbit is centred at
+# screen-pos (128, ~128) with radius 127 px.
+# 8 sprites spaced 32 apart (= 256/8) chase each other around
+# the same circle — the visual equivalent of the mux effect.
+#
+# Exit: non-blocking key check via keyboard-buffer count $C6.
+# ──────────────────────────────────────────────────────────────
+var angle = 0
+loop
+    sprite 0, sin(angle),       sin(angle + 64)
+    sprite 1, sin(angle + 32),  sin(angle + 96)
+    sprite 2, sin(angle + 64),  sin(angle + 128)
+    sprite 3, sin(angle + 96),  sin(angle + 160)
+    sprite 4, sin(angle + 128), sin(angle + 192)
+    sprite 5, sin(angle + 160), sin(angle + 224)
+    sprite 6, sin(angle + 192), sin(angle)        ; +256 wraps → sin(angle)
+    sprite 7, sin(angle + 224), sin(angle + 32)   ; +288 wraps → sin(angle+32)
+
+    angle = angle + 1
+
+    ; ~50 raster lines ≈ 1/6 frame delay → smooth ~1 s per orbit cycle
+    wait 50
+
+    if peek($C6) != 0 then break end
+end
+
+# ──────────────────────────────────────────────────────────────
+# Clean up and return to BASIC
+# ──────────────────────────────────────────────────────────────
+sprite off 0
+sprite off 1
+sprite off 2
+sprite off 3
+sprite off 4
+sprite off 5
+sprite off 6
+sprite off 7
+
+var drain = getch()
+color bg 6
+color border 14
+cls
+print "DONE."
+bye

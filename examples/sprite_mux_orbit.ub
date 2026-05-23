@@ -1,0 +1,209 @@
+# sprite_mux_orbit.ub
+#
+# 24 orbiting sprites using 8 hardware sprites repositioned at 3 raster windows.
+#
+# Technique (same as 32-sprite mux, simplified):
+#   SEI
+#   wait raster 43  → set 8 sprites to ring-1 positions (Y ~64-95)
+#   wait raster 119 → reposition same 8 to ring-2 positions (Y ~128-159)
+#   wait raster 182 → reposition same 8 to ring-3 positions (Y ~205-236)
+#   CLI
+#   update angle, check Q key, loop
+#
+# Each ring is a circular orbit driven by sin/cos:
+#   X = sin(angle + sprite_phase)
+#   Y = ring_base + (sin(angle + sprite_phase + 64) >> 3)   ; small vertical wobble
+# The 8 sprites are evenly spread around the circle (phase step = 32 = 256/8).
+
+cls
+print "24-SPRITE MUX ORBIT"
+print "3 RINGS  x  8 SPRITES"
+print ""
+print "Q = QUIT"
+print ""
+print "PRESS KEY TO START..."
+var k = getch()
+cls
+color bg 0
+color border 0
+
+# ── ball sprite data at $2000 ────────────────────────────────────────────────
+poke $2000, $00  ; row 0
+poke $2001, $3C
+poke $2002, $00
+poke $2003, $00  ; row 1
+poke $2004, $FF
+poke $2005, $00
+poke $2006, $03  ; row 2
+poke $2007, $FF
+poke $2008, $C0
+poke $2009, $07  ; row 3
+poke $200A, $FF
+poke $200B, $E0
+poke $200C, $0F  ; row 4
+poke $200D, $FF
+poke $200E, $F0
+poke $200F, $0F  ; row 5
+poke $2010, $FF
+poke $2011, $F0
+poke $2012, $1F  ; row 6
+poke $2013, $FF
+poke $2014, $F8
+poke $2015, $1F  ; row 7
+poke $2016, $FF
+poke $2017, $F8
+poke $2018, $1F  ; row 8
+poke $2019, $FF
+poke $201A, $F8
+poke $201B, $0F  ; row 9
+poke $201C, $FF
+poke $201D, $F0
+poke $201E, $0F  ; row 10
+poke $201F, $FF
+poke $2020, $F0
+poke $2021, $07  ; row 11
+poke $2022, $FF
+poke $2023, $E0
+poke $2024, $03  ; row 12
+poke $2025, $FF
+poke $2026, $C0
+poke $2027, $00  ; row 13
+poke $2028, $FF
+poke $2029, $00
+poke $202A, $00  ; row 14
+poke $202B, $3C
+poke $202C, $00
+poke $202D, $00  ; rows 15-20 (empty)
+poke $202E, $00
+poke $202F, $00
+poke $2030, $00
+poke $2031, $00
+poke $2032, $00
+poke $2033, $00
+poke $2034, $00
+poke $2035, $00
+poke $2036, $00
+poke $2037, $00
+poke $2038, $00
+poke $2039, $00
+poke $203A, $00
+poke $203B, $00
+poke $203C, $00
+poke $203D, $00
+poke $203E, $00
+poke $203F, $00
+
+# ── all 8 sprite pointers → $80  ($2000 / 64) ───────────────────────────────
+poke $07F8, $80
+poke $07F9, $80
+poke $07FA, $80
+poke $07FB, $80
+poke $07FC, $80
+poke $07FD, $80
+poke $07FE, $80
+poke $07FF, $80
+
+poke $D010, 0   ; all X MSBs = 0  (all sprites X < 256)
+
+# ── sprite colours (each sprite keeps its colour across all 3 rings) ─────────
+sprite color 0, 1   ; white
+sprite color 1, 10  ; light red
+sprite color 2, 3   ; cyan
+sprite color 3, 4   ; purple
+sprite color 4, 5   ; green
+sprite color 5, 6   ; blue
+sprite color 6, 7   ; yellow
+sprite color 7, 14  ; light blue
+
+sprite on 0
+sprite on 1
+sprite on 2
+sprite on 3
+sprite on 4
+sprite on 5
+sprite on 6
+sprite on 7
+
+# ── main loop ────────────────────────────────────────────────────────────────
+var angle = 0
+
+label gameloop
+
+  asm $78   ; SEI — prevent KERNAL IRQ from delaying wait raster
+
+  ; ── Ring 1  (Y 64-95, raster window after line 43) ───────────────────────
+  ; Sprite N: X = sin(angle + N*32), Y = 64 + (sin(angle + N*32 + 64) >> 3)
+  wait raster 43
+
+  poke $D000, sin(angle)
+  poke $D001, 64 + (sin(angle + 64) shr 3)
+  poke $D002, sin(angle + 32)
+  poke $D003, 64 + (sin(angle + 96) shr 3)
+  poke $D004, sin(angle + 64)
+  poke $D005, 64 + (sin(angle + 128) shr 3)
+  poke $D006, sin(angle + 96)
+  poke $D007, 64 + (sin(angle + 160) shr 3)
+  poke $D008, sin(angle + 128)
+  poke $D009, 64 + (sin(angle + 192) shr 3)
+  poke $D00A, sin(angle + 160)
+  poke $D00B, 64 + (sin(angle + 224) shr 3)
+  poke $D00C, sin(angle + 192)
+  poke $D00D, 64 + (sin(angle) shr 3)
+  poke $D00E, sin(angle + 224)
+  poke $D00F, 64 + (sin(angle + 32) shr 3)
+
+  ; ── Ring 2  (Y 128-159, raster window after ring-1 finishes at ~116) ─────
+  ; Phase offset +16 so rings have different orbit alignments.
+  wait raster 119
+
+  poke $D000, sin(angle + 16)
+  poke $D001, 128 + (sin(angle + 80) shr 3)
+  poke $D002, sin(angle + 48)
+  poke $D003, 128 + (sin(angle + 112) shr 3)
+  poke $D004, sin(angle + 80)
+  poke $D005, 128 + (sin(angle + 144) shr 3)
+  poke $D006, sin(angle + 112)
+  poke $D007, 128 + (sin(angle + 176) shr 3)
+  poke $D008, sin(angle + 144)
+  poke $D009, 128 + (sin(angle + 208) shr 3)
+  poke $D00A, sin(angle + 176)
+  poke $D00B, 128 + (sin(angle + 240) shr 3)
+  poke $D00C, sin(angle + 208)
+  poke $D00D, 128 + (sin(angle + 16) shr 3)
+  poke $D00E, sin(angle + 240)
+  poke $D00F, 128 + (sin(angle + 48) shr 3)
+
+  ; ── Ring 3  (Y 205-236, raster window after ring-2 finishes at ~180) ─────
+  ; Phase offset +8. Min Y = 205 so ring-3 starts after ring-2 is fully gone.
+  wait raster 182
+
+  poke $D000, sin(angle + 8)
+  poke $D001, 205 + (sin(angle + 72) shr 3)
+  poke $D002, sin(angle + 40)
+  poke $D003, 205 + (sin(angle + 104) shr 3)
+  poke $D004, sin(angle + 72)
+  poke $D005, 205 + (sin(angle + 136) shr 3)
+  poke $D006, sin(angle + 104)
+  poke $D007, 205 + (sin(angle + 168) shr 3)
+  poke $D008, sin(angle + 136)
+  poke $D009, 205 + (sin(angle + 200) shr 3)
+  poke $D00A, sin(angle + 168)
+  poke $D00B, 205 + (sin(angle + 232) shr 3)
+  poke $D00C, sin(angle + 200)
+  poke $D00D, 205 + (sin(angle + 8) shr 3)
+  poke $D00E, sin(angle + 232)
+  poke $D00F, 205 + (sin(angle + 40) shr 3)
+
+  ; ── Q key: direct CIA1 matrix read (still inside SEI) ───────────────────
+  poke $DC00, 127           ; select keyboard row 7 (Q lives here)
+  var qraw = peek($DC01)    ; bit 6 = Q key, active low
+  poke $DC00, 255           ; restore
+
+  asm $58   ; CLI — deferred KERNAL IRQ fires immediately here
+
+  var qbit = qraw and 64
+  if qbit == 0 then bye end ; Q pressed → exit
+
+  angle = angle + 1
+
+  goto gameloop

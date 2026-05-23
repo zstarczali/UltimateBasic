@@ -1,0 +1,73 @@
+# plasma_demo.ub
+# Plasma-inspired bitmap effect - a homage to efekt.asm (testicle/payday)
+#
+# efekt.asm uses cycle-exact IRQ + per-scanline D018 switching (AFLI)
+# which is beyond UltimateBasic. Instead we create a plasma-like image
+# by drawing many overlapping circles at sin/cos-computed positions,
+# then cycle the border color as a simple raster-bar animation.
+
+cls
+print "PLASMA DEMO"
+print "HOMAGE TO EFEKT.ASM BY TESTICLE/PAYDAY"
+print ""
+print "PRESS ANY KEY..."
+var k = getch()
+
+# Switch to hires bitmap, clear it, then turn display on
+graphics on
+gcls
+color border 0
+color bg 0
+display on
+
+# ──────────────────────────────────────────────────────────────
+# Phase 1: concentric ripple rings at sin/cos-spread centres
+# 24 centres × 7 rings = 168 circles
+# ──────────────────────────────────────────────────────────────
+var angle = 0
+loop 24
+    var cx = sin(angle)              ; centre x: sin gives 0-255
+    var cy = min(sin(angle + 64), 199)   ; centre y: capped at 199
+    var r = 6
+    loop 7
+        circle cx, cy, r
+        r = r + 9                    ; rings at r=6,15,24,33,42,51,60
+    end
+    angle = angle + 11               ; 256/24 ≈ 11 → spread evenly
+end
+
+# ──────────────────────────────────────────────────────────────
+# Phase 2: diagonal lines connecting opposite sin points
+# adds a "net" texture over the circles
+# ──────────────────────────────────────────────────────────────
+angle = 0
+loop 20
+    var x1 = sin(angle)
+    var y1 = min(sin(angle + 64), 199)
+    var x2 = sin(angle + 128)        ; sin(angle+128) ≈ -sin(angle), shifted
+    var y2 = min(sin(angle + 192), 199)
+    line x1, y1, x2, y2
+    angle = angle + 13
+end
+
+# ──────────────────────────────────────────────────────────────
+# Phase 3: border-color animation while the image is visible
+# Cycles through all 16 C64 colours, ~4 full cycles total
+# ──────────────────────────────────────────────────────────────
+loop 4
+    var col = 0
+    loop 16
+        color border col
+        wait 100                     ; ~100 raster lines ≈ 6 ms per step
+        col = col + 1
+    end
+end
+
+color border 0
+
+# ──────────────────────────────────────────────────────────────
+# Done — wait for key then return to text mode
+# ──────────────────────────────────────────────────────────────
+var k2 = getch()
+graphics off
+bye

@@ -1452,25 +1452,19 @@ impl Codegen {
         self.emit(0xB0);
         let bcs_skip = self.code.len(); self.emit(0x00); // BCS skip
 
-        // X bounds: skip if plot_x >= 320 ($0140)
-        self.emit(0xA5); self.emit(pzp + 1);   // LDA x_hi
-        self.emit(0xC9); self.emit(0x01);       // CMP #1
-        self.emit(0x90);
-        let bcc_vis = self.code.len(); self.emit(0x00);  // BCC visible (hi=0)
-        self.emit(0xD0);
-        let bne_skip2 = self.code.len(); self.emit(0x00); // BNE skip (hi>1)
-        self.emit(0xA5); self.emit(pzp + 0);   // LDA x_lo
-        self.emit(0xC9); self.emit(0x40);       // CMP #64  (64+256=320)
+        // X bounds: skip if plot_x >= 320
+        // Reference algorithm: CMP X_lo,#$40; LDA X_hi (no carry change); SBC #$01; BCS skip
+        self.emit(0xA5); self.emit(pzp + 0);   // LDA X_lo
+        self.emit(0xC9); self.emit(0x40);       // CMP #<320  ($40)
+        self.emit(0xA5); self.emit(pzp + 1);   // LDA X_hi  (carry preserved)
+        self.emit(0xE9); self.emit(0x01);       // SBC #>320  ($01)
         self.emit(0xB0);
-        let bcs_skip_x = self.code.len(); self.emit(0x00); // BCS skip
+        let bcs_skip_x = self.code.len(); self.emit(0x00); // BCS skip (X >= 320)
 
-        let vis_addr = self.current_addr();
-        self.patch_bxx(bcc_vis, vis_addr);
         self.emit(0x20); self.emit16(plot_helper_addr); // JSR plot helper
 
         let skip_addr = self.current_addr();
         self.patch_bxx(bcs_skip,   skip_addr);
-        self.patch_bxx(bne_skip2,  skip_addr);
         self.patch_bxx(bcs_skip_x, skip_addr);
         self.emit(0x60); // RTS
     }
@@ -2075,9 +2069,9 @@ impl Codegen {
                     let loop_start = self.current_addr();
                     self.gen_stmts(body);
                     self.emit(0xC6); self.emit(cnt);   // DEC cnt
-                    self.emit(0xD0);                    // BNE loop_start
-                    let back = loop_start as i32 - self.current_addr() as i32 - 1;
-                    self.emit(back as u8);
+                    // Use BEQ+JMP so any body size works (BNE only reaches ±128 bytes)
+                    self.emit(0xF0); self.emit(0x03);  // BEQ +3 → skip JMP when done
+                    self.emit(0x4C); self.emit16(loop_start); // JMP loop_start
                 }
 
                 let loop_end = self.current_addr();

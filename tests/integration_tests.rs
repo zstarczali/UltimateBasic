@@ -226,7 +226,9 @@ fn counted_loop_has_dec_bne() {
     let prg = compile_raw("loop 3\n  var x = 1\nend");
     let bytes = &prg[2..];
     assert!(bytes.contains(&0xC6)); // DEC zp
-    assert!(bytes.contains(&0xD0)); // BNE
+    // Now uses BEQ+JMP (works for any body size), not BNE
+    assert!(bytes.contains(&0xF0)); // BEQ (skip JMP when cnt==0)
+    assert!(bytes.contains(&0x4C)); // JMP loop_start
 }
 
 #[test]
