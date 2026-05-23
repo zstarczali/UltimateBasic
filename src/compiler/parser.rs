@@ -451,11 +451,27 @@ impl Parser {
             }
             Token::Plot => {
                 self.advance();
-                let x = self.parse_expr();
-                if self.peek() == &Token::Comma { self.advance(); }
-                let y = self.parse_expr();
-                self.expect_newline();
-                Some(Stmt::Plot(x, y))
+                if matches!(self.peek(), Token::Erase) {
+                    self.advance();
+                    let x = self.parse_expr();
+                    if self.peek() == &Token::Comma { self.advance(); }
+                    let y = self.parse_expr();
+                    self.expect_newline();
+                    Some(Stmt::PlotErase(x, y))
+                } else if matches!(self.peek(), Token::Xor) {
+                    self.advance();
+                    let x = self.parse_expr();
+                    if self.peek() == &Token::Comma { self.advance(); }
+                    let y = self.parse_expr();
+                    self.expect_newline();
+                    Some(Stmt::PlotXor(x, y))
+                } else {
+                    let x = self.parse_expr();
+                    if self.peek() == &Token::Comma { self.advance(); }
+                    let y = self.parse_expr();
+                    self.expect_newline();
+                    Some(Stmt::Plot(x, y))
+                }
             }
             Token::Circle => {
                 self.advance();
@@ -513,6 +529,43 @@ impl Parser {
                 };
                 self.expect_newline();
                 Some(Stmt::Load { filename, addr })
+            }
+            Token::Save => {
+                self.advance();
+                let filename = if let Token::StringLit(s) = self.peek().clone() {
+                    self.advance(); s
+                } else { String::new() };
+                let (addr, len) = if self.peek() == &Token::Comma {
+                    self.advance();
+                    let a = self.parse_expr();
+                    if self.peek() == &Token::Comma { self.advance(); }
+                    let l = self.parse_expr();
+                    (Some(a), Some(l))
+                } else { (None, None) };
+                self.expect_newline();
+                Some(Stmt::Save { filename, addr, len })
+            }
+            Token::Cursor => {
+                self.advance();
+                let x = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let y = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::Cursor { x, y })
+            }
+            Token::Repeat => {
+                self.advance();
+                self.expect_newline();
+                self.skip_newlines();
+                let mut body = vec![];
+                while !matches!(self.peek(), Token::Until | Token::Eof) {
+                    if let Some(s) = self.parse_stmt() { body.push(s); }
+                    self.skip_newlines();
+                }
+                if matches!(self.peek(), Token::Until) { self.advance(); }
+                let cond = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::RepeatLoop(body, cond))
             }
             Token::Input => {
                 self.advance();
@@ -632,6 +685,31 @@ impl Parser {
                         let on = matches!(self.advance(), Token::On);
                         self.expect_newline();
                         Some(Stmt::SpriteMulticolor { id, on })
+                    }
+                    Token::Expand => {
+                        self.advance();
+                        // next token: ident "x" or "y"
+                        let axis_x = match self.advance() {
+                            Token::Ident(s) => s.to_lowercase() == "x",
+                            _ => true, // default to x on unexpected token
+                        };
+                        let id = self.parse_expr();
+                        if self.peek() == &Token::Comma { self.advance(); }
+                        let on = matches!(self.advance(), Token::On);
+                        self.expect_newline();
+                        if axis_x {
+                            Some(Stmt::SpriteExpandX { id, on })
+                        } else {
+                            Some(Stmt::SpriteExpandY { id, on })
+                        }
+                    }
+                    Token::Priority => {
+                        self.advance();
+                        let id = self.parse_expr();
+                        if self.peek() == &Token::Comma { self.advance(); }
+                        let on = matches!(self.advance(), Token::On);
+                        self.expect_newline();
+                        Some(Stmt::SpritePriority { id, on })
                     }
                     _ => {
                         let id = self.parse_expr();
@@ -809,6 +887,7 @@ impl Parser {
             let op = match self.peek() {
                 Token::Star  => BinOp::Mul,
                 Token::Slash => BinOp::Div,
+                Token::Mod   => BinOp::Mod,
                 _ => break,
             };
             self.advance();

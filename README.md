@@ -304,11 +304,20 @@ var a = abs(x - 20)      # two's-complement absolute value
 var b = min(x, 39)       # 8-bit minimum
 var c = max(x, 0)        # 8-bit maximum
 var s = sgn(score)       # 0 = zero, 1 = positive, $FF = negative
-var r = rnd()            # LCG pseudo-random 0-255; seed from raster linevar s = sin(angle)       # sine: angle 0-255 (full circle), returns 0-255 (center=128)
+var r = rnd()            # LCG pseudo-random 0-255; seed from raster line
+var s = sin(angle)       # sine: angle 0-255 (full circle), returns 0-255 (center=128)
 var c = cos(angle)       # cosine = sin(angle+64)
 
 print hex(n)             # print as 2-digit uppercase hex
 print bin(n)             # print as 8-bit binary string
+```
+
+### String functions
+
+```basic
+var n = len(msg)         # length of null-terminated string var (0–255)
+var c = asc(msg)         # PETSCII code of first character (0 if empty)
+var c = asc("A")         # compile-time: constant PETSCII code
 ```
 
 ### REU (RAM Expansion Unit)
@@ -368,7 +377,7 @@ asm {
 ### String ↔ integer
 
 ```basic
-int_to_str score, $0340  # writes "042\0" at $0340 (always 3 digits)
+numstr score, $0340      # writes "042\0" at $0340 (always 3 digits, zero-padded)
 var n = str_to_int("42") # compile-time: Expr::Number(42)
 ```
 
