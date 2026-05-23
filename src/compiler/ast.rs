@@ -6,6 +6,7 @@ pub enum Expr {
     BinOp(Box<Expr>, BinOp, Box<Expr>),
     Not(Box<Expr>),
     Getch,
+    Inkey,    // inkey() — non-blocking $FFE4; 0 = no key, else PETSCII code
     ReuPresent,  // reu_present() — 1 if REU detected, 0 otherwise
     Joy(u8),  // joy(1) or joy(2) — read joystick port, returns inverted bits 0-4
     Sin(Box<Expr>),   // sin(angle) — 8-bit angle 0-255, returns 0-255 (center=128)
@@ -20,8 +21,10 @@ pub enum Expr {
     Sgn(Box<Expr>),
     ArrayGet(String, Box<Expr>), // arr[idx]
     ChrStr(Box<Expr>),           // chr$(n) — character with PETSCII code n
-    SpriteHit,                   // sprite_hit()    — read $D01E (sprite–sprite collision, cleared on read)
-    SpriteBgHit,                 // sprite_bg_hit() — read $D01F (sprite–background collision, cleared on read)
+    SpriteHit,                   // sprhit()    — read $D01E (sprite–sprite collision, cleared on read)
+    SpriteBgHit,                 // sprbghit() — read $D01F (sprite–background collision, cleared on read)
+    StrLen(Box<Expr>),           // len(s)  — length of null-terminated string var, 0–255
+    Asc(Box<Expr>),              // asc(s)  — PETSCII code of first character (0 if empty)
 }
 
 #[derive(Debug, Clone)]
@@ -73,12 +76,18 @@ pub enum Stmt {
     Goto(String),
     Poke(Expr, Expr),
     Plot(Expr, Expr), // plot x, y — set pixel in bitmap mode
+    Circle { x: Expr, y: Expr, radius: Expr }, // circle x,y,r — midpoint circle using bitmap plot helper
     Line { x1: Expr, y1: Expr, x2: Expr, y2: Expr }, // line x1,y1,x2,y2 — Bresenham line
     Gcls,             // gcls — clear bitmap screen
     Bye,              // bye/exit — cls then RTS back to BASIC
     Incbin(String),   // incbin "file" — embed raw binary file bytes inline
     Data(Vec<Expr>),  // data 1,2,3 — constant byte table (read with 'read')
     Read(String),     // read varname — load next data byte into variable
+    Load { filename: String, addr: Option<Expr> }, // load "file" [, addr] — KERNAL LOAD from device 8
+    Input { prompt: Option<String>, var: String }, // input ["prompt",] var — BASIN line input
+    Fill { addr: Expr, len: Expr, val: Expr },     // fill addr, len, val — memory block fill
+    Memcopy { src: Expr, dst: Expr, len: Expr },   // memcopy src, dst, len — memory block copy
+    Irq { handler: Expr, line: Option<Expr> },     // irq handler [, raster_line] — raster IRQ setup
     Reu { op: ReuOp, c64_addr: Expr, reu_bank: Expr, reu_addr: Expr, length: Expr },
     // reu stash/fetch/swap c64_addr, bank, reu_addr, length — DMA transfer to/from REU
     Wait { raster_target: bool, value: Expr }, // wait N (raster lines) / wait raster N (specific line)

@@ -6,15 +6,24 @@ pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
     consts: std::collections::HashMap<String, i16>,
+    base_dir: Option<std::path::PathBuf>,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0, consts: std::collections::HashMap::new() }
+        Self { tokens, pos: 0, consts: std::collections::HashMap::new(), base_dir: None }
+    }
+
+    pub fn new_with_base(tokens: Vec<Token>, base_dir: std::path::PathBuf) -> Self {
+        Self { tokens, pos: 0, consts: std::collections::HashMap::new(), base_dir: Some(base_dir) }
     }
 
     pub fn new_with_consts(tokens: Vec<Token>, consts: std::collections::HashMap<String, i16>) -> Self {
-        Self { tokens, pos: 0, consts }
+        Self { tokens, pos: 0, consts, base_dir: None }
+    }
+
+    pub fn new_with_consts_and_base(tokens: Vec<Token>, consts: std::collections::HashMap<String, i16>, base_dir: Option<std::path::PathBuf>) -> Self {
+        Self { tokens, pos: 0, consts, base_dir }
     }
 
     fn peek(&self) -> &Token {
@@ -28,7 +37,7 @@ impl Parser {
     }
 
     fn skip_newlines(&mut self) {
-        while self.peek() == &Token::Newline {
+        while matches!(self.peek(), Token::Newline | Token::Colon) {
             self.advance();
         }
     }
@@ -48,17 +57,26 @@ impl Parser {
                 self.advance(); // consume 'include'
                 if let Token::StringLit(path) = self.peek().clone() {
                     self.advance();
-                    match std::fs::read_to_string(&path) {
+                    // Resolve relative to the source file's directory if available,
+                    // otherwise fall back to CWD.
+                    let resolved = if let Some(ref base) = self.base_dir {
+                        base.join(&path)
+                    } else {
+                        std::path::PathBuf::from(&path)
+                    };
+                    // Sub-parser inherits the same base_dir so nested includes work.
+                    let sub_base = resolved.parent().map(|p| p.to_path_buf());
+                    match std::fs::read_to_string(&resolved) {
                         Ok(src) => {
                             let mut lex = super::lexer::Lexer::new(&src);
                             let toks = lex.tokenize();
                             let consts = self.consts.clone();
-                            let mut sub = Parser::new_with_consts(toks, consts);
+                            let mut sub = Parser::new_with_consts_and_base(toks, consts, sub_base);
                             let sub_stmts = sub.parse();
                             self.consts.extend(sub.consts.into_iter());
                             stmts.extend(sub_stmts);
                         }
-                        Err(e) => eprintln!("include '{}': {}", path, e),
+                        Err(e) => eprintln!("include '{}': {}", resolved.display(), e),
                     }
                 }
                 self.expect_newline();
@@ -200,12 +218,12 @@ impl Parser {
             Token::Print => {
                 self.advance();
                 let mut args = vec![];
-                // Collect comma-separated exprs until end of line
-                if !matches!(self.peek(), Token::Newline | Token::Eof) {
+                // Collect comma-separated exprs until end of line or colon separator
+                if !matches!(self.peek(), Token::Newline | Token::Eof | Token::Colon) {
                     args.push(self.parse_expr());
                     while self.peek() == &Token::Comma {
                         self.advance();
-                        if !matches!(self.peek(), Token::Newline | Token::Eof) {
+                        if !matches!(self.peek(), Token::Newline | Token::Eof | Token::Colon) {
                             args.push(self.parse_expr());
                         }
                     }
@@ -348,7 +366,7 @@ impl Parser {
                 };
                 Some(Stmt::AsmBytes(bytes))
             }
-            Token::IntToStr => {
+            Token::NumStr => {
                 self.advance();
                 let var = if let Token::Ident(n) = self.advance() { n } else { return None; };
                 if self.peek() == &Token::Comma { self.advance(); }
@@ -439,6 +457,16 @@ impl Parser {
                 self.expect_newline();
                 Some(Stmt::Plot(x, y))
             }
+            Token::Circle => {
+                self.advance();
+                let x = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let y = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let radius = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::Circle { x, y, radius })
+            }
             Token::Line => {
                 self.advance();
                 let x1 = self.parse_expr();
@@ -471,6 +499,64 @@ impl Parser {
                     self.expect_newline();
                     None
                 }
+            }
+            Token::Load => {
+                self.advance();
+                let filename = if let Token::StringLit(s) = self.peek().clone() {
+                    self.advance(); s
+                } else { String::new() };
+                let addr = if self.peek() == &Token::Comma {
+                    self.advance();
+                    Some(self.parse_expr())
+                } else {
+                    None
+                };
+                self.expect_newline();
+                Some(Stmt::Load { filename, addr })
+            }
+            Token::Input => {
+                self.advance();
+                // optional string prompt followed by comma
+                let prompt = if let Token::StringLit(s) = self.peek().clone() {
+                    self.advance();
+                    if self.peek() == &Token::Comma { self.advance(); }
+                    Some(s)
+                } else { None };
+                let var = if let Token::Ident(name) = self.peek().clone() {
+                    self.advance(); name
+                } else { String::new() };
+                self.expect_newline();
+                Some(Stmt::Input { prompt, var })
+            }
+            Token::Fill => {
+                self.advance();
+                let addr = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let len = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let val = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::Fill { addr, len, val })
+            }
+            Token::Memcopy => {
+                self.advance();
+                let src = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let dst = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let len = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::Memcopy { src, dst, len })
+            }
+            Token::Irq => {
+                self.advance();
+                let handler = self.parse_expr();
+                let line = if self.peek() == &Token::Comma {
+                    self.advance();
+                    Some(self.parse_expr())
+                } else { None };
+                self.expect_newline();
+                Some(Stmt::Irq { handler, line })
             }
             Token::Data => {
                 self.advance();
@@ -518,63 +604,69 @@ impl Parser {
             }
             Token::Sprite => {
                 self.advance();
-                let id = self.parse_expr();
-                if self.peek() == &Token::Comma { self.advance(); }
-                let x = self.parse_expr();
-                if self.peek() == &Token::Comma { self.advance(); }
-                let y = self.parse_expr();
-                let data_addr = if self.peek() == &Token::Comma {
-                    self.advance();
-                    Some(self.parse_expr())
-                } else {
-                    None
-                };
-                self.expect_newline();
-                Some(Stmt::Sprite { id, x, y, data_addr })
+                match self.peek() {
+                    Token::On => {
+                        self.advance();
+                        let id = self.parse_expr();
+                        self.expect_newline();
+                        Some(Stmt::SpriteOn { id })
+                    }
+                    Token::Off => {
+                        self.advance();
+                        let id = self.parse_expr();
+                        self.expect_newline();
+                        Some(Stmt::SpriteOff { id })
+                    }
+                    Token::Color => {
+                        self.advance();
+                        let id = self.parse_expr();
+                        if self.peek() == &Token::Comma { self.advance(); }
+                        let color = self.parse_expr();
+                        self.expect_newline();
+                        Some(Stmt::SpriteColor { id, color })
+                    }
+                    Token::Multi => {
+                        self.advance();
+                        let id = self.parse_expr();
+                        if self.peek() == &Token::Comma { self.advance(); }
+                        let on = matches!(self.advance(), Token::On);
+                        self.expect_newline();
+                        Some(Stmt::SpriteMulticolor { id, on })
+                    }
+                    _ => {
+                        let id = self.parse_expr();
+                        if self.peek() == &Token::Comma { self.advance(); }
+                        let x = self.parse_expr();
+                        if self.peek() == &Token::Comma { self.advance(); }
+                        let y = self.parse_expr();
+                        let data_addr = if self.peek() == &Token::Comma {
+                            self.advance();
+                            Some(self.parse_expr())
+                        } else {
+                            None
+                        };
+                        self.expect_newline();
+                        Some(Stmt::Sprite { id, x, y, data_addr })
+                    }
+                }
             }
-            Token::SpriteOn => {
+            Token::Sprdef => {
                 self.advance();
-                let id = self.parse_expr();
-                self.expect_newline();
-                Some(Stmt::SpriteOn { id })
-            }
-            Token::SpriteOff => {
-                self.advance();
-                let id = self.parse_expr();
-                self.expect_newline();
-                Some(Stmt::SpriteOff { id })
-            }
-            Token::SpriteColor => {
-                self.advance();
-                let id = self.parse_expr();
-                if self.peek() == &Token::Comma { self.advance(); }
-                let color = self.parse_expr();
-                self.expect_newline();
-                Some(Stmt::SpriteColor { id, color })
-            }
-            Token::SpriteMulticolor => {
-                self.advance();
-                let id = self.parse_expr();
-                if self.peek() == &Token::Comma { self.advance(); }
-                let on = matches!(self.advance(), Token::On);
-                self.expect_newline();
-                Some(Stmt::SpriteMulticolor { id, on })
-            }
-            Token::SpriteDef => {
-                self.advance();
-                // id: compile-time constant 0-7
                 let id = match self.parse_expr() {
                     Expr::Number(n) => n as u8,
-                    _ => panic!("sprite_def: id must be a constant"),
+                    _ => panic!("sprdef: id must be a constant"),
                 };
-                // bytes: comma-separated constant values (1-63; shorter → zero-padded)
+                self.expect_newline();
+                // bytes: newline-separated rows, comma-separated within rows, until 'end'
                 let mut bytes: Vec<u8> = Vec::new();
-                while self.peek() == &Token::Comma {
-                    self.advance();
+                loop {
+                    while self.peek() == &Token::Newline { self.advance(); }
+                    if self.peek() == &Token::End { self.advance(); break; }
                     match self.parse_expr() {
                         Expr::Number(n) => bytes.push(n as u8),
-                        _ => panic!("sprite_def: byte values must be constants"),
+                        _ => panic!("sprdef: byte values must be constants"),
                     }
+                    if self.peek() == &Token::Comma { self.advance(); }
                 }
                 self.expect_newline();
                 Some(Stmt::SpriteDef { id, bytes })
@@ -763,7 +855,24 @@ impl Parser {
                 if self.peek() == &Token::RParen { self.advance(); } // skip )
                 Expr::Getch
             }
-            Token::ReuPresent => {
+            Token::Inkey => {
+                if self.peek() == &Token::LParen { self.advance(); } // skip (
+                if self.peek() == &Token::RParen { self.advance(); } // skip )
+                Expr::Inkey
+            }
+            Token::StrLen => {
+                if self.peek() == &Token::LParen { self.advance(); }
+                let arg = self.parse_expr();
+                if self.peek() == &Token::RParen { self.advance(); }
+                Expr::StrLen(Box::new(arg))
+            }
+            Token::Asc => {
+                if self.peek() == &Token::LParen { self.advance(); }
+                let arg = self.parse_expr();
+                if self.peek() == &Token::RParen { self.advance(); }
+                Expr::Asc(Box::new(arg))
+            }
+            Token::ReuDet => {
                 if self.peek() == &Token::LParen { self.advance(); } // skip (
                 if self.peek() == &Token::RParen { self.advance(); } // skip )
                 Expr::ReuPresent
@@ -1211,10 +1320,10 @@ mod tests {
         assert!(matches!(&stmts[0], Stmt::AsmBytes(b) if b.len() == 2));
     }
 
-    // ── IntToStr ─────────────────────────────────────────────────────────
+    // ── IntToStr (numstr) ────────────────────────────────────────────────
 
-    #[test] fn int_to_str() {
-        let stmts = parse("int_to_str score, $0340");
+    #[test] fn numstr_stmt() {
+        let stmts = parse("numstr score, $0340");
         assert!(matches!(&stmts[0], Stmt::IntToStr { var, addr } if var == "score" && *addr == 0x0340));
     }
 
@@ -1354,6 +1463,14 @@ mod tests {
     #[test] fn plot_stmt_vars() {
         let stmts = parse("plot x, y");
         assert!(matches!(&stmts[0], Stmt::Plot(Expr::Var(a), Expr::Var(b)) if a == "x" && b == "y"));
+    }
+
+    #[test] fn circle_stmt() {
+        let stmts = parse("circle 160, 100, 32");
+        assert!(matches!(
+            &stmts[0],
+            Stmt::Circle { x: Expr::Number(160), y: Expr::Number(100), radius: Expr::Number(32) }
+        ));
     }
 
     #[test] fn gcls_stmt() {

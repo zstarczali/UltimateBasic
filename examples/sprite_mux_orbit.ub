@@ -1,0 +1,215 @@
+# sprite_mux_orbit.ub — 24-sprite multiplexer orbit
+#
+# 8 hardware sprites repositioned at 3 raster windows per frame.
+#
+# FIX (v2): original X = sin() (0-255) was full-screen width → 8 evenly-spaced
+# sprites form a symmetric octagon that looks STATIC (no visible rotation).
+# v2 uses smaller centered orbit + pulsing radius.
+#
+# Orbit formula per sprite:
+#   X = 112 + (sin(angle + phase_x) >> 2) + px    range 112-206, center ~160
+#   Y = ybase + (sin(angle + phase_x + 64) >> 3) + pyp
+#
+#   px  = sin(pulse_angle)      >> 3   (0-31) — X breathe
+#   pyp = sin(pulse_angle + 64) >> 4   (0-15) — Y breathe
+#
+# Raster windows: 40 (ring1), 115 (ring2), 190 (ring3) — NO SEI needed.
+# angle += 2 per frame  →  full orbit ~2.5 s @ 50 fps
+# pulse_angle += 1      →  full pulse ~5.1 s @ 50 fps
+
+cls
+print "24-SPRITE MUX ORBIT"
+print "3 RINGS x 8 SPRITES"
+print ""
+print "BARMELY GOMB = KILEPES"
+print ""
+print "PRESS ANY KEY..."
+var k = getch()
+cls
+color bg 0
+color border 0
+color text 0
+
+# ── sprite shape (24×21 ball) — sprdef aligns data, sets $07F8 automatically ─
+sprdef 0
+  $00,$3C,$00,  $00,$FF,$00,  $03,$FF,$C0,  $07,$FF,$E0,
+  $0F,$FF,$F0,  $0F,$FF,$F0,  $1F,$FF,$F8,  $1F,$FF,$F8,
+  $1F,$FF,$F8,  $0F,$FF,$F0,  $0F,$FF,$F0,  $07,$FF,$E0,
+  $03,$FF,$C0,  $00,$FF,$00,  $00,$3C,$00,  $00,$00,$00,
+  $00,$00,$00,  $00,$00,$00,  $00,$00,$00,  $00,$00,$00,
+  $00,$00,$00
+end
+
+# ── copy sprite-0 data pointer to sprites 1-7 ────────────────────────────────
+var pg = peek($07F8)
+poke $07F9, pg
+poke $07FA, pg
+poke $07FB, pg
+poke $07FC, pg
+poke $07FD, pg
+poke $07FE, pg
+poke $07FF, pg
+
+poke $D010, 0   ; all X MSBs = 0  (all sprites X < 256)
+
+# ── sprite colours (each sprite keeps its colour across all 3 rings) ─────────
+sprite color 0, 1   ; white
+sprite color 1, 10  ; light red
+sprite color 2, 3   ; cyan
+sprite color 3, 4   ; purple
+sprite color 4, 5   ; green
+sprite color 5, 6   ; blue
+sprite color 6, 7   ; yellow
+sprite color 7, 14  ; light blue
+
+sprite on 0
+sprite on 1
+sprite on 2
+sprite on 3
+sprite on 4
+sprite on 5
+sprite on 6
+sprite on 7
+
+# ── persistent state ─────────────────────────────────────────────────────────
+var angle = 0
+var pulse_angle = 0
+var px  = 0
+var pyp = 0
+
+# Precomputed final X/Y per sprite (overwritten each ring per frame)
+var ax0 = 0 ; var ay0 = 0
+var ax1 = 0 ; var ay1 = 0
+var ax2 = 0 ; var ay2 = 0
+var ax3 = 0 ; var ay3 = 0
+var ax4 = 0 ; var ay4 = 0
+var ax5 = 0 ; var ay5 = 0
+var ax6 = 0 ; var ay6 = 0
+var ax7 = 0 ; var ay7 = 0
+
+label gameloop
+
+  # Pulse computed once; reused by all three rings
+  px  = sin(pulse_angle) shr 3
+  pyp = sin(pulse_angle + 64) shr 4
+
+  # ── Precompute Ring 1 (done before wait raster 40) ───────────────────────
+  # Time budget: end-of-previous-frame rasters → ~10000 free cycles, need ~1600
+  ax0 = 112 + (sin(angle) shr 2) + px
+  ay0 = 47 + (sin(angle + 64) shr 3) + pyp
+  ax1 = 112 + (sin(angle + 32) shr 2) + px
+  ay1 = 47 + (sin(angle + 96) shr 3) + pyp
+  ax2 = 112 + (sin(angle + 64) shr 2) + px
+  ay2 = 47 + (sin(angle + 128) shr 3) + pyp
+  ax3 = 112 + (sin(angle + 96) shr 2) + px
+  ay3 = 47 + (sin(angle + 160) shr 3) + pyp
+  ax4 = 112 + (sin(angle + 128) shr 2) + px
+  ay4 = 47 + (sin(angle + 192) shr 3) + pyp
+  ax5 = 112 + (sin(angle + 160) shr 2) + px
+  ay5 = 47 + (sin(angle + 224) shr 3) + pyp
+  ax6 = 112 + (sin(angle + 192) shr 2) + px
+  ay6 = 47 + (sin(angle) shr 3) + pyp
+  ax7 = 112 + (sin(angle + 224) shr 2) + px
+  ay7 = 47 + (sin(angle + 32) shr 3) + pyp
+
+  # ── Ring 1 fast pokes: only LDA zp + STA abs per poke (~13 cycles each) ─
+  wait raster 40
+  poke $D000, ax0
+  poke $D001, ay0
+  poke $D002, ax1
+  poke $D003, ay1
+  poke $D004, ax2
+  poke $D005, ay2
+  poke $D006, ax3
+  poke $D007, ay3
+  poke $D008, ax4
+  poke $D009, ay4
+  poke $D00A, ax5
+  poke $D00B, ay5
+  poke $D00C, ax6
+  poke $D00D, ay6
+  poke $D00E, ax7
+  poke $D00F, ay7
+
+  # ── Precompute Ring 2 (phase +16; raster 42→115 = ~4500 free cycles) ─────
+  ax0 = 112 + (sin(angle + 16) shr 2) + px
+  ay0 = 122 + (sin(angle + 80) shr 3) + pyp
+  ax1 = 112 + (sin(angle + 48) shr 2) + px
+  ay1 = 122 + (sin(angle + 112) shr 3) + pyp
+  ax2 = 112 + (sin(angle + 80) shr 2) + px
+  ay2 = 122 + (sin(angle + 144) shr 3) + pyp
+  ax3 = 112 + (sin(angle + 112) shr 2) + px
+  ay3 = 122 + (sin(angle + 176) shr 3) + pyp
+  ax4 = 112 + (sin(angle + 144) shr 2) + px
+  ay4 = 122 + (sin(angle + 208) shr 3) + pyp
+  ax5 = 112 + (sin(angle + 176) shr 2) + px
+  ay5 = 122 + (sin(angle + 240) shr 3) + pyp
+  ax6 = 112 + (sin(angle + 208) shr 2) + px
+  ay6 = 122 + (sin(angle + 16) shr 3) + pyp
+  ax7 = 112 + (sin(angle + 240) shr 2) + px
+  ay7 = 122 + (sin(angle + 48) shr 3) + pyp
+
+  # ── Ring 2 fast pokes ────────────────────────────────────────────────────
+  wait raster 115
+  poke $D000, ax0
+  poke $D001, ay0
+  poke $D002, ax1
+  poke $D003, ay1
+  poke $D004, ax2
+  poke $D005, ay2
+  poke $D006, ax3
+  poke $D007, ay3
+  poke $D008, ax4
+  poke $D009, ay4
+  poke $D00A, ax5
+  poke $D00B, ay5
+  poke $D00C, ax6
+  poke $D00D, ay6
+  poke $D00E, ax7
+  poke $D00F, ay7
+
+  # ── Precompute Ring 3 (phase +8; raster 117→190 = ~4500 free cycles) ─────
+  ax0 = 112 + (sin(angle + 8) shr 2) + px
+  ay0 = 197 + (sin(angle + 72) shr 3) + pyp
+  ax1 = 112 + (sin(angle + 40) shr 2) + px
+  ay1 = 197 + (sin(angle + 104) shr 3) + pyp
+  ax2 = 112 + (sin(angle + 72) shr 2) + px
+  ay2 = 197 + (sin(angle + 136) shr 3) + pyp
+  ax3 = 112 + (sin(angle + 104) shr 2) + px
+  ay3 = 197 + (sin(angle + 168) shr 3) + pyp
+  ax4 = 112 + (sin(angle + 136) shr 2) + px
+  ay4 = 197 + (sin(angle + 200) shr 3) + pyp
+  ax5 = 112 + (sin(angle + 168) shr 2) + px
+  ay5 = 197 + (sin(angle + 232) shr 3) + pyp
+  ax6 = 112 + (sin(angle + 200) shr 2) + px
+  ay6 = 197 + (sin(angle + 8) shr 3) + pyp
+  ax7 = 112 + (sin(angle + 232) shr 2) + px
+  ay7 = 197 + (sin(angle + 40) shr 3) + pyp
+
+  # ── Ring 3 fast pokes ────────────────────────────────────────────────────
+  wait raster 190
+  poke $D000, ax0
+  poke $D001, ay0
+  poke $D002, ax1
+  poke $D003, ay1
+  poke $D004, ax2
+  poke $D005, ay2
+  poke $D006, ax3
+  poke $D007, ay3
+  poke $D008, ax4
+  poke $D009, ay4
+  poke $D00A, ax5
+  poke $D00B, ay5
+  poke $D00C, ax6
+  poke $D00D, ay6
+  poke $D00E, ax7
+  poke $D00F, ay7
+
+  # ── update ────────────────────────────────────────────────────────────────
+  angle = angle + 2
+  pulse_angle = pulse_angle + 1
+
+  var qbuf = peek($C6)
+  if qbuf != 0 then bye end
+
+  goto gameloop

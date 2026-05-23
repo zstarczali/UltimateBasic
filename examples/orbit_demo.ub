@@ -1,0 +1,215 @@
+# orbit_demo.ub  –  24 Sprites Circular Orbit
+#
+# Three groups of 8 sprites orbit in circles.
+# Radius pulsates slowly: small (r=64) <-> large (r=128).
+# In large-radius mode sprites reach the screen border area (x~0, y<50).
+# When the mode changes all groups get new random colours.
+#
+# Mux windows (PAL raster):
+#   Window 1: raster  15  ->  group 0  (Y  36-99  / 52-83 small)
+#   Window 2: raster  96  ->  group 1  (Y 108-171 / 122-153 small)
+#   Window 3: raster 168  ->  group 2  (Y 180-243 / 188-219 small)
+#
+# Group rotation speeds: group0 +2/frame, group1 +1/frame, group2 +3/frame
+# Q = quit
+
+include "sprite_data.ub"
+
+cls
+color bg     0
+color border 0
+color text  14
+
+# copy sprite-0 shape page pointer to all 8 hardware sprite slots
+var pg = peek($07F8)
+poke $07F9, pg
+poke $07FA, pg
+poke $07FB, pg
+poke $07FC, pg
+poke $07FD, pg
+poke $07FE, pg
+poke $07FF, pg
+
+poke $D010, 0
+sprite on 0
+sprite on 1
+sprite on 2
+sprite on 3
+sprite on 4
+sprite on 5
+sprite on 6
+sprite on 7
+
+# ── state variables ──────────────────────────────────────────────────────────
+var va = array(24)   # sprite angles  (0-255 = full circle)
+var vx = array(24)   # computed sprite X  (0-255)
+var vy = array(24)   # computed sprite Y  (0-255)
+
+# per-sprite colours: cycle through C64 colours 2-15 (skip 0=black, 1=white)
+var vc = array(24)
+var c = 2
+for i = 0 to 23
+  vc[i] = c
+  c = c + 1
+  if c == 16 then c = 2 end
+next
+
+# ── init: each group evenly spread (step 32 = 256/8), groups orbit independently ─
+# group0 +2/frame, group1 +1/frame, group2 +3/frame → rings diverge quickly
+var ang = 0
+for i = 0 to 7
+  va[i] = ang
+  ang = ang + 32
+next
+ang = 0
+for i = 8 to 15
+  va[i] = ang
+  ang = ang + 32
+next
+ang = 0
+for i = 16 to 23
+  va[i] = ang
+  ang = ang + 32
+next
+
+# ── precompute initial positions (large-mode formula) ───────────────────────
+for i = 0 to 7
+  vx[i] = cos(va[i])
+  vy[i] = 36 + (sin(va[i]) shr 2)
+next
+for i = 8 to 15
+  vx[i] = cos(va[i])
+  vy[i] = 108 + (sin(va[i]) shr 2)
+next
+for i = 16 to 23
+  vx[i] = cos(va[i])
+  vy[i] = 180 + (sin(va[i]) shr 2)
+next
+
+# ── main loop ────────────────────────────────────────────────────────────────
+label gameloop
+
+  asm $78   # SEI – disable IRQ for flicker-free raster windows
+
+  # ── window 1: group 0 (sprites 0-7) ────────────────────────────────────────
+  wait raster 15
+  poke $D027, vc[0]
+  poke $D028, vc[1]
+  poke $D029, vc[2]
+  poke $D02A, vc[3]
+  poke $D02B, vc[4]
+  poke $D02C, vc[5]
+  poke $D02D, vc[6]
+  poke $D02E, vc[7]
+  poke $D000, vx[0]
+  poke $D001, vy[0]
+  poke $D002, vx[1]
+  poke $D003, vy[1]
+  poke $D004, vx[2]
+  poke $D005, vy[2]
+  poke $D006, vx[3]
+  poke $D007, vy[3]
+  poke $D008, vx[4]
+  poke $D009, vy[4]
+  poke $D00A, vx[5]
+  poke $D00B, vy[5]
+  poke $D00C, vx[6]
+  poke $D00D, vy[6]
+  poke $D00E, vx[7]
+  poke $D00F, vy[7]
+
+  # ── window 2: group 1 (sprites 8-15) ───────────────────────────────────────
+  wait raster 100
+  poke $D027, vc[8]
+  poke $D028, vc[9]
+  poke $D029, vc[10]
+  poke $D02A, vc[11]
+  poke $D02B, vc[12]
+  poke $D02C, vc[13]
+  poke $D02D, vc[14]
+  poke $D02E, vc[15]
+  poke $D000, vx[8]
+  poke $D001, vy[8]
+  poke $D002, vx[9]
+  poke $D003, vy[9]
+  poke $D004, vx[10]
+  poke $D005, vy[10]
+  poke $D006, vx[11]
+  poke $D007, vy[11]
+  poke $D008, vx[12]
+  poke $D009, vy[12]
+  poke $D00A, vx[13]
+  poke $D00B, vy[13]
+  poke $D00C, vx[14]
+  poke $D00D, vy[14]
+  poke $D00E, vx[15]
+  poke $D00F, vy[15]
+
+  # ── window 3: group 2 (sprites 16-23) ──────────────────────────────────────
+  wait raster 172
+  poke $D027, vc[16]
+  poke $D028, vc[17]
+  poke $D029, vc[18]
+  poke $D02A, vc[19]
+  poke $D02B, vc[20]
+  poke $D02C, vc[21]
+  poke $D02D, vc[22]
+  poke $D02E, vc[23]
+  poke $D000, vx[16]
+  poke $D001, vy[16]
+  poke $D002, vx[17]
+  poke $D003, vy[17]
+  poke $D004, vx[18]
+  poke $D005, vy[18]
+  poke $D006, vx[19]
+  poke $D007, vy[19]
+  poke $D008, vx[20]
+  poke $D009, vy[20]
+  poke $D00A, vx[21]
+  poke $D00B, vy[21]
+  poke $D00C, vx[22]
+  poke $D00D, vy[22]
+  poke $D00E, vx[23]
+  poke $D00F, vy[23]
+
+  # Q key: direct CIA1 matrix read (atomic inside SEI)
+  poke $DC00, 127          # select keyboard row 7 (Q is on this row)
+  var qraw = peek($DC01)   # bit 6 = Q key, active low
+  poke $DC00, 255          # restore all rows
+
+  asm $58   # CLI – deferred IRQ fires here
+
+  var qbit = qraw and 64
+  if qbit == 0 then bye end
+
+  # ── advance angles (different speed per group for variety) ──────────────────
+  for i = 0 to 7
+    va[i] = va[i] + 2
+  next
+  for i = 8 to 15
+    va[i] = va[i] + 1
+  next
+  for i = 16 to 23
+    va[i] = va[i] + 3
+  next
+
+  # ── recompute sprite positions ─────────────────────────────────────────────
+  # x = cos(a)          →  0..255, center 128, radius 128
+  # y = base + sin(a)/4 →  ±32px around each group's centre
+
+  for i = 0 to 7
+    vx[i] = cos(va[i])
+    vy[i] = 36 + (sin(va[i]) shr 2)
+  next
+
+  for i = 8 to 15
+    vx[i] = cos(va[i])
+    vy[i] = 108 + (sin(va[i]) shr 2)
+  next
+
+  for i = 16 to 23
+    vx[i] = cos(va[i])
+    vy[i] = 180 + (sin(va[i]) shr 2)
+  next
+
+  goto gameloop

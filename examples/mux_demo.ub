@@ -1,0 +1,253 @@
+# mux_demo.ub  –  Sprite Multiplexer Demo
+#
+# Technique: 8 hardware sprites repositioned mid-frame at 3 raster windows.
+# Result:    24 visible sprites on screen simultaneously.
+#
+#
+# Timing per frame (PAL 50 Hz, 312 raster lines):
+#   after window 3 (~raster 202): run 3 update loops (~19 lines)
+#   wait raster 68  → set 8 sprite X/Y/colour registers (window 1)
+#   wait raster 128 → set 8 sprite X/Y/colour registers (window 2)
+#   wait raster 188 → set 8 sprite X/Y/colour registers (window 3)
+#   goto gameloop
+#
+# Q = quit
+
+
+inlude "sprite_data.ub"
+
+# ── sprite shape: filled lozenge / ball (21 rows × 3 bytes = 63 bytes) ─────
+sprdef 0
+  0,24,0
+  0,60,0
+  0,126,0
+  0,255,0
+  1,255,128
+  3,255,192
+  7,255,224
+  15,255,240
+  7,255,224
+  3,255,192
+  1,255,128
+  0,255,0
+  0,126,0
+  0,60,0
+  0,24,0
+  0,0,0
+  0,0,0
+  0,0,0
+  0,0,0
+  0,0,0
+  0,0,0
+end
+
+cls
+color bg     0     # black background
+color border 0     # black border
+color text  14     # light blue text
+
+print ""
+print " SPRITE MULTIPLEXER"
+print " 24 SPRITES / 8 HARDWARE"
+print ""
+print ""
+print " Q TO QUIT"
+
+# ── copy sprite-0 shape page to all 8 sprite pointers ($07F8..$07FF) ────────
+var pg = peek($07F8)
+poke $07F9, pg
+poke $07FA, pg
+poke $07FB, pg
+poke $07FC, pg
+poke $07FD, pg
+poke $07FE, pg
+poke $07FF, pg
+
+poke $D010, 0      # clear X-MSB bits (all X < 256)
+
+sprite on 0
+sprite on 1
+sprite on 2
+sprite on 3
+sprite on 4
+sprite on 5
+sprite on 6
+sprite on 7
+
+# ── virtual sprite state ─────────────────────────────────────────────────────
+# vx[0..7]  = X positions for row 0 (Y=80,  yellow)
+# vx[8..15] = X positions for row 1 (Y=140, cyan)
+# vx[16..23]= X positions for row 2 (Y=200, red)
+# vd[N] = direction: 0 = moving right (+), 1 = moving left (-)
+
+var vx = array(24)
+var vd = array(24)
+var vc = array(24)   # sprite colours (1-8)
+
+for i = 0 to 23
+  vx[i] = (i and 7) * 28 + 24   # spread evenly: 24, 52, 80 … 220
+  vd[i] = i and 1                # alternating start directions
+  vc[i] = (rnd() and 7) + 1     # random vivid colour 1-8
+next
+
+# ── main loop ────────────────────────────────────────────────────────────────
+# Frame structure (PAL 312 lines):
+#   SEI  →  wait raster 68  →  window1  →  wait raster 128  →  window2
+#        →  wait raster 188  →  window3  →  CLI
+#        →  update loops (~19 lines, IRQ fires here ← keyboard scan)
+#        →  inkey  →  goto
+#
+# SEI prevents the KERNAL IRQ (~2000 cycle keyboard scan) from firing mid-
+# wait and causing us to miss the target raster line (= flickering).
+# The deferred IRQ fires immediately at CLI, so Q key detection still works.
+label gameloop
+
+  asm $78   # SEI – disable IRQ during raster-critical section
+
+  # ── raster window 1: Y=80, yellow (7) ──────────────────────────────────────
+  wait raster 68
+
+  poke $D027, vc[0]
+  poke $D028, vc[1]
+  poke $D029, vc[2]
+  poke $D02A, vc[3]
+  poke $D02B, vc[4]
+  poke $D02C, vc[5]
+  poke $D02D, vc[6]
+  poke $D02E, vc[7]
+  poke $D000, vx[0]
+  poke $D001, 80
+  poke $D002, vx[1]
+  poke $D003, 80
+  poke $D004, vx[2]
+  poke $D005, 80
+  poke $D006, vx[3]
+  poke $D007, 80
+  poke $D008, vx[4]
+  poke $D009, 80
+  poke $D00A, vx[5]
+  poke $D00B, 80
+  poke $D00C, vx[6]
+  poke $D00D, 80
+  poke $D00E, vx[7]
+  poke $D00F, 80
+
+  # ── raster window 2: Y=140, cyan (3) ───────────────────────────────────────
+  wait raster 128
+
+  poke $D027, vc[8]
+  poke $D028, vc[9]
+  poke $D029, vc[10]
+  poke $D02A, vc[11]
+  poke $D02B, vc[12]
+  poke $D02C, vc[13]
+  poke $D02D, vc[14]
+  poke $D02E, vc[15]
+  poke $D000, vx[8]
+  poke $D001, 140
+  poke $D002, vx[9]
+  poke $D003, 140
+  poke $D004, vx[10]
+  poke $D005, 140
+  poke $D006, vx[11]
+  poke $D007, 140
+  poke $D008, vx[12]
+  poke $D009, 140
+  poke $D00A, vx[13]
+  poke $D00B, 140
+  poke $D00C, vx[14]
+  poke $D00D, 140
+  poke $D00E, vx[15]
+  poke $D00F, 140
+
+  # ── raster window 3: Y=200, red (2) ────────────────────────────────────────
+  wait raster 188
+
+  poke $D027, vc[16]
+  poke $D028, vc[17]
+  poke $D029, vc[18]
+  poke $D02A, vc[19]
+  poke $D02B, vc[20]
+  poke $D02C, vc[21]
+  poke $D02D, vc[22]
+  poke $D02E, vc[23]
+  poke $D000, vx[16]
+  poke $D001, 200
+  poke $D002, vx[17]
+  poke $D003, 200
+  poke $D004, vx[18]
+  poke $D005, 200
+  poke $D006, vx[19]
+  poke $D007, 200
+  poke $D008, vx[20]
+  poke $D009, 200
+  poke $D00A, vx[21]
+  poke $D00B, 200
+  poke $D00C, vx[22]
+  poke $D00D, 200
+  poke $D00E, vx[23]
+  poke $D00F, 200
+
+  # Q key: direct CIA1 matrix read (inside SEI – atomic, no KERNAL interference)
+  poke $DC00, 127          # select keyboard row 7 (Q lives here)
+  var qraw = peek($DC01)   # bit 6 = Q, active low
+  poke $DC00, 255          # restore $DC00 for KERNAL
+
+  asm $58   # CLI – deferred IRQ fires; Q state already captured in qraw
+
+  var qbit = qraw and 64
+  if qbit == 0 then bye end   # Q pressed → bit 6 low
+
+  # ── update loops ───────────────────────────────────────────────────────────
+  # -- row 0 (indices 0..7): speed 2 px/frame
+  for i = 0 to 7
+    if vd[i] then
+      vx[i] = vx[i] - 2
+      if vx[i] <= 26 then
+        vd[i] = 0
+        vc[i] = (rnd() and 7) + 1
+      end
+    else
+      vx[i] = vx[i] + 2
+      if vx[i] >= 226 then
+        vd[i] = 1
+        vc[i] = (rnd() and 7) + 1
+      end
+    end
+  next
+
+  # -- row 1 (indices 8..15): speed 1 px/frame
+  for i = 8 to 15
+    if vd[i] then
+      vx[i] = vx[i] - 1
+      if vx[i] <= 25 then
+        vd[i] = 0
+        vc[i] = (rnd() and 7) + 1
+      end
+    else
+      vx[i] = vx[i] + 1
+      if vx[i] >= 227 then
+        vd[i] = 1
+        vc[i] = (rnd() and 7) + 1
+      end
+    end
+  next
+
+  # -- row 2 (indices 16..23): speed 3 px/frame
+  for i = 16 to 23
+    if vd[i] then
+      vx[i] = vx[i] - 3
+      if vx[i] <= 27 then
+        vd[i] = 0
+        vc[i] = (rnd() and 7) + 1
+      end
+    else
+      vx[i] = vx[i] + 3
+      if vx[i] >= 225 then
+        vd[i] = 1
+        vc[i] = (rnd() and 7) + 1
+      end
+    end
+  next
+
+  goto gameloop

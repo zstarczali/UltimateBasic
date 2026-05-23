@@ -10,7 +10,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process;
 
-use ultimate_basic::compiler::{compile, CompileOptions, MemoryMap};
+use ultimate_basic::compiler::{compile_with_path, CompileOptions, MemoryMap};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -54,7 +54,16 @@ fn cmd_build(args: &[String]) {
             "--output" | "-o" => { i += 1; if i < args.len() { output = Some(args[i].clone().into()); } }
             "--verbose" | "-v" => verbose = true,
             "--no-stub" => basic_stub = false,
-            "--d64" => { i += 1; if i < args.len() { d64_out = Some(args[i].clone().into()); } }
+            "--d64" => {
+                // --d64           → auto: <output>.d64  (empty PathBuf as sentinel)
+                // --d64 <file>    → explicit path
+                if i + 1 < args.len() && !args[i + 1].starts_with('-') {
+                    i += 1;
+                    d64_out = Some(PathBuf::from(&args[i]));
+                } else {
+                    d64_out = Some(PathBuf::new()); // sentinel: resolved below
+                }
+            }
             a if !a.starts_with('-') && input.is_none() => input = Some(a.to_string().into()),
             _ => { eprintln!("Unknown option: {}", args[i]); process::exit(1); }
         }
@@ -80,7 +89,7 @@ fn cmd_build(args: &[String]) {
     let output_path = output.unwrap_or_else(|| input.with_extension("prg"));
 
     let opts = CompileOptions { basic_stub };
-    let result = compile(&source, &opts);
+    let result = compile_with_path(&source, &opts, Some(&input));
 
     if !result.errors.is_empty() {
         eprintln!("Compilation errors:");
@@ -105,7 +114,12 @@ fn cmd_build(args: &[String]) {
     print_memory_map(&result.map, verbose);
 
     if let Some(d64_path) = d64_out {
-        make_d64(&d64_path, "ULTIMATE BASIC", &result.prg);
+        let d64_final = if d64_path.as_os_str().is_empty() {
+            output_path.with_extension("d64")
+        } else {
+            d64_path
+        };
+        make_d64(&d64_final, "ULTIMATE BASIC", &result.prg);
     }
 }
 
