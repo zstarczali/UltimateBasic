@@ -2782,6 +2782,7 @@ impl Codegen {
         // Pass 1: everything except SubDef
         for stmt in stmts {
             if !matches!(stmt, Stmt::SubDef(..)) {
+                self.tmp_zp = TMP_BASE; // reset scratch ZP per statement (same as gen_stmts)
                 self.gen_stmt(stmt);
             }
         }
@@ -2790,6 +2791,7 @@ impl Codegen {
         // Pass 2: subroutine definitions (after main, so they aren't executed at startup)
         for stmt in stmts {
             if matches!(stmt, Stmt::SubDef(..)) {
+                self.tmp_zp = TMP_BASE; // reset scratch ZP per statement
                 self.gen_stmt(stmt);
             }
         }
