@@ -10,7 +10,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process;
 
-use ultimate_basic::compiler::{compile, CompileOptions, MemoryMap};
+use ultimate_basic::compiler::{compile_with_path, CompileOptions, MemoryMap};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -80,7 +80,7 @@ fn cmd_build(args: &[String]) {
     let output_path = output.unwrap_or_else(|| input.with_extension("prg"));
 
     let opts = CompileOptions { basic_stub };
-    let result = compile(&source, &opts);
+    let result = compile_with_path(&source, &opts, Some(&input));
 
     if !result.errors.is_empty() {
         eprintln!("Compilation errors:");

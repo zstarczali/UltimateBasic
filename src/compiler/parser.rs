@@ -6,15 +6,24 @@ pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
     consts: std::collections::HashMap<String, i16>,
+    base_dir: Option<std::path::PathBuf>,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0, consts: std::collections::HashMap::new() }
+        Self { tokens, pos: 0, consts: std::collections::HashMap::new(), base_dir: None }
+    }
+
+    pub fn new_with_base(tokens: Vec<Token>, base_dir: std::path::PathBuf) -> Self {
+        Self { tokens, pos: 0, consts: std::collections::HashMap::new(), base_dir: Some(base_dir) }
     }
 
     pub fn new_with_consts(tokens: Vec<Token>, consts: std::collections::HashMap<String, i16>) -> Self {
-        Self { tokens, pos: 0, consts }
+        Self { tokens, pos: 0, consts, base_dir: None }
+    }
+
+    pub fn new_with_consts_and_base(tokens: Vec<Token>, consts: std::collections::HashMap<String, i16>, base_dir: Option<std::path::PathBuf>) -> Self {
+        Self { tokens, pos: 0, consts, base_dir }
     }
 
     fn peek(&self) -> &Token {
@@ -48,17 +57,26 @@ impl Parser {
                 self.advance(); // consume 'include'
                 if let Token::StringLit(path) = self.peek().clone() {
                     self.advance();
-                    match std::fs::read_to_string(&path) {
+                    // Resolve relative to the source file's directory if available,
+                    // otherwise fall back to CWD.
+                    let resolved = if let Some(ref base) = self.base_dir {
+                        base.join(&path)
+                    } else {
+                        std::path::PathBuf::from(&path)
+                    };
+                    // Sub-parser inherits the same base_dir so nested includes work.
+                    let sub_base = resolved.parent().map(|p| p.to_path_buf());
+                    match std::fs::read_to_string(&resolved) {
                         Ok(src) => {
                             let mut lex = super::lexer::Lexer::new(&src);
                             let toks = lex.tokenize();
                             let consts = self.consts.clone();
-                            let mut sub = Parser::new_with_consts(toks, consts);
+                            let mut sub = Parser::new_with_consts_and_base(toks, consts, sub_base);
                             let sub_stmts = sub.parse();
                             self.consts.extend(sub.consts.into_iter());
                             stmts.extend(sub_stmts);
                         }
-                        Err(e) => eprintln!("include '{}': {}", path, e),
+                        Err(e) => eprintln!("include '{}': {}", resolved.display(), e),
                     }
                 }
                 self.expect_newline();

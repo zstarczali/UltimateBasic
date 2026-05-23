@@ -3,9 +3,6 @@
 # Technique: 8 hardware sprites repositioned mid-frame at 3 raster windows.
 # Result:    24 visible sprites on screen simultaneously.
 #
-#  Window 1  Y=80   8 yellow balls  speed 2 px/frame  →←→←→←→←
-#  Window 2  Y=140  8 cyan   balls  speed 1 px/frame  alternating
-#  Window 3  Y=200  8 red    balls  speed 3 px/frame  →←→←→←→←
 #
 # Timing per frame (PAL 50 Hz, 312 raster lines):
 #   after window 3 (~raster 202): run 3 update loops (~19 lines)
@@ -15,6 +12,9 @@
 #   goto gameloop
 #
 # Q = quit
+
+
+inlude "sprite_data.ub"
 
 # ── sprite shape: filled lozenge / ball (21 rows × 3 bytes = 63 bytes) ─────
 sprdef 0

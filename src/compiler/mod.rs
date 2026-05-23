@@ -71,11 +71,20 @@ const BASIC_STUB: &[u8] = &[
 // Code starts at $0801 + 12 (excluding 2-byte header) = $080D = 2061 ✓
 
 pub fn compile(source: &str, opts: &CompileOptions) -> CompileResult {
+    compile_with_path(source, opts, None)
+}
+
+pub fn compile_with_path(source: &str, opts: &CompileOptions, source_path: Option<&std::path::Path>) -> CompileResult {
     let load_addr: u16 = if opts.basic_stub { 0x080D } else { 0x0801 };
 
     let mut lexer = Lexer::new(source);
     let tokens = lexer.tokenize();
-    let mut parser = Parser::new(tokens);
+    let base_dir = source_path.and_then(|p| p.parent()).map(|p| p.to_path_buf());
+    let mut parser = if let Some(dir) = base_dir {
+        Parser::new_with_base(tokens, dir)
+    } else {
+        Parser::new(tokens)
+    };
     let ast = parser.parse();
     let mut cg = Codegen::new(load_addr);
     let raw = cg.compile(&ast);
