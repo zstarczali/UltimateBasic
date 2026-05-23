@@ -1,33 +1,33 @@
 # reu_bitmap_demo.ub
-# Ellenorzi a REU letetet, 30 veletlenszeru vonalat rajzol hires modban,
-# menti a kepet REU-ba, torli, majd visszatolti billentyulenyomasra.
+# Checks for a REU, draws random lines and circles in hires bitmap mode,
+# stores the image in REU, clears it, then restores it on key presses.
 
-# ── Foprogram ────────────────────────────────────────────────────────────
+# Main program
 cls
 
 if reudet() == 0 then
-    print "NEM TALALHATO REU!"
+    print "REU NOT DETECTED!"
     print "VICE: SETTINGS > HARDWARE > RAM EXPANSION MODULE"
     print ""
-    print "NYOMJ EGY BILLENTYUT..."
+    print "PRESS ANY KEY..."
     var dummy = getch()
     bye
 end
 
-print "REU ERZEKELVE. RAJZOLASHOZ NYOMJ EGY BILLENTYUT..."
+print "REU DETECTED. PRESS ANY KEY TO DRAW..."
 var k0 = getch()
 
-# ── Hires bitmap mod beallitasa ──────────────────────────────────────────
-# graphics on: VIC setup + BMM beallitas, display KIKAPCSOL (DEN=0)
-# Igy a bitmap RAM tartalma nem latszik amig rajzolunk.
+# Set up hires bitmap mode
+# graphics on: VIC setup + BMM enable, display stays OFF (DEN=0)
+# so bitmap RAM contents stay hidden while we draw.
 graphics on
 gcls
 color border 0
 color bg     0
-# ── Display bekapcsolas: a bitmap RAM tiszta, most latszodik a rajzolas ──
+# Turn the display on: bitmap RAM is now clean, drawing becomes visible.
 display on
 
-# ── 30 veletlenszeru vonal rajzolasa (elo, nezi a folyamatot) ───────────
+# Draw 30 random lines live so the process is visible.
 loop 30
     var x1 = rnd()
     var y1 = min(rnd(), 199)
@@ -36,26 +36,34 @@ loop 30
     line x1, y1, x2, y2
 end
 
-# ── Bitmap mentese REU-ba (bank 0, offset $0000, 8000 byte) ─────────────
+# Add random circles too, while keeping the random line pass above.
+loop 8
+    var cx = min(rnd(), 239) + 40
+    var cy = min(rnd(), 159) + 20
+    var radius = min(rnd(), 23) + 8
+    circle cx, cy, radius
+end
+
+# Store the bitmap in REU (bank 0, offset $0000, 8000 bytes).
 reu stash $2000, 0, $0000, 8000
 
-# ── Var billentyulenyomasig (a rajzolt kep latszik) ─────────────────────
+# Wait for a key press while the drawn image is visible.
 var k1 = getch()
 
-# ── Kepernyo torlese (blankolassal, hogy ne legyen villanas) ─────────────
+# Clear the screen while blanked so there is no flash.
 display off
 gcls
 display on
 
-# ── Var billentyulenyomasig (ures kepernyot lat) ─────────────────────────
+# Wait for a key press while the screen is empty.
 var k2 = getch()
 
-# ── Kep visszatoltes REU-bol (blankolassal) ──────────────────────────────
+# Restore the image from REU while the display is blanked.
 display off
 reu fetch $2000, 0, $0000, 8000
 display on
 
-# ── Var billentyulenyomasig majd kilepes ─────────────────────────────────
+# Wait for a final key press, then exit.
 var k3 = getch()
 
 graphics off

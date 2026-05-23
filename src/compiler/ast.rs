@@ -76,6 +76,7 @@ pub enum Stmt {
     Goto(String),
     Poke(Expr, Expr),
     Plot(Expr, Expr), // plot x, y — set pixel in bitmap mode
+    Circle { x: Expr, y: Expr, radius: Expr }, // circle x,y,r — midpoint circle using bitmap plot helper
     Line { x1: Expr, y1: Expr, x2: Expr, y2: Expr }, // line x1,y1,x2,y2 — Bresenham line
     Gcls,             // gcls — clear bitmap screen
     Bye,              // bye/exit — cls then RTS back to BASIC

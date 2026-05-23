@@ -71,6 +71,7 @@ pub enum Token {
     Next,
     Chr,
     Plot,
+    Circle,
     Gcls,
     Bye,
     Joy,
@@ -302,6 +303,7 @@ impl Lexer {
             "for"        => Token::For,
             "next"       => Token::Next,
             "plot"       => Token::Plot,
+            "circle"     => Token::Circle,
             "gcls"       => Token::Gcls,
             "bye"        => Token::Bye,
             "joy"        => Token::Joy,
@@ -418,6 +420,7 @@ mod tests {
     #[test] fn kw_for()    { assert_eq!(tokenize("for")[0],   Token::For); }
     #[test] fn kw_next()   { assert_eq!(tokenize("next")[0],  Token::Next); }
     #[test] fn kw_plot()   { assert_eq!(tokenize("plot")[0],  Token::Plot); }
+    #[test] fn kw_circle() { assert_eq!(tokenize("circle")[0], Token::Circle); }
     #[test] fn kw_joy()    { assert_eq!(tokenize("joy")[0],   Token::Joy); }
     #[test] fn kw_line()   { assert_eq!(tokenize("line")[0],  Token::Line); }
     #[test] fn kw_sin()    { assert_eq!(tokenize("sin")[0],   Token::Sin); }

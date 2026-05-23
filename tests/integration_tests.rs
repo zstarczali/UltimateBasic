@@ -366,6 +366,21 @@ fn line_produces_larger_code_than_plot() {
 }
 
 #[test]
+fn circle_emits_helper_and_compiles() {
+    let res = compile("graphics on\ncircle 160, 100, 32\ngraphics off", &CompileOptions { basic_stub: false });
+    assert!(res.errors.is_empty(), "circle should compile cleanly: {:?}", res.errors);
+    assert!(res.map.plot_zp.is_some(), "circle should reserve the shared plot helper ZP block");
+    assert!(res.prg.len() > compile_raw("graphics on\ngraphics off").len(), "circle should add code beyond bare graphics mode switches");
+}
+
+#[test]
+fn circle_produces_larger_code_than_plot() {
+    let res = compile("var cx: word = 160\ngraphics on\ncircle cx, 100, 32\ngraphics off", &CompileOptions { basic_stub: false });
+    assert!(res.errors.is_empty(), "circle with word X center should compile cleanly: {:?}", res.errors);
+    assert!(res.map.plot_zp.is_some(), "circle with word X center should still reserve plot helper state");
+}
+
+#[test]
 fn sin_emits_lut_lookup() {
     let prg = compile_raw("var x = 0\nx = sin(x)");
     let bytes = &prg[2..];

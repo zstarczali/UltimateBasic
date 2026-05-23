@@ -457,6 +457,16 @@ impl Parser {
                 self.expect_newline();
                 Some(Stmt::Plot(x, y))
             }
+            Token::Circle => {
+                self.advance();
+                let x = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let y = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let radius = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::Circle { x, y, radius })
+            }
             Token::Line => {
                 self.advance();
                 let x1 = self.parse_expr();
@@ -1395,6 +1405,14 @@ mod tests {
     #[test] fn plot_stmt_vars() {
         let stmts = parse("plot x, y");
         assert!(matches!(&stmts[0], Stmt::Plot(Expr::Var(a), Expr::Var(b)) if a == "x" && b == "y"));
+    }
+
+    #[test] fn circle_stmt() {
+        let stmts = parse("circle 160, 100, 32");
+        assert!(matches!(
+            &stmts[0],
+            Stmt::Circle { x: Expr::Number(160), y: Expr::Number(100), radius: Expr::Number(32) }
+        ));
     }
 
     #[test] fn gcls_stmt() {

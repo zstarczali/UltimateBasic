@@ -27,6 +27,8 @@ pub struct Codegen {
     rnd_seeded: bool,
     plot_zp: Option<u8>,                    // base of 5-byte ZP block for plot helper
     plot_patches: Vec<usize>,               // code positions of JSR targets to patch
+    circle_zp: Option<u8>,                  // base of 24-byte ZP block for circle helper state
+    circle_patches: Vec<usize>,             // code positions of JSR targets for circle helper
     line_zp: Option<u8>,                    // base of 12-byte ZP block for line (Bresenham)
     line_patches: Vec<usize>,               // code positions of JSR targets for drawline helper
     sin_table_patches: Vec<usize>,          // positions of 2-byte address in LDA abs,X for sin/cos
@@ -60,6 +62,8 @@ impl Codegen {
             rnd_seeded: false,
             plot_zp: None,
             plot_patches: vec![],
+            circle_zp: None,
+            circle_patches: vec![],
             line_zp: None,
             line_patches: vec![],
             sin_table_patches: vec![],
@@ -77,7 +81,7 @@ impl Codegen {
     fn has_plot_stmt(stmts: &[Stmt]) -> bool {
         for stmt in stmts {
             match stmt {
-                Stmt::Plot(..) => return true,
+                Stmt::Plot(..) | Stmt::Circle { .. } => return true,
                 Stmt::SubDef(_, _, body) => if Self::has_plot_stmt(body) { return true; }
                 Stmt::If(_, then_b, else_b) => {
                     if Self::has_plot_stmt(then_b) { return true; }
@@ -85,6 +89,25 @@ impl Codegen {
                 }
                 Stmt::ForLoop { body, .. } | Stmt::Loop(_, body) | Stmt::WhileLoop(_, body) => {
                     if Self::has_plot_stmt(body) { return true; }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// Recursively check whether any Circle statement exists anywhere in the AST.
+    fn has_circle_stmt(stmts: &[Stmt]) -> bool {
+        for stmt in stmts {
+            match stmt {
+                Stmt::Circle { .. } => return true,
+                Stmt::SubDef(_, _, body) => if Self::has_circle_stmt(body) { return true; }
+                Stmt::If(_, then_b, else_b) => {
+                    if Self::has_circle_stmt(then_b) { return true; }
+                    if let Some(eb) = else_b { if Self::has_circle_stmt(eb) { return true; } }
+                }
+                Stmt::ForLoop { body, .. } | Stmt::Loop(_, body) | Stmt::WhileLoop(_, body) => {
+                    if Self::has_circle_stmt(body) { return true; }
                 }
                 _ => {}
             }
@@ -161,6 +184,13 @@ impl Codegen {
             let zp = self.perm_zp;
             self.perm_zp += 6;
             self.plot_zp = Some(zp);
+        }
+
+        // Reserve 24 ZP bytes for the midpoint circle helper.
+        if Self::has_circle_stmt(stmts) {
+            let zp = self.perm_zp;
+            self.perm_zp += 24;
+            self.circle_zp = Some(zp);
         }
 
         // Reserve 12 ZP bytes for the Bresenham line helper.
@@ -832,6 +862,39 @@ impl Codegen {
         self.code[lo_pos + 1] = (target >> 8) as u8;
     }
 
+    fn emit_store_expr_u8(&mut self, expr: &Expr, zp: u8) {
+        let expr = expr.clone();
+        self.eval_expr(&expr);
+        self.emit(0x85); self.emit(zp);
+    }
+
+    fn emit_store_expr_u16(&mut self, expr: &Expr, zp: u8) {
+        match expr {
+            Expr::Number(n) => {
+                let value = *n as u16;
+                self.emit(0xA9); self.emit(value as u8);
+                self.emit(0x85); self.emit(zp);
+                self.emit(0xA9); self.emit((value >> 8) as u8);
+                self.emit(0x85); self.emit(zp + 1);
+            }
+            Expr::Var(name) if matches!(self.var_types.get(name), Some(VarType::Word)) => {
+                if let Some(vz) = self.var_addr(name) {
+                    self.emit(0xA5); self.emit(vz);
+                    self.emit(0x85); self.emit(zp);
+                    self.emit(0xA5); self.emit(vz + 1);
+                    self.emit(0x85); self.emit(zp + 1);
+                }
+            }
+            _ => {
+                let expr = expr.clone();
+                self.eval_expr(&expr);
+                self.emit(0x85); self.emit(zp);
+                self.emit(0xA9); self.emit(0x00);
+                self.emit(0x85); self.emit(zp + 1);
+            }
+        }
+    }
+
     // Convert 8-bit ZP value to decimal ASCII string stored at dest_addr.
     // Always writes 3 chars + null terminator: "042\0"
     fn emit_int_to_str(&mut self, zp_src: u8, dest_addr: u16) {
@@ -1110,6 +1173,306 @@ impl Codegen {
         self.emit(0x05); self.emit(zp + 3);   // ORA mask
         self.emit(0x91); self.emit(zp + 4);   // STA (ptr_lo),Y
         self.emit(0x60);                       // RTS
+    }
+
+    /// Midpoint circle helper. Caller fills circle_zp with center/radius and calls via JSR.
+    /// Layout: zp+0..1=center_x, zp+2=center_y, zp+3..4=radius,
+    ///         zp+5..6=x, zp+7..8=y, zp+9..10=decision,
+    ///         zp+11..12=x0+x, zp+13..14=x0-x, zp+15..16=x0+y, zp+17..18=x0-y,
+    ///         zp+19=y0+x, zp+20=y0-x, zp+21=y0+y, zp+22=y0-y, zp+23=scratch
+    fn emit_circle_helper(&mut self, plot_helper_addr: u16) {
+        let zp = match self.circle_zp { Some(z) => z, None => return };
+        let pzp = match self.plot_zp { Some(z) => z, None => return };
+
+        // ZP layout (24 bytes from zp):
+        //  zp+0,1  : center_x (word)      zp+2    : center_y (byte)
+        //  zp+3,4  : radius (word)  — kept as x (pXR), decreases
+        //  zp+5,6  : x current (starts = radius)
+        //  zp+7,8  : y current (starts = 0)
+        //  zp+9,10 : dA accumulator (starts = radius; a=a-y each iter; if<0: x--; a+=x)
+        //  zp+11,12: xoPx=cx+x  zp+13,14: xoMx=cx-x
+        //  zp+15,16: xoPy=cx+y  zp+17,18: xoMy=cx-y
+        //  zp+19   : yoPx=cy+x  zp+20: yoMx=cy-x
+        //  zp+21   : yoPy=cy+y  zp+22: yoMy=cy-y
+
+        // ═══ ENTRY POINT — callers JSR here ════════════════════════════════
+        // Init: y=0, x=radius, dA=radius  (reference: a=x=r; y=0)
+        self.emit(0xA9); self.emit(0x00);          // LDA #0
+        self.emit(0x85); self.emit(zp + 7);        // STA y_lo
+        self.emit(0x85); self.emit(zp + 8);        // STA y_hi
+        self.emit(0xA5); self.emit(zp + 3);        // LDA radius_lo
+        self.emit(0x85); self.emit(zp + 5);        // STA x_lo
+        self.emit(0x85); self.emit(zp + 9);        // STA dA_lo
+        self.emit(0xA5); self.emit(zp + 4);        // LDA radius_hi
+        self.emit(0x85); self.emit(zp + 6);        // STA x_hi
+        self.emit(0x85); self.emit(zp + 10);       // STA dA_hi
+
+        let loop_addr = self.current_addr();
+
+        // ─── Compute 8 coordinate combinations ───────────────────────────
+        // xoPx = cx + x  (zp+11,12)
+        self.emit(0x18);
+        self.emit(0xA5); self.emit(zp + 0);
+        self.emit(0x65); self.emit(zp + 5);
+        self.emit(0x85); self.emit(zp + 11);
+        self.emit(0xA5); self.emit(zp + 1);
+        self.emit(0x65); self.emit(zp + 6);
+        self.emit(0x85); self.emit(zp + 12);
+
+        // xoMx = cx - x  (zp+13,14)
+        self.emit(0x38);
+        self.emit(0xA5); self.emit(zp + 0);
+        self.emit(0xE5); self.emit(zp + 5);
+        self.emit(0x85); self.emit(zp + 13);
+        self.emit(0xA5); self.emit(zp + 1);
+        self.emit(0xE5); self.emit(zp + 6);
+        self.emit(0x85); self.emit(zp + 14);
+
+        // xoPy = cx + y  (zp+15,16)
+        self.emit(0x18);
+        self.emit(0xA5); self.emit(zp + 0);
+        self.emit(0x65); self.emit(zp + 7);
+        self.emit(0x85); self.emit(zp + 15);
+        self.emit(0xA5); self.emit(zp + 1);
+        self.emit(0x65); self.emit(zp + 8);
+        self.emit(0x85); self.emit(zp + 16);
+
+        // xoMy = cx - y  (zp+17,18)
+        self.emit(0x38);
+        self.emit(0xA5); self.emit(zp + 0);
+        self.emit(0xE5); self.emit(zp + 7);
+        self.emit(0x85); self.emit(zp + 17);
+        self.emit(0xA5); self.emit(zp + 1);
+        self.emit(0xE5); self.emit(zp + 8);
+        self.emit(0x85); self.emit(zp + 18);
+
+        // yoPx = cy + x  (zp+19), clamped to 201 if overflow
+        self.emit(0xA5); self.emit(zp + 6);        // LDA x_hi
+        self.emit(0xD0);
+        let bne1 = self.code.len(); self.emit(0x00); // BNE → out
+        self.emit(0x18);
+        self.emit(0xA5); self.emit(zp + 2);         // LDA cy
+        self.emit(0x65); self.emit(zp + 5);         // ADC x_lo
+        self.emit(0x90);
+        let bcc1 = self.code.len(); self.emit(0x00); // BCC → store
+        let out1 = self.current_addr();
+        self.patch_bxx(bne1, out1);
+        self.emit(0xA9); self.emit(201);
+        self.emit(0x85); self.emit(zp + 19);
+        self.emit(0x4C);
+        let jmp1 = self.code.len(); self.emit16(0x0000);
+        let store1 = self.current_addr();
+        self.patch_bxx(bcc1, store1);
+        self.emit(0x85); self.emit(zp + 19);
+        let after1 = self.current_addr();
+        self.patch_abs(jmp1, after1);
+
+        // yoMx = cy - x  (zp+20), clamped to 201 if borrow
+        self.emit(0xA5); self.emit(zp + 6);        // LDA x_hi
+        self.emit(0xD0);
+        let bne2 = self.code.len(); self.emit(0x00); // BNE → out
+        self.emit(0x38);
+        self.emit(0xA5); self.emit(zp + 2);         // LDA cy
+        self.emit(0xE5); self.emit(zp + 5);         // SBC x_lo
+        self.emit(0xB0);
+        let bcs2 = self.code.len(); self.emit(0x00); // BCS → store
+        let out2 = self.current_addr();
+        self.patch_bxx(bne2, out2);
+        self.emit(0xA9); self.emit(201);
+        self.emit(0x85); self.emit(zp + 20);
+        self.emit(0x4C);
+        let jmp2 = self.code.len(); self.emit16(0x0000);
+        let store2 = self.current_addr();
+        self.patch_bxx(bcs2, store2);
+        self.emit(0x85); self.emit(zp + 20);
+        let after2 = self.current_addr();
+        self.patch_abs(jmp2, after2);
+
+        // yoPy = cy + y  (zp+21), clamped to 201 if overflow
+        self.emit(0xA5); self.emit(zp + 8);        // LDA y_hi
+        self.emit(0xD0);
+        let bne3 = self.code.len(); self.emit(0x00); // BNE → out
+        self.emit(0x18);
+        self.emit(0xA5); self.emit(zp + 2);         // LDA cy
+        self.emit(0x65); self.emit(zp + 7);         // ADC y_lo
+        self.emit(0x90);
+        let bcc3 = self.code.len(); self.emit(0x00); // BCC → store
+        let out3 = self.current_addr();
+        self.patch_bxx(bne3, out3);
+        self.emit(0xA9); self.emit(201);
+        self.emit(0x85); self.emit(zp + 21);
+        self.emit(0x4C);
+        let jmp3 = self.code.len(); self.emit16(0x0000);
+        let store3 = self.current_addr();
+        self.patch_bxx(bcc3, store3);
+        self.emit(0x85); self.emit(zp + 21);
+        let after3 = self.current_addr();
+        self.patch_abs(jmp3, after3);
+
+        // yoMy = cy - y  (zp+22), clamped to 201 if borrow
+        self.emit(0xA5); self.emit(zp + 8);        // LDA y_hi
+        self.emit(0xD0);
+        let bne4 = self.code.len(); self.emit(0x00); // BNE → out
+        self.emit(0x38);
+        self.emit(0xA5); self.emit(zp + 2);         // LDA cy
+        self.emit(0xE5); self.emit(zp + 7);         // SBC y_lo
+        self.emit(0xB0);
+        let bcs4 = self.code.len(); self.emit(0x00); // BCS → store
+        let out4 = self.current_addr();
+        self.patch_bxx(bne4, out4);
+        self.emit(0xA9); self.emit(201);
+        self.emit(0x85); self.emit(zp + 22);
+        self.emit(0x4C);
+        let jmp4 = self.code.len(); self.emit16(0x0000);
+        let store4 = self.current_addr();
+        self.patch_bxx(bcs4, store4);
+        self.emit(0x85); self.emit(zp + 22);
+        let after4 = self.current_addr();
+        self.patch_abs(jmp4, after4);
+
+        // ─── Plot 8 symmetric points (forward JSR to try_plot, patched later) ──
+        let mut try_jsrs: Vec<usize> = Vec::new();
+
+        // arc3: (cx+x, cy+y)
+        self.emit(0xA5); self.emit(zp+11); self.emit(0x85); self.emit(pzp+0);
+        self.emit(0xA5); self.emit(zp+12); self.emit(0x85); self.emit(pzp+1);
+        self.emit(0xA5); self.emit(zp+21); self.emit(0x85); self.emit(pzp+2);
+        self.emit(0x20); try_jsrs.push(self.code.len()); self.emit16(0x0000);
+
+        // arc2: (cx+x, cy-y)
+        self.emit(0xA5); self.emit(zp+11); self.emit(0x85); self.emit(pzp+0);
+        self.emit(0xA5); self.emit(zp+12); self.emit(0x85); self.emit(pzp+1);
+        self.emit(0xA5); self.emit(zp+22); self.emit(0x85); self.emit(pzp+2);
+        self.emit(0x20); try_jsrs.push(self.code.len()); self.emit16(0x0000);
+
+        // arc7: (cx-x, cy-y)
+        self.emit(0xA5); self.emit(zp+13); self.emit(0x85); self.emit(pzp+0);
+        self.emit(0xA5); self.emit(zp+14); self.emit(0x85); self.emit(pzp+1);
+        self.emit(0xA5); self.emit(zp+22); self.emit(0x85); self.emit(pzp+2);
+        self.emit(0x20); try_jsrs.push(self.code.len()); self.emit16(0x0000);
+
+        // arc6: (cx-x, cy+y)
+        self.emit(0xA5); self.emit(zp+13); self.emit(0x85); self.emit(pzp+0);
+        self.emit(0xA5); self.emit(zp+14); self.emit(0x85); self.emit(pzp+1);
+        self.emit(0xA5); self.emit(zp+21); self.emit(0x85); self.emit(pzp+2);
+        self.emit(0x20); try_jsrs.push(self.code.len()); self.emit16(0x0000);
+
+        // arc4: (cx+y, cy+x)
+        self.emit(0xA5); self.emit(zp+15); self.emit(0x85); self.emit(pzp+0);
+        self.emit(0xA5); self.emit(zp+16); self.emit(0x85); self.emit(pzp+1);
+        self.emit(0xA5); self.emit(zp+19); self.emit(0x85); self.emit(pzp+2);
+        self.emit(0x20); try_jsrs.push(self.code.len()); self.emit16(0x0000);
+
+        // arc1: (cx+y, cy-x)
+        self.emit(0xA5); self.emit(zp+15); self.emit(0x85); self.emit(pzp+0);
+        self.emit(0xA5); self.emit(zp+16); self.emit(0x85); self.emit(pzp+1);
+        self.emit(0xA5); self.emit(zp+20); self.emit(0x85); self.emit(pzp+2);
+        self.emit(0x20); try_jsrs.push(self.code.len()); self.emit16(0x0000);
+
+        // arc8: (cx-y, cy-x)
+        self.emit(0xA5); self.emit(zp+17); self.emit(0x85); self.emit(pzp+0);
+        self.emit(0xA5); self.emit(zp+18); self.emit(0x85); self.emit(pzp+1);
+        self.emit(0xA5); self.emit(zp+20); self.emit(0x85); self.emit(pzp+2);
+        self.emit(0x20); try_jsrs.push(self.code.len()); self.emit16(0x0000);
+
+        // arc5: (cx-y, cy+x)
+        self.emit(0xA5); self.emit(zp+17); self.emit(0x85); self.emit(pzp+0);
+        self.emit(0xA5); self.emit(zp+18); self.emit(0x85); self.emit(pzp+1);
+        self.emit(0xA5); self.emit(zp+19); self.emit(0x85); self.emit(pzp+2);
+        self.emit(0x20); try_jsrs.push(self.code.len()); self.emit16(0x0000);
+
+        // ─── Exit check: if y >= x → done ────────────────────────────────
+        self.emit(0xA5); self.emit(zp + 7);    // LDA y_lo
+        self.emit(0xC5); self.emit(zp + 5);    // CMP x_lo
+        self.emit(0xA5); self.emit(zp + 8);    // LDA y_hi
+        self.emit(0xE5); self.emit(zp + 6);    // SBC x_hi  — carry set if y >= x
+        self.emit(0xB0);
+        let bcs_done = self.code.len(); self.emit(0x00); // BCS done
+
+        // ─── y = y + 1 ────────────────────────────────────────────────────
+        self.emit(0xE6); self.emit(zp + 7);    // INC y_lo
+        self.emit(0xD0);
+        let bne_ync = self.code.len(); self.emit(0x00);
+        self.emit(0xE6); self.emit(zp + 8);    // INC y_hi
+        let ync_addr = self.current_addr();
+        self.patch_bxx(bne_ync, ync_addr);
+
+        // ─── dA = dA - y  (reference step 15: a=a-y) ─────────────────────
+        self.emit(0x38);                        // SEC
+        self.emit(0xA5); self.emit(zp + 9);    // LDA dA_lo
+        self.emit(0xE5); self.emit(zp + 7);    // SBC y_lo
+        self.emit(0x85); self.emit(zp + 9);    // STA dA_lo
+        self.emit(0xA5); self.emit(zp + 10);   // LDA dA_hi
+        self.emit(0xE5); self.emit(zp + 8);    // SBC y_hi
+        self.emit(0x85); self.emit(zp + 10);   // STA dA_hi (N flag = sign of result)
+
+        // ─── if dA >= 0 skip x decrement (reference step 16: if a<0) ─────
+        self.emit(0x10);
+        let bpl_skip = self.code.len(); self.emit(0x00); // BPL skip_xdec
+
+        // ─── x = x - 1  (reference step 17: x=x-1) ──────────────────────
+        self.emit(0xA5); self.emit(zp + 5);    // LDA x_lo
+        self.emit(0xD0);
+        let bne_xlo = self.code.len(); self.emit(0x00); // BNE no_borrow_hi
+        self.emit(0xC6); self.emit(zp + 6);    // DEC x_hi
+        let xlo_addr = self.current_addr();
+        self.patch_bxx(bne_xlo, xlo_addr);
+        self.emit(0xC6); self.emit(zp + 5);    // DEC x_lo
+
+        // ─── dA = dA + x  (reference step 18: a=a+x) ────────────────────
+        self.emit(0x18);                        // CLC
+        self.emit(0xA5); self.emit(zp + 9);    // LDA dA_lo
+        self.emit(0x65); self.emit(zp + 5);    // ADC x_lo
+        self.emit(0x85); self.emit(zp + 9);    // STA dA_lo
+        self.emit(0xA5); self.emit(zp + 10);   // LDA dA_hi
+        self.emit(0x65); self.emit(zp + 6);    // ADC x_hi
+        self.emit(0x85); self.emit(zp + 10);   // STA dA_hi
+
+        let skip_xdec = self.current_addr();
+        self.patch_bxx(bpl_skip, skip_xdec);
+
+        // ─── JMP loop ─────────────────────────────────────────────────────
+        self.emit(0x4C); self.emit16(loop_addr);
+
+        // ─── done: RTS ────────────────────────────────────────────────────
+        let done_addr = self.current_addr();
+        self.patch_bxx(bcs_done, done_addr);
+        self.emit(0x60); // RTS
+
+        // ─── try_plot subroutine  (back-patched into the 8 JSRs above) ────
+        let try_plot_addr = self.current_addr();
+        for patch in &try_jsrs {
+            self.code[*patch]     = (try_plot_addr & 0xFF) as u8;
+            self.code[*patch + 1] = (try_plot_addr >> 8)   as u8;
+        }
+
+        // Y bounds: skip if plot_y >= 200
+        self.emit(0xA5); self.emit(pzp + 2);   // LDA plot_y
+        self.emit(0xC9); self.emit(200);        // CMP #200
+        self.emit(0xB0);
+        let bcs_skip = self.code.len(); self.emit(0x00); // BCS skip
+
+        // X bounds: skip if plot_x >= 320 ($0140)
+        self.emit(0xA5); self.emit(pzp + 1);   // LDA x_hi
+        self.emit(0xC9); self.emit(0x01);       // CMP #1
+        self.emit(0x90);
+        let bcc_vis = self.code.len(); self.emit(0x00);  // BCC visible (hi=0)
+        self.emit(0xD0);
+        let bne_skip2 = self.code.len(); self.emit(0x00); // BNE skip (hi>1)
+        self.emit(0xA5); self.emit(pzp + 0);   // LDA x_lo
+        self.emit(0xC9); self.emit(0x40);       // CMP #64  (64+256=320)
+        self.emit(0xB0);
+        let bcs_skip_x = self.code.len(); self.emit(0x00); // BCS skip
+
+        let vis_addr = self.current_addr();
+        self.patch_bxx(bcc_vis, vis_addr);
+        self.emit(0x20); self.emit16(plot_helper_addr); // JSR plot helper
+
+        let skip_addr = self.current_addr();
+        self.patch_bxx(bcs_skip,   skip_addr);
+        self.patch_bxx(bne_skip2,  skip_addr);
+        self.patch_bxx(bcs_skip_x, skip_addr);
+        self.emit(0x60); // RTS
     }
 
     /// Emit code to store a 16-bit address expression to two consecutive REU registers.
@@ -1944,46 +2307,23 @@ impl Codegen {
                     // ZP layout: zp+0=X_lo, zp+1=X_hi, zp+2=Y
 
                     // Store Y (always 8-bit)
-                    self.eval_expr(&y);
-                    self.emit(0x85); self.emit(zp + 2);
-
-                    // Store X as 16-bit (supports 0-319 full bitmap width)
-                    match &x {
-                        Expr::Number(n) => {
-                            let xu = *n as u16;
-                            self.emit(0xA9); self.emit(xu as u8);        // LDA #lo
-                            self.emit(0x85); self.emit(zp);
-                            self.emit(0xA9); self.emit((xu >> 8) as u8); // LDA #hi
-                            self.emit(0x85); self.emit(zp + 1);
-                        }
-                        Expr::Var(name) => {
-                            let name = name.clone();
-                            let is_word = matches!(self.var_types.get(&name), Some(VarType::Word));
-                            if is_word {
-                                if let Some(vz) = self.var_addr(&name) {
-                                    self.emit(0xA5); self.emit(vz);       // LDA var_lo
-                                    self.emit(0x85); self.emit(zp);
-                                    self.emit(0xA5); self.emit(vz + 1);  // LDA var_hi
-                                    self.emit(0x85); self.emit(zp + 1);
-                                }
-                            } else {
-                                self.eval_expr(&Expr::Var(name));
-                                self.emit(0x85); self.emit(zp);           // STA X_lo
-                                self.emit(0xA9); self.emit(0x00);
-                                self.emit(0x85); self.emit(zp + 1);       // STA X_hi = 0
-                            }
-                        }
-                        _ => {
-                            self.eval_expr(&x);
-                            self.emit(0x85); self.emit(zp);               // STA X_lo
-                            self.emit(0xA9); self.emit(0x00);
-                            self.emit(0x85); self.emit(zp + 1);           // STA X_hi = 0
-                        }
-                    }
+                    self.emit_store_expr_u8(&y, zp + 2);
+                    self.emit_store_expr_u16(&x, zp);
                     self.emit(0x20);
                     let patch = self.code.len();
                     self.emit16(0x0000);
                     self.plot_patches.push(patch);
+                }
+            }
+            Stmt::Circle { x, y, radius } => {
+                if let Some(zp) = self.circle_zp {
+                    self.emit_store_expr_u16(x, zp + 0);
+                    self.emit_store_expr_u8(y, zp + 2);
+                    self.emit_store_expr_u16(radius, zp + 3);
+                    self.emit(0x20);
+                    let patch = self.code.len();
+                    self.emit16(0x0000);
+                    self.circle_patches.push(patch);
                 }
             }
             Stmt::Line { x1, y1, x2, y2 } => {
@@ -2480,6 +2820,18 @@ impl Codegen {
                 for &pos in &self.line_patches.clone() {
                     self.code[pos]     = dl_addr as u8;
                     self.code[pos + 1] = (dl_addr >> 8) as u8;
+                }
+            }
+        }
+
+        // Emit midpoint circle helper — uses the plot helper for visible pixels only.
+        if !self.circle_patches.is_empty() {
+            if let Some(plot_addr) = plot_helper_addr {
+                let circle_addr = self.current_addr();
+                self.emit_circle_helper(plot_addr);
+                for &pos in &self.circle_patches.clone() {
+                    self.code[pos]     = circle_addr as u8;
+                    self.code[pos + 1] = (circle_addr >> 8) as u8;
                 }
             }
         }

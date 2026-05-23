@@ -473,7 +473,8 @@ graphics on              # VIC-II hires bitmap mode (320×200), bitmap at $2000
 graphics on multi        # VIC-II multicolor bitmap mode (160×200, 4 colors per 8×8 cell)
 graphics off             # back to text mode
 gcls                     # clear bitmap (zero-fill $2000-$3FFF)
-plot x, y                # set pixel at (x, y);  x: 0-255, y: 0-199
+plot x, y                # set pixel at (x, y);  x: 0-319, y: 0-199
+circle x, y, r           # midpoint circle centered at (x, y) with radius r; clips off-screen points
 line x1, y1, x2, y2      # Bresenham line from (x1,y1) to (x2,y2); x: 0-255, y: 0-199
 ```
 

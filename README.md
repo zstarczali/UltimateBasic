@@ -179,6 +179,7 @@ graphics off             # return to text mode
 gcls                     # clear bitmap (fills $2000-$3FFF) + set video matrix colors
 
 plot x, y                # set pixel at (x, y);  x: 0-319,  y: 0-199
+circle x, y, r           # midpoint circle centered at (x, y) with radius r; clips off-screen points
 line x1, y1, x2, y2      # Bresenham line from (x1,y1) to (x2,y2); x: 0-255, y: 0-199
 ```
 
