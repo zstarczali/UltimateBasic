@@ -1,0 +1,36 @@
+# bitmap_demo.ub – High-resolution graphics demo
+# Draws a border and two diagonals (forming an X) in 320x200 bitmap mode.
+
+graphics on
+gcls
+
+color bg     0
+color border 0
+
+# Top and bottom border lines  (x: 0..199)
+for x = 0 to 199
+  plot x, 0
+  plot x, 199
+next
+
+# Left and right border lines  (y: 0..199)
+for y = 0 to 199
+  plot 0,   y
+  plot 199, y
+next
+
+# Diagonal: top-left → bottom-right
+for i = 0 to 199
+  plot i, i
+next
+
+# Diagonal: top-right → bottom-left  (199-i stays in 0..199, no overflow)
+for i = 0 to 199
+  plot 199 - i, i
+next
+
+# Wait for keypress, restore text mode and return cleanly to BASIC
+var k = getch()
+graphics off
+cls
+bye

@@ -13,6 +13,10 @@ impl Parser {
         Self { tokens, pos: 0, consts: std::collections::HashMap::new() }
     }
 
+    pub fn new_with_consts(tokens: Vec<Token>, consts: std::collections::HashMap<String, i16>) -> Self {
+        Self { tokens, pos: 0, consts }
+    }
+
     fn peek(&self) -> &Token {
         self.tokens.get(self.pos).unwrap_or(&Token::Eof)
     }
@@ -40,7 +44,25 @@ impl Parser {
         let mut stmts = vec![];
         self.skip_newlines();
         while self.peek() != &Token::Eof {
-            if let Some(s) = self.parse_stmt() {
+            if self.peek() == &Token::Include {
+                self.advance(); // consume 'include'
+                if let Token::StringLit(path) = self.peek().clone() {
+                    self.advance();
+                    match std::fs::read_to_string(&path) {
+                        Ok(src) => {
+                            let mut lex = super::lexer::Lexer::new(&src);
+                            let toks = lex.tokenize();
+                            let consts = self.consts.clone();
+                            let mut sub = Parser::new_with_consts(toks, consts);
+                            let sub_stmts = sub.parse();
+                            self.consts.extend(sub.consts.into_iter());
+                            stmts.extend(sub_stmts);
+                        }
+                        Err(e) => eprintln!("include '{}': {}", path, e),
+                    }
+                }
+                self.expect_newline();
+            } else if let Some(s) = self.parse_stmt() {
                 stmts.push(s);
             }
             self.skip_newlines();
@@ -282,10 +304,10 @@ impl Parser {
             }
             Token::Cls => {
                 self.advance();
-                let manual = self.peek() == &Token::Manual;
-                if manual { self.advance(); }
+                let fast = self.peek() == &Token::Fast;
+                if fast { self.advance(); }
                 self.expect_newline();
-                Some(Stmt::Cls { manual })
+                Some(Stmt::Cls { fast })
             }
             Token::Graphics => {
                 self.advance();
@@ -294,8 +316,21 @@ impl Parser {
                     Token::Off => { self.advance(); false }
                     _          => true,
                 };
+                let multi = if on && self.peek() == &Token::Multi {
+                    self.advance(); true
+                } else { false };
                 self.expect_newline();
-                Some(Stmt::Graphics { on })
+                Some(Stmt::Graphics { on, multi })
+            }
+            Token::Display => {
+                self.advance();
+                let on = match self.peek() {
+                    Token::On  => { self.advance(); true  }
+                    Token::Off => { self.advance(); false }
+                    _          => true,
+                };
+                self.expect_newline();
+                Some(Stmt::Display { on })
             }
             Token::Sys => {
                 self.advance();
@@ -396,6 +431,172 @@ impl Parser {
                 self.expect_newline();
                 Some(Stmt::Poke(addr, val))
             }
+            Token::Plot => {
+                self.advance();
+                let x = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let y = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::Plot(x, y))
+            }
+            Token::Line => {
+                self.advance();
+                let x1 = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let y1 = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let x2 = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let y2 = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::Line { x1, y1, x2, y2 })
+            }
+            Token::Gcls => {
+                self.advance();
+                self.expect_newline();
+                Some(Stmt::Gcls)
+            }
+            Token::Bye => {
+                self.advance();
+                self.expect_newline();
+                Some(Stmt::Bye)
+            }
+            Token::Incbin => {
+                self.advance();
+                if let Token::StringLit(path) = self.peek().clone() {
+                    self.advance();
+                    self.expect_newline();
+                    Some(Stmt::Incbin(path))
+                } else {
+                    self.expect_newline();
+                    None
+                }
+            }
+            Token::Data => {
+                self.advance();
+                let mut items = vec![];
+                loop {
+                    match self.peek().clone() {
+                        Token::Number(n) => { self.advance(); items.push(Expr::Number(n)); }
+                        Token::Addr(n)   => { self.advance(); items.push(Expr::Number(n as i16)); }
+                        Token::Comma     => { self.advance(); }
+                        Token::Newline | Token::Eof => break,
+                        _ => break,
+                    }
+                }
+                self.expect_newline();
+                Some(Stmt::Data(items))
+            }
+            Token::Read => {
+                self.advance();
+                if let Token::Ident(name) = self.peek().clone() {
+                    self.advance();
+                    self.expect_newline();
+                    Some(Stmt::Read(name))
+                } else {
+                    self.expect_newline();
+                    None
+                }
+            }
+            Token::Wait => {
+                self.advance();
+                let raster_target = matches!(self.peek(), Token::Raster);
+                if raster_target { self.advance(); } // consume 'raster'
+                let value = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::Wait { raster_target, value })
+            }
+            Token::Sound => {
+                self.advance();
+                let channel = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let freq = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let duration = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::Sound { channel, freq, duration })
+            }
+            Token::Sprite => {
+                self.advance();
+                let id = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let x = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let y = self.parse_expr();
+                let data_addr = if self.peek() == &Token::Comma {
+                    self.advance();
+                    Some(self.parse_expr())
+                } else {
+                    None
+                };
+                self.expect_newline();
+                Some(Stmt::Sprite { id, x, y, data_addr })
+            }
+            Token::SpriteOn => {
+                self.advance();
+                let id = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::SpriteOn { id })
+            }
+            Token::SpriteOff => {
+                self.advance();
+                let id = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::SpriteOff { id })
+            }
+            Token::SpriteColor => {
+                self.advance();
+                let id = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let color = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::SpriteColor { id, color })
+            }
+            Token::SpriteMulticolor => {
+                self.advance();
+                let id = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let on = matches!(self.advance(), Token::On);
+                self.expect_newline();
+                Some(Stmt::SpriteMulticolor { id, on })
+            }
+            Token::SpriteDef => {
+                self.advance();
+                // id: compile-time constant 0-7
+                let id = match self.parse_expr() {
+                    Expr::Number(n) => n as u8,
+                    _ => panic!("sprite_def: id must be a constant"),
+                };
+                // bytes: comma-separated constant values (1-63; shorter → zero-padded)
+                let mut bytes: Vec<u8> = Vec::new();
+                while self.peek() == &Token::Comma {
+                    self.advance();
+                    match self.parse_expr() {
+                        Expr::Number(n) => bytes.push(n as u8),
+                        _ => panic!("sprite_def: byte values must be constants"),
+                    }
+                }
+                self.expect_newline();
+                Some(Stmt::SpriteDef { id, bytes })
+            }
+            Token::Reu => {
+                self.advance();
+                // parse op: stash / fetch / swap
+                let op = match self.advance() {
+                    Token::Stash => crate::compiler::ast::ReuOp::Stash,
+                    Token::Fetch => crate::compiler::ast::ReuOp::Fetch,
+                    _            => crate::compiler::ast::ReuOp::Swap,
+                };
+                let c64_addr = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let reu_bank = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let reu_addr = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let length = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::Reu { op, c64_addr, reu_bank, reu_addr, length })
+            }
             Token::Call => {
                 self.advance();
                 let name = if let Token::Ident(n) = self.advance() { n } else { return None; };
@@ -422,10 +623,25 @@ impl Parser {
     fn parse_or(&mut self) -> Expr {
         let mut left = self.parse_and();
         loop {
-            if matches!(self.peek(), Token::Or) {
+            let op = match self.peek() {
+                Token::Or  => BinOp::Or,
+                Token::Xor => BinOp::Xor,
+                _ => break,
+            };
+            self.advance();
+            let right = self.parse_and();
+            left = Expr::BinOp(Box::new(left), op, Box::new(right));
+        }
+        left
+    }
+
+    fn parse_and(&mut self) -> Expr {
+        let mut left = self.parse_shift();
+        loop {
+            if matches!(self.peek(), Token::And) {
                 self.advance();
-                let right = self.parse_and();
-                left = Expr::BinOp(Box::new(left), BinOp::Or, Box::new(right));
+                let right = self.parse_shift();
+                left = Expr::BinOp(Box::new(left), BinOp::And, Box::new(right));
             } else {
                 break;
             }
@@ -433,16 +649,17 @@ impl Parser {
         left
     }
 
-    fn parse_and(&mut self) -> Expr {
+    fn parse_shift(&mut self) -> Expr {
         let mut left = self.parse_unary();
         loop {
-            if matches!(self.peek(), Token::And) {
-                self.advance();
-                let right = self.parse_unary();
-                left = Expr::BinOp(Box::new(left), BinOp::And, Box::new(right));
-            } else {
-                break;
-            }
+            let op = match self.peek() {
+                Token::Shl => BinOp::Shl,
+                Token::Shr => BinOp::Shr,
+                _ => break,
+            };
+            self.advance();
+            let right = self.parse_unary();
+            left = Expr::BinOp(Box::new(left), op, Box::new(right));
         }
         left
     }
@@ -541,7 +758,36 @@ impl Parser {
                 if self.peek() == &Token::RParen { self.advance(); }
                 e
             }
-            Token::Getch => Expr::Getch,
+            Token::Getch => {
+                if self.peek() == &Token::LParen { self.advance(); } // skip (
+                if self.peek() == &Token::RParen { self.advance(); } // skip )
+                Expr::Getch
+            }
+            Token::ReuPresent => {
+                if self.peek() == &Token::LParen { self.advance(); } // skip (
+                if self.peek() == &Token::RParen { self.advance(); } // skip )
+                Expr::ReuPresent
+            }
+            Token::SpriteHit => {
+                if self.peek() == &Token::LParen { self.advance(); }
+                if self.peek() == &Token::RParen { self.advance(); }
+                Expr::SpriteHit
+            }
+            Token::SpriteBgHit => {
+                if self.peek() == &Token::LParen { self.advance(); }
+                if self.peek() == &Token::RParen { self.advance(); }
+                Expr::SpriteBgHit
+            }
+            Token::Joy => {
+                if self.peek() == &Token::LParen { self.advance(); } // skip (
+                let port = match self.advance() {
+                    Token::Number(1) => 1u8,
+                    Token::Number(2) => 2u8,
+                    _ => 2u8, // default to port 2
+                };
+                if self.peek() == &Token::RParen { self.advance(); } // skip )
+                Expr::Joy(port)
+            }
             Token::Peek => {
                 if self.peek() == &Token::LParen { self.advance(); }
                 let arg = self.parse_expr();
@@ -579,6 +825,36 @@ impl Parser {
                 let arg = self.parse_expr();
                 if self.peek() == &Token::RParen { self.advance(); }
                 Expr::Sgn(Box::new(arg))
+            }
+            Token::Chr => {
+                if self.peek() == &Token::LParen { self.advance(); }
+                let arg = self.parse_expr();
+                if self.peek() == &Token::RParen { self.advance(); }
+                Expr::ChrStr(Box::new(arg))
+            }
+            Token::Sin => {
+                if self.peek() == &Token::LParen { self.advance(); }
+                let arg = self.parse_expr();
+                if self.peek() == &Token::RParen { self.advance(); }
+                Expr::Sin(Box::new(arg))
+            }
+            Token::Cos => {
+                if self.peek() == &Token::LParen { self.advance(); }
+                let arg = self.parse_expr();
+                if self.peek() == &Token::RParen { self.advance(); }
+                Expr::Cos(Box::new(arg))
+            }
+            Token::Hex => {
+                if self.peek() == &Token::LParen { self.advance(); }
+                let arg = self.parse_expr();
+                if self.peek() == &Token::RParen { self.advance(); }
+                Expr::HexFmt(Box::new(arg))
+            }
+            Token::Bin => {
+                if self.peek() == &Token::LParen { self.advance(); }
+                let arg = self.parse_expr();
+                if self.peek() == &Token::RParen { self.advance(); }
+                Expr::BinFmt(Box::new(arg))
             }
             _ => Expr::Number(0),
         }
@@ -723,7 +999,7 @@ mod tests {
 
     #[test]
     fn expr_getch() {
-        assert!(matches!(first_expr("getch"), Expr::Getch));
+        assert!(matches!(first_expr("getch()"), Expr::Getch));
     }
 
     // ── Print ────────────────────────────────────────────────────────────
@@ -882,19 +1158,23 @@ mod tests {
     #[test]
     fn cls() {
         let stmts = parse("cls");
-        assert!(matches!(&stmts[0], Stmt::Cls { manual: false }));
+        assert!(matches!(&stmts[0], Stmt::Cls { fast: false }));
     }
-    #[test] fn cls_manual() {
-        let stmts = parse("cls manual");
-        assert!(matches!(&stmts[0], Stmt::Cls { manual: true }));
+    #[test] fn cls_fast() {
+        let stmts = parse("cls fast");
+        assert!(matches!(&stmts[0], Stmt::Cls { fast: true }));
     }
     #[test] fn graphics_on() {
         let stmts = parse("graphics on");
-        assert!(matches!(&stmts[0], Stmt::Graphics { on: true }));
+        assert!(matches!(&stmts[0], Stmt::Graphics { on: true, multi: false }));
     }
     #[test] fn graphics_off() {
         let stmts = parse("graphics off");
-        assert!(matches!(&stmts[0], Stmt::Graphics { on: false }));
+        assert!(matches!(&stmts[0], Stmt::Graphics { on: false, multi: false }));
+    }
+    #[test] fn graphics_on_multi() {
+        let stmts = parse("graphics on multi");
+        assert!(matches!(&stmts[0], Stmt::Graphics { on: true, multi: true }));
     }
 
     // ── Colors ───────────────────────────────────────────────────────────
@@ -1059,6 +1339,26 @@ mod tests {
         let stmts = parse("const X = 10\nvar y = X + 5");
         assert!(matches!(&stmts[1], Stmt::VarDecl { name, expr: Expr::BinOp(a, BinOp::Add, b), .. }
             if name == "y" && matches!(**a, Expr::Number(10)) && matches!(**b, Expr::Number(5))));
+    }
+
+    #[test] fn chr_str_expr() {
+        let e = first_expr("chr$(65)");
+        assert!(matches!(e, Expr::ChrStr(boxed) if matches!(*boxed, Expr::Number(65))));
+    }
+
+    #[test] fn plot_stmt() {
+        let stmts = parse("plot 10, 20");
+        assert!(matches!(&stmts[0], Stmt::Plot(Expr::Number(10), Expr::Number(20))));
+    }
+
+    #[test] fn plot_stmt_vars() {
+        let stmts = parse("plot x, y");
+        assert!(matches!(&stmts[0], Stmt::Plot(Expr::Var(a), Expr::Var(b)) if a == "x" && b == "y"));
+    }
+
+    #[test] fn gcls_stmt() {
+        let stmts = parse("gcls");
+        assert!(matches!(&stmts[0], Stmt::Gcls));
     }
 
     #[test] fn label_goto_sequence() {

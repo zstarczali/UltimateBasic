@@ -11,9 +11,44 @@ pub struct CompileOptions {
     pub basic_stub: bool,
 }
 
+/// Single variable in zero-page.
+pub struct VarEntry {
+    pub name:    String,
+    pub zp_addr: u8,
+    pub type_str: String,
+}
+
+/// Named subroutine with its absolute address.
+pub struct SubEntry {
+    pub name: String,
+    pub addr: u16,
+}
+
+/// Byte array in heap RAM ($C000+).
+pub struct ArrayEntry {
+    pub name:      String,
+    pub base_addr: u16,
+    pub size:      u16,
+}
+
+/// Memory layout produced after a successful compilation.
+pub struct MemoryMap {
+    pub load_addr:    u16,
+    pub code_size:    usize,
+    pub variables:    Vec<VarEntry>,    // sorted by ZP address
+    pub subroutines:  Vec<SubEntry>,    // sorted by address
+    pub arrays:       Vec<ArrayEntry>,  // sorted by base address
+    pub plot_zp:      Option<u8>,       // 6-byte ZP block for plot helper
+    pub line_zp:      Option<u8>,       // 12-byte ZP block for Bresenham line helper
+    pub sin_table_addr: Option<u16>,    // absolute address of 256-byte sin/cos table
+    pub data_zp:      Option<u8>,       // 2-byte ZP pair for data/read pointer
+    pub code_bytes:   Vec<u8>,          // raw machine code (for verbose hex dump)
+}
+
 pub struct CompileResult {
     pub prg: Vec<u8>,
     pub errors: Vec<String>,
+    pub map: MemoryMap,
 }
 
 /// BASIC stub: 10 SYS 2061
@@ -45,6 +80,7 @@ pub fn compile(source: &str, opts: &CompileOptions) -> CompileResult {
     let mut cg = Codegen::new(load_addr);
     let raw = cg.compile(&ast);
     let errors = cg.errors();
+    let map = cg.memory_map();
 
     let prg = if opts.basic_stub {
         let mut p = BASIC_STUB.to_vec();
@@ -56,5 +92,5 @@ pub fn compile(source: &str, opts: &CompileOptions) -> CompileResult {
         p
     };
 
-    CompileResult { prg, errors }
+    CompileResult { prg, errors, map }
 }

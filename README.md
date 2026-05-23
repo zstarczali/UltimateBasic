@@ -1,290 +1,414 @@
-# Ultimate Basic – C64 BASIC compiler
+# Ultimate Basic — C64 compiler
 
-Ultimate Basic is a compiler that translates a modern BASIC-like language into 6502 machine code for the Commodore 64. Output formats: raw `.prg` and `.d64` disk images.
+A modern BASIC-like language that compiles directly to 6502 machine code for the
+Commodore 64. Output: `.prg` files (VICE or real hardware) and `.d64` disk images.
 
 ## Quick start
 
 ```bash
-# Compile a .ub file to .prg
+cargo build --release
+
+# Compile to .prg (memory map printed on success)
 ultimate-basic build demo.ub -o demo.prg
 
-# Compile with .d64 disk image
-ultimate-basic build demo.ub --d64 disk.d64
+# Verbose: also prints zero-page layout and hex dump
+ultimate-basic build demo.ub -v
 
-# Compile without BASIC SYS stub (raw code at $0801)
-ultimate-basic build demo.ub -o raw.prg --no-stub
+# Compile + create .d64 disk image
+ultimate-basic build demo.ub --d64 disk.d64
 ```
 
 ## Language reference
 
-### Comments
-
-```
-# This is a comment
-```
-
-### Variables
+### Variables and constants
 
 ```basic
-var score = 0           # integer
-var name = "hello"      # string (planned)
-var pi = 3.14           # float (planned)
+var x = 10               # 8-bit integer (default)
+var ptr: word = $0400    # 16-bit — two zero-page bytes, usable as 16-bit address
+var msg = "HELLO"        # string variable (pointer to inline PETSCII data)
+var s: string = "TEXT"   # string with explicit type
+var scores = array(10)   # byte array, 10 elements stored at $C000+
+const BORDER = $D020     # compile-time constant (substituted inline, no ZP slot)
 ```
 
-Variables are 8-bit integers (0-255). Strings and floats are planned.
-All variables are stored in zero-page ($02-$4F), 2 bytes each.
+| Type | Width | Notes |
+|---|---|---|
+| `int` | 8-bit | default for numeric literals |
+| `word` | 16-bit | two ZP bytes; can be used as address in `poke`/`peek` |
+| `string` | pointer | ZP pair → null-terminated PETSCII in code segment |
+| `array(N)` | N bytes | lives at `$C000+`, not in ZP |
+
+### Comments
+
+```basic
+# hash comment
+rem this is also a comment
+var x = 5  ; inline semicolon comment
+```
 
 ### Operators
 
-| Operator | Description | Precedence |
-|----------|-------------|-----------|
-| `*` `/` | Multiply, divide | Highest |
-| `+` `-` | Add, subtract | |
-| `==` `!=` `<` `>` `<=` `>=` | Comparison | |
-| `not` / `!` | Logical NOT | |
-| `and` / `&&` | Logical AND | |
-| `or` / `\|\|` | Logical OR | Lowest |
-
-### Assignment
-
 ```basic
-x = 10
-score = score + 1
-name = "hello"
+x = x + 1
+y = a * b - c / 2
+z = x and 15             # bitwise AND
+w = a or b               # bitwise OR
+v = a xor b              # bitwise XOR
+m = x shl 3              # shift left
+n = x shr 2              # shift right
 ```
 
-### Output
+Comparisons: `==`  `!=`  `<`  `>`  `<=`  `>=`  (return 1/0)
+
+### Print
 
 ```basic
-print "Hello World"
-print "Score: ", score
-print ""                  # blank line
+print "HELLO"
+print x
+print x, y, "text"
+print                     # blank line
+
+print "A=" + a           # string + numeric var
+print s1 + s2            # two string vars → sequential print
+print "Hello " + "World" # two literals → compile-time fold
+print chr$(13)           # print by PETSCII code
 ```
 
-### Input
+### chr$
 
 ```basic
-var c = getch             # wait for keypress, return PETSCII code
+print chr$(65)           # output character with PETSCII code 65 ('A')
+var c = chr$(n)          # store byte value n in variable c
+print ">" + chr$(42)     # usable in string concat
 ```
 
-### Constants
+### Branching
 
 ```basic
-const SCREEN = 1024
-const BORDER = $D020
-const PI = 314
+if x == 1 then
+  print "YES"
+else
+  print "NO"
+end
 ```
 
-Constants are substituted at compile-time. Use them anywhere a number is expected.
-
-### Labels and Goto
+### Loops
 
 ```basic
-label start:
-  print "looping..."
-  goto start              # unconditional jump
+loop 5               # counted loop (5 iterations)
+  print "HI"
+end
 
-label exit:
-  print "done"
+loop                 # infinite loop
+  x = x + 1
+  if x == 100 then break end
+end
+
+for i = 1 to 10      # for..next (preferred)
+  print i
+next
+
+for i = 0 to 20 step 2
+  print i
+next i               # variable name after 'next' is optional
+
+loop i = 1 to 10     # legacy loop..end syntax — identical code
+  print i
+end
+
+while x < 100
+  x = x + 1
+end
 ```
 
-Forward references are supported (goto to a label defined later).
-
-### Poke and Peek
+### Labels and goto
 
 ```basic
-poke $D020, 2             # set border to red
-var v = peek($D012)       # read raster line
+label main_loop
+  x = x + 1
+  if x < 10 then goto main_loop end
+```
+
+Forward `goto` (label defined later) is fully supported.
+
+### Subroutines
+
+```basic
+sub greet()
+  print "HELLO!"
+end
+
+sub set_color(col)
+  color border col
+  color text   col
+end
+
+greet()              # call with parens
+call greet           # call keyword (no parens)
+set_color(6)
+```
+
+Parameters are passed via dedicated zero-page slots. No recursion (slots are static).
+
+### Arrays
+
+```basic
+var scores = array(8)    # 8 bytes at $C000
+
+scores[0] = 100          # constant index → STA $C000
+scores[i] = 99           # variable index → STA (ptr),Y
+var v = scores[i]        # LDA (ptr),Y
+print scores[2]          # usable inline in print
+```
+
+### 16-bit (word) variables
+
+```basic
+var ptr: word = $0400    # two ZP bytes: lo=$00 hi=$04
+poke ptr, 6              # STA (ptr),Y
+var v = peek(ptr)        # LDA (ptr),Y
+```
+
+### Bitmap graphics
+
+```basic
+graphics on              # VIC-II hires bitmap mode (320×200, 1bpp); bitmap at $2000
+graphics on multi        # VIC-II multicolor bitmap mode (160×200, 2bpp, 4 colours/cell)
+graphics off             # return to text mode
+
+gcls                     # clear bitmap (fills $2000-$3FFF) + set video matrix colors
+
+plot x, y                # set pixel at (x, y);  x: 0-319,  y: 0-199
+line x1, y1, x2, y2      # Bresenham line from (x1,y1) to (x2,y2); x: 0-255, y: 0-199
+```
+
+Both `graphics on` variants blank the display (`LDA $D011 / AND #$EF / STA $D011`) while
+switching VIC registers, then re-enable it in the target mode — prevents mode-switch glitches.
+
+### Screen and color
+
+```basic
+cls                      # clear screen (KERNAL $E544)
+cls fast                 # fast fill: screen RAM + color RAM + HOME
+
+color text 14            # text color register $0286
+color border 6           # $D020
+color bg 0               # $D021
+```
+
+### Keyboard
+
+```basic
+var key = getch()        # busy-wait on $FFE4 until key; returns PETSCII code
+var j = joy(2)           # read joystick port 2; returns inverted bits 0-4
+var j = joy(1)           # read joystick port 1
+                         # bit0=up(1) bit1=down(2) bit2=left(4) bit3=right(8) bit4=fire(16)
+```
+
+### Exit
+
+```basic
+bye                      # JSR $E544 (clear screen), clear STOP flag, RTS to BASIC
+exit                     # alias for bye
+```
+
+### Timing
+
+```basic
+wait 50                  # wait 50 raster-line transitions (~3.2 ms)
+wait raster 100          # spin until $D012 == 100 (raster-split effects)
+```
+
+### SID Sound
+
+```basic
+sound 0, $1CAD, 25       # voice 0, freq $1CAD (≈ middle C PAL), 25 frames duration
+sound 1, freq_word, 50   # voice 1, freq from word var, 50 frames (1 s at 50 Hz)
+sound 2, 0, 0            # voice 2, silence
+```
+
+`sound <channel>, <freq>, <duration>` — duration in PAL frames (1/50 s each).
+Fixed ADSR: attack/decay `$09`, sustain/release `$F0`, sawtooth waveform.
+Master volume `$D418` always set to `$0F`.
+
+### Sprites
+
+```basic
+sprite 0, x, y, $2000    # sprite 0: set X, Y position and data pointer
+sprite 0, x, y           # without data pointer (keeps existing)
+sprite_on  0             # enable sprite 0 ($D015 |= bit0)
+sprite_off 0             # disable sprite 0 ($D015 &= ~bit0)
+sprite_color 0, 7        # sprite 0 color = yellow ($D027)
+sprite_multicolor 0, on  # enable multicolor mode for sprite 0 ($D01C |= bit0)
+sprite_multicolor 0, off # disable multicolor mode ($D01C &= ~bit0)
+var h = sprite_hit()     # sprite–sprite collision ($D01E, cleared on read)
+var b = sprite_bg_hit()  # sprite–background collision ($D01F, cleared on read)
+```
+
+X supports full 9-bit range (0–319): use a `word` variable for runtime values > 255.
+Sprite data pointer: `data_addr` must be 64-byte aligned; stored as `addr >> 6` at `$07F8+id`.
+
+### Memory
+
+```basic
+poke $D020, 2            # STA $D020
+poke addr_var, 6         # STA (addr_var),Y  — if addr_var is word type
+var v = peek($D012)      # LDA $D012
+var v = peek(addr_var)   # LDA (addr_var),Y  — if addr_var is word type
 ```
 
 ### Math functions
 
 ```basic
-var r = rnd()             # random number 0-255
-var a = abs(x - 100)      # absolute value
-var m = min(a, b)         # minimum of two values
-var x = max(a, b)         # maximum of two values
-var s = sgn(x)            # sign: 0 if x==0, 1 if x!=0
+var a = abs(x - 20)      # two's-complement absolute value
+var b = min(x, 39)       # 8-bit minimum
+var c = max(x, 0)        # 8-bit maximum
+var s = sgn(score)       # 0 = zero, 1 = positive, $FF = negative
+var r = rnd()            # LCG pseudo-random 0-255; seed from raster linevar s = sin(angle)       # sine: angle 0-255 (full circle), returns 0-255 (center=128)
+var c = cos(angle)       # cosine = sin(angle+64)
+
+print hex(n)             # print as 2-digit uppercase hex
+print bin(n)             # print as 8-bit binary string
 ```
 
-### Control flow
-
-#### If / Then / Else
+### REU (RAM Expansion Unit)
 
 ```basic
-if x == 5 then
-  print "x is five"
-end
+var ok = reu_present()   # 1 if REU detected, 0 if not (write/read test on $DF04)
 
-if lives > 0 then
-  print "alive"
-else
-  print "game over"
-end
-
-if x > 0 and y < 10 then
-  print "in bounds"
-end
+reu stash c64addr, bank, reu_addr, len  # copy C64 → REU
+reu fetch c64addr, bank, reu_addr, len  # copy REU → C64
+reu swap  c64addr, bank, reu_addr, len  # swap between C64 and REU
 ```
 
-#### Loops
+`reu_present()` performs a write/read-back test on REU register `$DF04`. Without an REU the
+write is lost (open bus), so the read-back differs — reliably detects presence without
+touching any side-effecting command register.
 
-| Loop type | Syntax |
-|-----------|--------|
-| Infinite | `loop ... end` |
-| Counted | `loop 5 ... end` |
-| For | `loop i = 1 to 10 ... end` |
-| For + step | `loop i = 0 to 10 step 2 ... end` |
-| While | `while x < 100 ... end` |
+| Parameter | Width | Notes |
+|---|---|---|
+| `c64addr` | 16-bit | C64 RAM start — constant, `word` var, or 8-bit expr |
+| `bank` | 8-bit | REU bank number (0–7 for a 512 KB unit) |
+| `reu_addr` | 16-bit | Offset within the REU bank |
+| `len` | 16-bit | Bytes to transfer (`0` = 65 536 in REU hardware) |
+
+REU registers: `$DF01` command (`$B0` stash / `$B1` fetch / `$B2` swap),
+`$DF02–$DF03` C64 addr, `$DF04–$DF05` REU offset, `$DF06` bank, `$DF07–$DF08` length.
+Transfer is synchronous (CPU halted during DMA).
+Requires a real REU or VICE: **Settings → Hardware → RAM Expansion Module**.
+
+### Compile-time file embedding
 
 ```basic
-# For loop
-loop i = 1 to 5
-  print i
-end
-
-# For loop with step
-loop j = 0 to 10 step 2
-  print j
-end
-
-# While loop
-var n = 0
-while n < 10
-  n = n + 1
-  print n
-end
+incbin "sprites.bin"     # embed raw binary bytes at current code position
+include "defs.ub"        # inline another .ub source file (lexed+parsed in place)
 ```
 
-#### Break
+### Data / Read
 
 ```basic
-loop
-  var c = getch
-  if c == 81 then
-    break                # exit innermost loop
-  end
-end
+data 1, 2, 3, 255        # constant byte table
+read varname             # load next byte into varname (auto-declares if needed)
 ```
 
-### Subroutines
+All `data` values are collected at compile time. A 2-byte ZP pointer is automatically
+allocated and initialised at program start. Each `read` advances the pointer.
+
+### Inline assembly
 
 ```basic
-sub hello()
-  print "Hello!"
-end
-
-hello()                  # call subroutine
-call hello               # alternative call syntax
+sys $FFD2                # JSR $FFD2
+asm $EA, $EA             # inline bytes (NOP NOP)
+asm {
+  $A9 $07                # LDA #7
+  $8D $86 $02            # STA $0286
+}
 ```
 
-Subroutines can be forward-referenced (called before they are defined).
-Use `return` to exit a subroutine early.
-
-### Colors
-
-Controls text color, border color, and background color (C64 color codes 0-15):
-
-| C64 color | Code |
-|-----------|------|
-| Black | 0 |
-| White | 1 |
-| Red | 2 |
-| Cyan | 3 |
-| Purple | 4 |
-| Green | 5 |
-| Blue | 6 |
-| Yellow | 7 |
-| Orange | 8 |
-| Brown | 9 |
-| Light red | 10 |
-| Dark gray | 11 |
-| Medium gray | 12 |
-| Light green | 13 |
-| Light blue | 14 |
-| Light gray | 15 |
+### String ↔ integer
 
 ```basic
-color 7                  # set text to yellow
-color text 14            # set text to light blue
-color border 2           # set border to red
-color bg 0               # set background to black
-```
-
-### Screen
-
-```basic
-cls                      # clear screen (KERNAL)
-cls manual               # full manual clear (screen + color RAM)
-```
-
-### Graphics
-
-```basic
-graphics on              # switch to bitmap mode (320x200)
-graphics off             # return to text mode
-```
-
-### System / Assembly
-
-```basic
-sys $FFD2                # call KERNAL CHROUT
-
-asm { $A9 $07 $8D $86 $02 }  # inline assembly block
-asm $EA, $EA, $EA             # inline assembly bytes
-```
-
-### String conversion
-
-```basic
-int_to_str score, $0340  # convert integer to decimal string at address
-
-var level = str_to_int("1")  # compile-time string-to-int conversion
+int_to_str score, $0340  # writes "042\0" at $0340 (always 3 digits)
+var n = str_to_int("42") # compile-time: Expr::Number(42)
 ```
 
 ## Examples
 
-The `examples/` directory contains sample programs:
-
 | File | Description |
-|------|-------------|
-| `examples/features.ub` | Demonstrates all new features: const, label/goto, poke/peek, rnd, abs, min, max, sgn |
-
-```bash
-# Compile the features demo
-ultimate-basic build examples/features.ub -o features.prg --d64 features.d64
-```
-
-## File extensions
-
-- `.ub` — Ultimate Basic source file
-- `.prg` — C64 program file (with optional BASIC stub)
-- `.d64` — C64 disk image
-
-## Building from source
-
-```bash
-cargo build --release
-```
-
-The compiled binary is `target/release/ultimate-basic.exe` (or `ultimate-basic` on Linux/macOS).
+|---|---|
+| `examples/features.ub` | const, label/goto, poke/peek, rnd, math functions |
+| `examples/new_features.ub` | sub params, arrays, word vars, string vars |
+| `examples/bitmap_demo.ub` | 320×200 bitmap, plot, graphics on/off |
 
 ## Architecture
 
 ```
-Source (.ub)
-  → Lexer (tokens)
-    → Parser (AST)
-      → Codegen (6502 machine code)
-        → PRG file
+.ub source
+  → Lexer  → Vec<Token>
+  → Parser → Vec<Stmt>
+  → Codegen → Vec<u8>   (raw 6502 machine code)
+  → mod.rs → PRG = BASIC SYS stub + machine code
 ```
 
-- `src/compiler/lexer.rs` — Tokenizer (67 token types)
-- `src/compiler/parser.rs` — Recursive-descent parser
-- `src/compiler/ast.rs` — AST node types
-- `src/compiler/codegen.rs` — 6502 code generator (direct byte emission)
-- `src/compiler/mod.rs` — Compiler entry point, BASIC stub constant
+Two-pass compilation: Pass 1 = main code, Pass 2 = subroutine bodies (appended after
+main `RTS`). Forward references (`call`, `goto`, `plot`) are patched at the end.
 
-## License
+Zero-page layout: `$02-$4F` permanent (vars, loop counters, sub params), `$50-$7F`
+scratch (reset per statement), `$FB` RNG seed.
 
-MIT
+## CLI reference
+
+```
+ultimate-basic build <input.ub> [OPTIONS]
+
+  -o, --output <file>   Output .prg file (default: <input>.prg)
+  -v, --verbose         Show zero-page layout and code hex dump
+  --no-stub             Skip the BASIC SYS stub (code loads at $0801)
+  --d64 <file>          Also produce a .d64 disk image
+  -h, --help            Show help
+```
+
+After a successful build the compiler always prints a memory map:
+
+```
+demo.ub → demo.prg  (386 bytes)
+
+  Load:    $080D – $0989
+
+  Variables (zero page):
+    score    ZP:$08   byte
+    lives    ZP:$0A   byte
+    msg      ZP:$0C   string
+    ptr      ZP:$0E   word
+
+  Subroutines:
+    greet    $0900
+    show     $0912
+
+  Arrays ($C000+):
+    sprites  $C000   8 bytes
+```
+
+With `-v` the output additionally shows the internal ZP allocations and a full hex dump.
+
+## Building
+
+```bash
+cargo build --release    # binary: target/release/ultimate-basic
+cargo test               # unit + integration tests
+```
+
+## Known limitations
+
+| Feature | Limitation |
+|---|---|
+| Integer arithmetic | 8-bit unsigned (0-255) |
+| word arithmetic | No carry propagation; use `poke`/`peek` patterns for 16-bit math |
+| Arrays | Byte arrays only; max ~4 KB total (`$C000-$CFFF`) |
+| Subroutines | No recursion — ZP param slots are statically allocated |
+| String vars | Read-only after init; assignment replaces pointer, not data |
+| `plot` | No erase/XOR mode — pixels can only be set, not cleared |
+| `plot` | No bounds checking; x > 319 or y > 199 corrupts adjacent memory |
+| `chr$` | n is passed as-is to CHROUT — no ASCII↔PETSCII conversion |
+| `rnd()` | Simple LCG, period 256 |
+| Error reporting | Compile-time only |

@@ -11,7 +11,9 @@
       "Bash(Get-ChildItem \"F:\\\\Development\\\\C64AssemblyExpert\\\\knowledge\\\\sources\\\\pdfs\")",
       "Bash(Select-Object Name, Length, Extension)",
       "PowerShell(Get-ChildItem \"F:\\\\Development\\\\C64AssemblyExpert\" -Recurse | Where-Object { $_.Extension -ne \".md\" -and $_.Extension -ne \".asm\" } | Select-Object FullName, Length | Format-Table -AutoSize)",
-      "Bash(cat > *)"
+      "Bash(cat > *)",
+      "PowerShell(cargo build 2>&1)",
+      "PowerShell(cargo run -- build examples/bitmap_demo.ub -o examples/bitmap_demo.prg 2>&1)"
     ]
   }
 }

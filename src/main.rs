@@ -10,7 +10,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process;
 
-use ultimate_basic::compiler::{compile, CompileOptions};
+use ultimate_basic::compiler::{compile, CompileOptions, MemoryMap};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -32,6 +32,7 @@ fn print_help() {
     println!();
     println!("Options:");
     println!("  -o, --output <file>   Output .prg file (default: <input>.prg)");
+    println!("  -v, --verbose         Show full ZP layout and code hex dump");
     println!("  --no-stub              Omit BASIC SYS stub (raw machine code at $0801)");
     println!("  --d64 <file>           Also produce a .d64 disk image");
     println!("  -h, --help             Show this help");
@@ -44,12 +45,14 @@ fn cmd_build(args: &[String]) {
     let mut input: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
     let mut basic_stub = true;
+    let mut verbose = false;
     let mut d64_out: Option<PathBuf> = None;
 
     let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
             "--output" | "-o" => { i += 1; if i < args.len() { output = Some(args[i].clone().into()); } }
+            "--verbose" | "-v" => verbose = true,
             "--no-stub" => basic_stub = false,
             "--d64" => { i += 1; if i < args.len() { d64_out = Some(args[i].clone().into()); } }
             a if !a.starts_with('-') && input.is_none() => input = Some(a.to_string().into()),
@@ -99,8 +102,91 @@ fn cmd_build(args: &[String]) {
         if basic_stub { "yes" } else { "no" }
     );
 
+    print_memory_map(&result.map, verbose);
+
     if let Some(d64_path) = d64_out {
         make_d64(&d64_path, "ULTIMATE BASIC", &result.prg);
+    }
+}
+
+fn print_memory_map(map: &MemoryMap, verbose: bool) {
+    let code_end = map
+        .load_addr
+        .wrapping_add(map.code_size.saturating_sub(1) as u16);
+
+    println!();
+    println!("  Load:    ${:04X} - ${:04X}", map.load_addr, code_end);
+    println!("  Code:    {} bytes", map.code_size);
+
+    println!();
+    println!("  Variables (zero page):");
+    if map.variables.is_empty() {
+        println!("    (none)");
+    } else {
+        for var in &map.variables {
+            println!("    {:<16} ZP:${:02X}   {}", var.name, var.zp_addr, var.type_str);
+        }
+    }
+
+    println!();
+    println!("  Subroutines:");
+    if map.subroutines.is_empty() {
+        println!("    (none)");
+    } else {
+        for sub in &map.subroutines {
+            println!("    {:<16} ${:04X}", sub.name, sub.addr);
+        }
+    }
+
+    println!();
+    println!("  Arrays ($C000+):");
+    if map.arrays.is_empty() {
+        println!("    (none)");
+    } else {
+        for arr in &map.arrays {
+            println!("    {:<16} ${:04X}   {} bytes", arr.name, arr.base_addr, arr.size);
+        }
+    }
+
+    if verbose {
+        println!();
+        println!("  Internal ZP:");
+        match map.plot_zp {
+            Some(zp) => println!("    plot helper  ZP:${:02X}-{:02X}", zp, zp.wrapping_add(5)),
+            None => println!("    plot helper  (unused)"),
+        }
+        match map.line_zp {
+            Some(zp) => println!("    line helper  ZP:${:02X}-{:02X}", zp, zp.wrapping_add(11)),
+            None => println!("    line helper  (unused)"),
+        }
+        match map.sin_table_addr {
+            Some(addr) => println!("    sin/cos table: ${:04X}-${:04X}", addr, addr + 255),
+            None => println!("    sin/cos table (unused)"),
+        }
+        match map.data_zp {
+            Some(zp) => println!("    data pointer ZP:${:02X}-{:02X}", zp, zp.wrapping_add(1)),
+            None => println!("    data pointer (unused)"),
+        }
+
+        println!();
+        println!("  Code Hex Dump:");
+        print_hex_dump(map.load_addr, &map.code_bytes);
+    }
+}
+
+fn print_hex_dump(start_addr: u16, bytes: &[u8]) {
+    if bytes.is_empty() {
+        println!("    (empty)");
+        return;
+    }
+
+    for (i, chunk) in bytes.chunks(16).enumerate() {
+        let addr = start_addr.wrapping_add((i * 16) as u16);
+        print!("    ${:04X}: ", addr);
+        for b in chunk {
+            print!("{:02X} ", b);
+        }
+        println!();
     }
 }
 

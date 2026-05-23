@@ -1,0 +1,62 @@
+# reu_bitmap_demo.ub
+# Ellenorzi a REU letetet, 30 veletlenszeru vonalat rajzol hires modban,
+# menti a kepet REU-ba, torli, majd visszatolti billentyulenyomasra.
+
+# ── Foprogram ────────────────────────────────────────────────────────────
+cls
+
+if reu_present() == 0 then
+    print "NEM TALALHATO REU!"
+    print "VICE: SETTINGS > HARDWARE > RAM EXPANSION MODULE"
+    print ""
+    print "NYOMJ EGY BILLENTYUT..."
+    var dummy = getch()
+    bye
+end
+
+print "REU ERZEKELVE. RAJZOLASHOZ NYOMJ EGY BILLENTYUT..."
+var k0 = getch()
+
+# ── Hires bitmap mod beallitasa ──────────────────────────────────────────
+# graphics on: VIC setup + BMM beallitas, display KIKAPCSOL (DEN=0)
+# Igy a bitmap RAM tartalma nem latszik amig rajzolunk.
+graphics on
+gcls
+color border 0
+color bg     0
+# ── Display bekapcsolas: a bitmap RAM tiszta, most latszodik a rajzolas ──
+display on
+
+# ── 30 veletlenszeru vonal rajzolasa (elo, nezi a folyamatot) ───────────
+loop 30
+    var x1 = rnd()
+    var y1 = min(rnd(), 199)
+    var x2 = rnd()
+    var y2 = min(rnd(), 199)
+    line x1, y1, x2, y2
+end
+
+# ── Bitmap mentese REU-ba (bank 0, offset $0000, 8000 byte) ─────────────
+reu stash $2000, 0, $0000, 8000
+
+# ── Var billentyulenyomasig (a rajzolt kep latszik) ─────────────────────
+var k1 = getch()
+
+# ── Kepernyo torlese (blankolassal, hogy ne legyen villanas) ─────────────
+display off
+gcls
+display on
+
+# ── Var billentyulenyomasig (ures kepernyot lat) ─────────────────────────
+var k2 = getch()
+
+# ── Kep visszatoltes REU-bol (blankolassal) ──────────────────────────────
+display off
+reu fetch $2000, 0, $0000, 8000
+display on
+
+# ── Var billentyulenyomasig majd kilepes ─────────────────────────────────
+var k3 = getch()
+
+graphics off
+bye

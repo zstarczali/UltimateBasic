@@ -1,0 +1,64 @@
+# joystick_demo.ub – Hardware sprite controlled by joystick port 2
+#
+# sprite_def automatically:
+#   - aligns to the next 64-byte boundary (here: $0840 → page $21)
+#   - embeds 63 bytes of sprite pixel data
+#   - emits LDA #page / STA $07F8 to register the data pointer at startup
+#
+# Controls (VICE: numpad or joystick):
+#   port-2 up/down/left/right  – move sprite
+#   fire                       – cycle sprite colour
+
+sprite_def 0,   0,126,0,  0,255,0,  1,255,128,  3,255,192,  7,255,224,  15,255,240,  31,255,248,  31,255,248,  31,255,248,  31,255,248,  31,255,248,  15,255,240,  7,255,224,  3,255,192,  1,255,128,  0,255,0,  0,126,0,  0,0,0,  0,0,0,  0,0,0,  0,0,0
+
+cls
+color border 14    # light blue border
+color bg 6         # blue background
+color text 1       # white text
+
+print "  JOYSTICK DEMO"
+print "  BY NULTIMATE BASIC"
+print ""
+print "  MOVE  : PORT 2 / NUMPAD"
+print "  FIRE  : CYCLE COLOUR"
+print ""
+print "  RUN/STOP TO QUIT"
+
+var sx  = 152      # sprite X, stays in range 24..253
+var sy  = 100      # sprite Y, stays in range 50..228
+var col = 7        # sprite colour (yellow to start)
+var j   = 0        # joystick state
+
+sprite 0, sx, sy   # set initial position (data pointer already set by sprite_def)
+sprite_color 0, col
+sprite_on 0
+
+# ── game loop – raster-synced for smooth 50 Hz movement ──────────────────────
+label gameloop
+
+  wait raster 255  # sync to top of frame
+
+  j = joy(2)       # read CIA1 $DC00; bits: 0=up 1=down 2=left 3=right 4=fire
+
+  if j and 4 then                    # left
+    if sx >= 26 then sx = sx - 2 end
+  end
+  if j and 8 then                    # right
+    if sx <= 253 then sx = sx + 2 end
+  end
+  if j and 1 then                    # up
+    if sy >= 52 then sy = sy - 2 end
+  end
+  if j and 2 then                    # down
+    if sy <= 228 then sy = sy + 2 end
+  end
+  if j and 16 then                   # fire – cycle colour 0..15
+    col = col + 1
+    col = col and 15
+    sprite_color 0, col
+  end
+
+  sprite 0, sx, sy  # update VIC-II position registers
+
+  goto gameloop
+

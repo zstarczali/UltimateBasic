@@ -6,6 +6,12 @@ pub enum Expr {
     BinOp(Box<Expr>, BinOp, Box<Expr>),
     Not(Box<Expr>),
     Getch,
+    ReuPresent,  // reu_present() — 1 if REU detected, 0 otherwise
+    Joy(u8),  // joy(1) or joy(2) — read joystick port, returns inverted bits 0-4
+    Sin(Box<Expr>),   // sin(angle) — 8-bit angle 0-255, returns 0-255 (center=128)
+    Cos(Box<Expr>),   // cos(angle) — same as sin with +64 offset
+    HexFmt(Box<Expr>), // hex(n) — in print: shows value as 2-digit uppercase hex
+    BinFmt(Box<Expr>), // bin(n) — in print: shows value as 8-bit binary string
     Peek(Box<Expr>),
     Rnd,
     Abs(Box<Expr>),
@@ -13,13 +19,17 @@ pub enum Expr {
     Max(Box<Expr>, Box<Expr>),
     Sgn(Box<Expr>),
     ArrayGet(String, Box<Expr>), // arr[idx]
+    ChrStr(Box<Expr>),           // chr$(n) — character with PETSCII code n
+    SpriteHit,                   // sprite_hit()    — read $D01E (sprite–sprite collision, cleared on read)
+    SpriteBgHit,                 // sprite_bg_hit() — read $D01F (sprite–background collision, cleared on read)
 }
 
 #[derive(Debug, Clone)]
 pub enum BinOp {
     Add, Sub, Mul, Div,
     Eq, NotEq, Lt, Gt, LtEq, GtEq,
-    And, Or,
+    And, Or, Xor,
+    Shl, Shr,
 }
 
 #[derive(Debug, Clone)]
@@ -33,6 +43,10 @@ pub enum ColorTarget { Text, Border, Bg }
 #[derive(Debug, Clone, PartialEq)]
 pub enum VarType { Int, Str, Float, Word, Array }
 
+/// REU (RAM Expansion Unit) transfer type.
+#[derive(Debug, Clone)]
+pub enum ReuOp { Stash, Fetch, Swap }
+
 #[derive(Debug, Clone)]
 pub enum Stmt {
     VarDecl { name: String, vtype: Option<VarType>, expr: Expr },
@@ -44,8 +58,9 @@ pub enum Stmt {
     ForLoop { var: String, from: Expr, to: Expr, step: Option<Expr>, body: Vec<Stmt> },
     WhileLoop(Expr, Vec<Stmt>),
     Break,
-    Cls { manual: bool },
-    Graphics { on: bool },
+    Cls { fast: bool },
+    Graphics { on: bool, multi: bool },  // multi=true → multicolor bitmap mode ($D016.b4 set)
+    Display { on: bool },  // display on/off — controls VIC DEN bit ($D011 bit4)
     Sys(u16),
     AsmBytes(Vec<u8>),
     IntToStr { var: String, addr: u16 },
@@ -57,4 +72,24 @@ pub enum Stmt {
     Label(String),
     Goto(String),
     Poke(Expr, Expr),
+    Plot(Expr, Expr), // plot x, y — set pixel in bitmap mode
+    Line { x1: Expr, y1: Expr, x2: Expr, y2: Expr }, // line x1,y1,x2,y2 — Bresenham line
+    Gcls,             // gcls — clear bitmap screen
+    Bye,              // bye/exit — cls then RTS back to BASIC
+    Incbin(String),   // incbin "file" — embed raw binary file bytes inline
+    Data(Vec<Expr>),  // data 1,2,3 — constant byte table (read with 'read')
+    Read(String),     // read varname — load next data byte into variable
+    Reu { op: ReuOp, c64_addr: Expr, reu_bank: Expr, reu_addr: Expr, length: Expr },
+    // reu stash/fetch/swap c64_addr, bank, reu_addr, length — DMA transfer to/from REU
+    Wait { raster_target: bool, value: Expr }, // wait N (raster lines) / wait raster N (specific line)
+    Sound { channel: Expr, freq: Expr, duration: Expr }, // SID: sound ch, freq(16-bit), frames
+    Sprite { id: Expr, x: Expr, y: Expr, data_addr: Option<Expr> },
+    // sprite id, x, y [, data_addr] — VIC-II hardware sprite position + optional data pointer
+    // id/x/y: 0-7; x supports word vars for 9-bit range; data_addr = 64-byte-aligned address
+    SpriteOn  { id: Expr },          // sprite_on id  — set bit in $D015 (sprite enable)
+    SpriteOff { id: Expr },          // sprite_off id — clear bit in $D015
+    SpriteColor { id: Expr, color: Expr },        // sprite_color id, color — write $D027+id
+    SpriteMulticolor { id: Expr, on: bool },       // sprite_multicolor id, on/off — bit in $D01C
+    /// Align to 64-byte boundary, embed 63 sprite bytes, emit `LDA #page; STA $07F8+id`.
+    SpriteDef { id: u8, bytes: Vec<u8> },
 }

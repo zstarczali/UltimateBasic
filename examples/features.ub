@@ -31,7 +31,7 @@ print ""
 label main_loop
 
   # Billentyu lekerdezese getch-vel
-  var key = getch
+  var key = getch()
 
   # Q = kilepes (kis q = 17, nagy Q = 81)
   if key == 81 then

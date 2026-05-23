@@ -22,9 +22,10 @@ pub enum Token {
     Call,
     Cls,
     Graphics,
+    Display,  // display on / display off — controls VIC DEN bit
     On,
     Off,
-    Manual,
+    Fast,
     Sys,
     Asm,
     StrToInt,
@@ -34,9 +35,24 @@ pub enum Token {
     Border,
     Bg,
     Getch,
+    ReuPresent,  // reu_present() — inline REU detection, returns 0 or 1
     And,
     Or,
     Not,
+    Xor,
+    Shl,
+    Shr,
+    Wait,
+    Raster,
+    Sound,
+    Sprite,          // sprite id, x, y [, data_addr]
+    SpriteOn,        // sprite_on id
+    SpriteOff,       // sprite_off id
+    SpriteColor,     // sprite_color id, color
+    SpriteMulticolor,// sprite_multicolor id, on/off
+    SpriteHit,       // sprite_hit()  — $D01E sprite-sprite collision
+    SpriteBgHit,     // sprite_bg_hit() — $D01F sprite-background collision
+    SpriteDef,       // sprite_def id, b0..b62 — align+embed sprite data, init $07F8+id
     Int,
     Str,
     Float,
@@ -57,6 +73,21 @@ pub enum Token {
     Chr,
     Plot,
     Gcls,
+    Bye,
+    Joy,
+    Line,
+    Sin,
+    Cos,
+    Hex,
+    Bin,
+    Reu,
+    Stash,
+    Fetch,
+    Multi,
+    Incbin,
+    Include,
+    Data,
+    Read,
 
     // Operators
     Plus,
@@ -120,7 +151,7 @@ impl Lexer {
             match self.peek() {
                 None => { tokens.push(Token::Eof); break; }
                 Some('\n') => { self.advance(); tokens.push(Token::Newline); }
-                Some('#') => { while !matches!(self.peek(), None | Some('\n')) { self.advance(); } }
+                Some('#') | Some(';') => { while !matches!(self.peek(), None | Some('\n')) { self.advance(); } }
                 Some('"') => tokens.push(self.read_string()),
                 Some('$') => tokens.push(self.read_hex()),
                 Some('{') => { self.advance(); tokens.push(Token::LBrace); }
@@ -206,6 +237,11 @@ impl Lexer {
         while matches!(self.peek(), Some(c) if c.is_alphanumeric() || c == '_') {
             s.push(self.advance().unwrap());
         }
+        // Special: "chr$" — BASIC-style char-by-code function
+        if s == "chr" && self.peek() == Some('$') {
+            self.advance();
+            return Token::Chr;
+        }
         match s.as_str() {
             "var"      => Token::Var,
             "sub"      => Token::Sub,
@@ -223,9 +259,10 @@ impl Lexer {
             "call"     => Token::Call,
             "cls"        => Token::Cls,
             "graphics"   => Token::Graphics,
+            "display"    => Token::Display,
             "on"         => Token::On,
             "off"        => Token::Off,
-            "manual"     => Token::Manual,
+            "fast"       => Token::Fast,
             "sys"        => Token::Sys,
             "asm"        => Token::Asm,
             "str_to_int" => Token::StrToInt,
@@ -235,9 +272,16 @@ impl Lexer {
             "border"     => Token::Border,
             "bg"         => Token::Bg,
             "getch"      => Token::Getch,
+            "reu_present" => Token::ReuPresent,
             "and"        => Token::And,
             "or"         => Token::Or,
             "not"        => Token::Not,
+            "xor"        => Token::Xor,
+            "shl"        => Token::Shl,
+            "shr"        => Token::Shr,
+            "wait"       => Token::Wait,
+            "raster"     => Token::Raster,
+            "sound"      => Token::Sound,
             "int"        => Token::Int,
             "string"     => Token::Str,
             "float"      => Token::Float,
@@ -255,6 +299,37 @@ impl Lexer {
             "array"      => Token::Array,
             "for"        => Token::For,
             "next"       => Token::Next,
+            "plot"       => Token::Plot,
+            "gcls"       => Token::Gcls,
+            "bye"        => Token::Bye,
+            "joy"        => Token::Joy,
+            "line"       => Token::Line,
+            "sin"        => Token::Sin,
+            "cos"        => Token::Cos,
+            "hex"        => Token::Hex,
+            "bin"        => Token::Bin,
+            "reu"        => Token::Reu,
+            "stash"      => Token::Stash,
+            "fetch"      => Token::Fetch,
+            "multi"      => Token::Multi,
+            "exit"       => Token::Bye,
+            "incbin"     => Token::Incbin,
+            "include"    => Token::Include,
+            "data"       => Token::Data,
+            "read"       => Token::Read,
+            "sprite"            => Token::Sprite,
+            "sprite_on"         => Token::SpriteOn,
+            "sprite_off"        => Token::SpriteOff,
+            "sprite_color"      => Token::SpriteColor,
+            "sprite_multicolor" => Token::SpriteMulticolor,
+            "sprite_hit"        => Token::SpriteHit,
+            "sprite_bg_hit"     => Token::SpriteBgHit,
+            "sprite_def"       => Token::SpriteDef,
+            "rem"        => {
+                while !matches!(self.peek(), None | Some('\n')) { self.advance(); }
+                if self.peek() == Some('\n') { self.advance(); }
+                Token::Newline
+            }
             _            => Token::Ident(s),
         }
     }
@@ -327,7 +402,7 @@ mod tests {
     #[test] fn kw_graphics(){assert_eq!(tokenize("graphics")[0],Token::Graphics);}
     #[test] fn kw_on()   { assert_eq!(tokenize("on")[0],   Token::On); }
     #[test] fn kw_off()  { assert_eq!(tokenize("off")[0],  Token::Off); }
-    #[test] fn kw_manual(){assert_eq!(tokenize("manual")[0],Token::Manual);}
+    #[test] fn kw_fast()  {assert_eq!(tokenize("fast")[0],  Token::Fast);}
     #[test] fn kw_str_to_int(){assert_eq!(tokenize("str_to_int")[0],Token::StrToInt);}
     #[test] fn kw_int_to_str(){assert_eq!(tokenize("int_to_str")[0],Token::IntToStr);}
     #[test] fn kw_const()  { assert_eq!(tokenize("const")[0], Token::Const); }
@@ -344,6 +419,43 @@ mod tests {
     #[test] fn kw_array()  { assert_eq!(tokenize("array")[0], Token::Array); }
     #[test] fn kw_for()    { assert_eq!(tokenize("for")[0],   Token::For); }
     #[test] fn kw_next()   { assert_eq!(tokenize("next")[0],  Token::Next); }
+    #[test] fn kw_plot()   { assert_eq!(tokenize("plot")[0],  Token::Plot); }
+    #[test] fn kw_joy()    { assert_eq!(tokenize("joy")[0],   Token::Joy); }
+    #[test] fn kw_line()   { assert_eq!(tokenize("line")[0],  Token::Line); }
+    #[test] fn kw_sin()    { assert_eq!(tokenize("sin")[0],   Token::Sin); }
+    #[test] fn kw_cos()    { assert_eq!(tokenize("cos")[0],   Token::Cos); }
+    #[test] fn kw_hex()    { assert_eq!(tokenize("hex")[0],   Token::Hex); }
+    #[test] fn kw_bin()    { assert_eq!(tokenize("bin")[0],   Token::Bin); }
+    #[test] fn kw_reu()    { assert_eq!(tokenize("reu")[0],   Token::Reu); }
+    #[test] fn kw_reu_present() { assert_eq!(tokenize("reu_present")[0], Token::ReuPresent); }
+    #[test] fn kw_gcls()   { assert_eq!(tokenize("gcls")[0],  Token::Gcls); }
+    #[test] fn kw_bye()    { assert_eq!(tokenize("bye")[0],   Token::Bye); }
+    #[test] fn kw_exit()   { assert_eq!(tokenize("exit")[0],  Token::Bye); }
+    #[test] fn kw_incbin() { assert_eq!(tokenize("incbin")[0], Token::Incbin); }
+    #[test] fn kw_include(){ assert_eq!(tokenize("include")[0], Token::Include); }
+    #[test] fn kw_data()   { assert_eq!(tokenize("data")[0],  Token::Data); }
+    #[test] fn kw_read()   { assert_eq!(tokenize("read")[0],  Token::Read); }
+    #[test]
+    fn rem_skips_to_eol() {
+        let toks = tokenize("rem ignored text\nvar x = 1");
+        // rem consumes line and emits Newline; next tokens are var x = 1
+        assert!(toks.iter().any(|t| t == &Token::Var), "var should follow rem line");
+    }
+    #[test]
+    fn semicolon_skips_to_eol() {
+        let toks = tokenize("42 ; this is ignored\n99");
+        assert_eq!(toks[0], Token::Number(42));
+        assert!(toks.iter().any(|t| t == &Token::Number(99)));
+    }
+    #[test] fn kw_chr_dollar() {
+        assert_eq!(tokenize("chr$")[0], Token::Chr);
+    }
+    #[test] fn chr_dollar_no_ident_after() {
+        // "chr$" followed by '(' should tokenize as Chr + LParen
+        let toks = tokenize("chr$(65)");
+        assert_eq!(toks[0], Token::Chr);
+        assert_eq!(toks[1], Token::LParen);
+    }
     #[test] fn lbracket()  { assert_eq!(tokenize("["), vec![Token::LBracket, Token::Eof]); }
     #[test] fn rbracket()  { assert_eq!(tokenize("]"), vec![Token::RBracket, Token::Eof]); }
 
