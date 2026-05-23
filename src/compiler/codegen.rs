@@ -27,6 +27,8 @@ pub struct Codegen {
     rnd_seeded: bool,
     plot_zp: Option<u8>,                    // base of 5-byte ZP block for plot helper
     plot_patches: Vec<usize>,               // code positions of JSR targets to patch
+    plot_erase_patches: Vec<usize>,         // code positions of JSR targets for plot-erase helper
+    plot_xor_patches: Vec<usize>,           // code positions of JSR targets for plot-xor helper
     circle_zp: Option<u8>,                  // base of 24-byte ZP block for circle helper state
     circle_patches: Vec<usize>,             // code positions of JSR targets for circle helper
     line_zp: Option<u8>,                    // base of 12-byte ZP block for line (Bresenham)
@@ -63,6 +65,8 @@ impl Codegen {
             rnd_seeded: false,
             plot_zp: None,
             plot_patches: vec![],
+            plot_erase_patches: vec![],
+            plot_xor_patches: vec![],
             circle_zp: None,
             circle_patches: vec![],
             line_zp: None,
@@ -83,13 +87,16 @@ impl Codegen {
     fn has_plot_stmt(stmts: &[Stmt]) -> bool {
         for stmt in stmts {
             match stmt {
-                Stmt::Plot(..) | Stmt::Circle { .. } => return true,
+                Stmt::Plot(..) | Stmt::Circle { .. } | Stmt::PlotErase(..) | Stmt::PlotXor(..) => return true,
                 Stmt::SubDef(_, _, body) => if Self::has_plot_stmt(body) { return true; }
                 Stmt::If(_, then_b, else_b) => {
                     if Self::has_plot_stmt(then_b) { return true; }
                     if let Some(eb) = else_b { if Self::has_plot_stmt(eb) { return true; } }
                 }
                 Stmt::ForLoop { body, .. } | Stmt::Loop(_, body) | Stmt::WhileLoop(_, body) => {
+                    if Self::has_plot_stmt(body) { return true; }
+                }
+                Stmt::RepeatLoop(body, _) => {
                     if Self::has_plot_stmt(body) { return true; }
                 }
                 _ => {}
@@ -111,6 +118,9 @@ impl Codegen {
                 Stmt::ForLoop { body, .. } | Stmt::Loop(_, body) | Stmt::WhileLoop(_, body) => {
                     if Self::has_circle_stmt(body) { return true; }
                 }
+                Stmt::RepeatLoop(body, _) => {
+                    if Self::has_circle_stmt(body) { return true; }
+                }
                 _ => {}
             }
         }
@@ -130,6 +140,9 @@ impl Codegen {
                 Stmt::ForLoop { body, .. } | Stmt::Loop(_, body) | Stmt::WhileLoop(_, body) => {
                     if Self::has_line_stmt(body) { return true; }
                 }
+                Stmt::RepeatLoop(body, _) => {
+                    if Self::has_line_stmt(body) { return true; }
+                }
                 _ => {}
             }
         }
@@ -146,6 +159,9 @@ impl Codegen {
                     if let Some(eb) = else_b { if Self::has_data_or_read(eb) { return true; } }
                 }
                 Stmt::ForLoop { body, .. } | Stmt::Loop(_, body) | Stmt::WhileLoop(_, body) => {
+                    if Self::has_data_or_read(body) { return true; }
+                }
+                Stmt::RepeatLoop(body, _) => {
                     if Self::has_data_or_read(body) { return true; }
                 }
                 _ => {}
@@ -169,6 +185,9 @@ impl Codegen {
                     if let Some(eb) = else_b { bytes.extend(Self::collect_data_bytes(eb)); }
                 }
                 Stmt::ForLoop { body, .. } | Stmt::Loop(_, body) | Stmt::WhileLoop(_, body) => {
+                    bytes.extend(Self::collect_data_bytes(body));
+                }
+                Stmt::RepeatLoop(body, _) => {
                     bytes.extend(Self::collect_data_bytes(body));
                 }
                 _ => {}
@@ -746,6 +765,21 @@ impl Codegen {
                         self.code[patch] = end as u8;
                         self.code[patch+1] = (end >> 8) as u8;
                     }
+                    BinOp::Mod => {
+                        // A = r (right operand), tmp = l (left/dividend)
+                        let divisor = self.tmp_zp; self.tmp_zp += 1;
+                        self.emit(0x85); self.emit(divisor);   // STA divisor
+                        self.emit(0xA5); self.emit(tmp);       // LDA tmp (dividend)
+                        // loop: SEC; SBC divisor; BCS loop; CLC; ADC divisor → A = l mod r
+                        let loop_top = self.current_addr();
+                        self.emit(0x38);                        // SEC
+                        self.emit(0xE5); self.emit(divisor);   // SBC divisor
+                        self.emit(0xB0);                        // BCS loop_top
+                        let bcs = self.code.len(); self.emit(0x00);
+                        self.patch_bxx(bcs, loop_top);
+                        self.emit(0x18);                        // CLC
+                        self.emit(0x65); self.emit(divisor);   // ADC divisor → remainder in A
+                    }
                     BinOp::And | BinOp::Or | BinOp::Xor | BinOp::Shl | BinOp::Shr => unreachable!(),
                 } // end _ => { inner match
                     } // end outer match op
@@ -1173,6 +1207,151 @@ impl Codegen {
         self.emit(0xA0); self.emit(0x00);      // LDY #0
         self.emit(0xB1); self.emit(zp + 4);   // LDA (ptr_lo),Y
         self.emit(0x05); self.emit(zp + 3);   // ORA mask
+        self.emit(0x91); self.emit(zp + 4);   // STA (ptr_lo),Y
+        self.emit(0x60);                       // RTS
+    }
+
+    // Plot-erase helper: computes pixel address/mask identically to emit_plot_helper,
+    // then clears (AND ~mask) the pixel instead of setting it.
+    fn emit_plot_erase_helper(&mut self) {
+        let zp = match self.plot_zp { Some(z) => z, None => return };
+
+        // ── Same address computation as emit_plot_helper ──────────────────
+        self.emit(0xA5); self.emit(zp + 2);
+        self.emit(0x4A); self.emit(0x4A); self.emit(0x4A);
+        self.emit(0x85); self.emit(zp + 3);
+
+        self.emit(0x0A); self.emit(0x0A); self.emit(0x0A);
+        self.emit(0x0A); self.emit(0x0A); self.emit(0x0A);
+        self.emit(0x85); self.emit(zp + 4);
+
+        self.emit(0xA5); self.emit(zp + 3);
+        self.emit(0x4A); self.emit(0x4A);
+        self.emit(0x18);
+        self.emit(0x65); self.emit(zp + 3);
+        self.emit(0x69); self.emit(0x20);
+        self.emit(0x85); self.emit(zp + 5);
+
+        self.emit(0xA5); self.emit(zp + 0);
+        self.emit(0x29); self.emit(0xF8);
+        self.emit(0x18);
+        self.emit(0x65); self.emit(zp + 4);
+        self.emit(0x85); self.emit(zp + 4);
+        self.emit(0x90);
+        let bcc1 = self.code.len(); self.emit(0x00);
+        self.emit(0xE6); self.emit(zp + 5);
+        self.patch_bxx(bcc1, self.current_addr());
+
+        self.emit(0xA5); self.emit(zp + 1);
+        self.emit(0xF0);
+        let beq_xhi = self.code.len(); self.emit(0x00);
+        self.emit(0xE6); self.emit(zp + 5);
+        self.patch_bxx(beq_xhi, self.current_addr());
+
+        self.emit(0xA5); self.emit(zp + 2);
+        self.emit(0x29); self.emit(0x07);
+        self.emit(0x18);
+        self.emit(0x65); self.emit(zp + 4);
+        self.emit(0x85); self.emit(zp + 4);
+        self.emit(0x90);
+        let bcc2 = self.code.len(); self.emit(0x00);
+        self.emit(0xE6); self.emit(zp + 5);
+        self.patch_bxx(bcc2, self.current_addr());
+
+        self.emit(0xA5); self.emit(zp + 0);
+        self.emit(0x29); self.emit(0x07);
+        self.emit(0xAA);
+        self.emit(0xA9); self.emit(0x80);
+        self.emit(0xE0); self.emit(0x00);
+        self.emit(0xF0);
+        let beq_mask = self.code.len(); self.emit(0x00);
+        let shift_top = self.current_addr();
+        self.emit(0x4A);
+        self.emit(0xCA);
+        self.emit(0xD0);
+        let bne_shift = self.code.len(); self.emit(0x00);
+        self.patch_bxx(bne_shift, shift_top);
+        self.patch_bxx(beq_mask, self.current_addr());
+
+        // Erase the pixel: AND with ~mask
+        self.emit(0x85); self.emit(zp + 3);   // STA mask
+        self.emit(0xA5); self.emit(zp + 3);   // LDA mask
+        self.emit(0x49); self.emit(0xFF);      // EOR #$FF → ~mask
+        self.emit(0x85); self.emit(zp + 3);   // STA ~mask
+        self.emit(0xA0); self.emit(0x00);      // LDY #0
+        self.emit(0xB1); self.emit(zp + 4);   // LDA (ptr_lo),Y
+        self.emit(0x25); self.emit(zp + 3);   // AND ~mask → clear pixel
+        self.emit(0x91); self.emit(zp + 4);   // STA (ptr_lo),Y
+        self.emit(0x60);                       // RTS
+    }
+
+    // Plot-xor helper: computes pixel address/mask identically to emit_plot_helper,
+    // then XORs (EOR mask) the pixel instead of setting it.
+    fn emit_plot_xor_helper(&mut self) {
+        let zp = match self.plot_zp { Some(z) => z, None => return };
+
+        // ── Same address computation as emit_plot_helper ──────────────────
+        self.emit(0xA5); self.emit(zp + 2);
+        self.emit(0x4A); self.emit(0x4A); self.emit(0x4A);
+        self.emit(0x85); self.emit(zp + 3);
+
+        self.emit(0x0A); self.emit(0x0A); self.emit(0x0A);
+        self.emit(0x0A); self.emit(0x0A); self.emit(0x0A);
+        self.emit(0x85); self.emit(zp + 4);
+
+        self.emit(0xA5); self.emit(zp + 3);
+        self.emit(0x4A); self.emit(0x4A);
+        self.emit(0x18);
+        self.emit(0x65); self.emit(zp + 3);
+        self.emit(0x69); self.emit(0x20);
+        self.emit(0x85); self.emit(zp + 5);
+
+        self.emit(0xA5); self.emit(zp + 0);
+        self.emit(0x29); self.emit(0xF8);
+        self.emit(0x18);
+        self.emit(0x65); self.emit(zp + 4);
+        self.emit(0x85); self.emit(zp + 4);
+        self.emit(0x90);
+        let bcc1 = self.code.len(); self.emit(0x00);
+        self.emit(0xE6); self.emit(zp + 5);
+        self.patch_bxx(bcc1, self.current_addr());
+
+        self.emit(0xA5); self.emit(zp + 1);
+        self.emit(0xF0);
+        let beq_xhi = self.code.len(); self.emit(0x00);
+        self.emit(0xE6); self.emit(zp + 5);
+        self.patch_bxx(beq_xhi, self.current_addr());
+
+        self.emit(0xA5); self.emit(zp + 2);
+        self.emit(0x29); self.emit(0x07);
+        self.emit(0x18);
+        self.emit(0x65); self.emit(zp + 4);
+        self.emit(0x85); self.emit(zp + 4);
+        self.emit(0x90);
+        let bcc2 = self.code.len(); self.emit(0x00);
+        self.emit(0xE6); self.emit(zp + 5);
+        self.patch_bxx(bcc2, self.current_addr());
+
+        self.emit(0xA5); self.emit(zp + 0);
+        self.emit(0x29); self.emit(0x07);
+        self.emit(0xAA);
+        self.emit(0xA9); self.emit(0x80);
+        self.emit(0xE0); self.emit(0x00);
+        self.emit(0xF0);
+        let beq_mask = self.code.len(); self.emit(0x00);
+        let shift_top = self.current_addr();
+        self.emit(0x4A);
+        self.emit(0xCA);
+        self.emit(0xD0);
+        let bne_shift = self.code.len(); self.emit(0x00);
+        self.patch_bxx(bne_shift, shift_top);
+        self.patch_bxx(beq_mask, self.current_addr());
+
+        // XOR the pixel: EOR mask
+        self.emit(0x85); self.emit(zp + 3);   // STA mask
+        self.emit(0xA0); self.emit(0x00);      // LDY #0
+        self.emit(0xB1); self.emit(zp + 4);   // LDA (ptr_lo),Y
+        self.emit(0x45); self.emit(zp + 3);   // EOR mask → flip pixel
         self.emit(0x91); self.emit(zp + 4);   // STA (ptr_lo),Y
         self.emit(0x60);                       // RTS
     }
@@ -3126,6 +3305,196 @@ impl Codegen {
                 }
                 self.emit(0x8D); self.emit16(0xD01C); // STA $D01C
             }
+            Stmt::SpriteExpandX { id, on } => {
+                // $D01D: sprite X-expand register — set/clear bit for this sprite
+                let sprite_id = match id {
+                    Expr::Number(n) => *n as u16,
+                    _ => panic!("sprite_expand_x: id must be a compile-time constant 0-7"),
+                };
+                let on = *on;
+                let bit = 1u8 << (sprite_id as u8);
+                self.emit(0xAD); self.emit16(0xD01D); // LDA $D01D
+                if on {
+                    self.emit(0x09); self.emit(bit);  // ORA #bit → enable X-expand
+                } else {
+                    self.emit(0x29); self.emit(!bit); // AND #~bit → disable X-expand
+                }
+                self.emit(0x8D); self.emit16(0xD01D); // STA $D01D
+            }
+            Stmt::SpriteExpandY { id, on } => {
+                // $D017: sprite Y-expand register — set/clear bit for this sprite
+                let sprite_id = match id {
+                    Expr::Number(n) => *n as u16,
+                    _ => panic!("sprite_expand_y: id must be a compile-time constant 0-7"),
+                };
+                let on = *on;
+                let bit = 1u8 << (sprite_id as u8);
+                self.emit(0xAD); self.emit16(0xD017); // LDA $D017
+                if on {
+                    self.emit(0x09); self.emit(bit);  // ORA #bit → enable Y-expand
+                } else {
+                    self.emit(0x29); self.emit(!bit); // AND #~bit → disable Y-expand
+                }
+                self.emit(0x8D); self.emit16(0xD017); // STA $D017
+            }
+            Stmt::SpritePriority { id, on } => {
+                // $D01B: sprite priority — 1=behind background, 0=in front
+                let sprite_id = match id {
+                    Expr::Number(n) => *n as u16,
+                    _ => panic!("sprite_priority: id must be a compile-time constant 0-7"),
+                };
+                let on = *on;
+                let bit = 1u8 << (sprite_id as u8);
+                self.emit(0xAD); self.emit16(0xD01B); // LDA $D01B
+                if on {
+                    self.emit(0x09); self.emit(bit);  // ORA #bit → behind background
+                } else {
+                    self.emit(0x29); self.emit(!bit); // AND #~bit → in front
+                }
+                self.emit(0x8D); self.emit16(0xD01B); // STA $D01B
+            }
+            Stmt::Save { filename, addr, len } => {
+                let filename = filename.clone();
+                let addr = addr.clone();
+                let len = len.clone();
+                // Emit filename bytes inline (JMP over them)
+                let name_len = filename.len() as u8;
+                self.emit(0x4C);
+                let jmp_pos = self.code.len(); self.emit(0x00); self.emit(0x00);
+                let name_addr = self.current_addr();
+                for b in filename.bytes() { self.emit(b); }
+                self.patch_abs(jmp_pos, self.current_addr());
+                // SETNAM: A=len, X=lo, Y=hi
+                self.emit(0xA9); self.emit(name_len);
+                self.emit(0xA2); self.emit(name_addr as u8);
+                self.emit(0xA0); self.emit((name_addr >> 8) as u8);
+                self.emit(0x20); self.emit16(0xFFBD); // JSR $FFBD (SETNAM)
+                // SETLFS: A=LFN=1, X=device=8, Y=SA=0
+                self.emit(0xA9); self.emit(0x01);
+                self.emit(0xA2); self.emit(0x08);
+                self.emit(0xA0); self.emit(0x00);
+                self.emit(0x20); self.emit16(0xFFBA); // JSR $FFBA (SETLFS)
+                if let (Some(addr_expr), Some(len_expr)) = (addr, len) {
+                    // Allocate ZP scratch: zp_start (2 bytes) + end_lo + end_hi
+                    let zp_start = self.tmp_zp; self.tmp_zp += 2;
+                    let end_lo   = self.tmp_zp; self.tmp_zp += 1;
+                    let end_hi   = self.tmp_zp; self.tmp_zp += 1;
+                    // Store start addr (16-bit) to zp_start/zp_start+1
+                    match addr_expr {
+                        Expr::Number(n) => {
+                            let a = n as u16;
+                            self.emit(0xA9); self.emit(a as u8);
+                            self.emit(0x85); self.emit(zp_start);
+                            self.emit(0xA9); self.emit((a >> 8) as u8);
+                            self.emit(0x85); self.emit(zp_start + 1);
+                        }
+                        Expr::Var(ref vname) if matches!(self.var_types.get(vname.as_str()), Some(VarType::Word)) => {
+                            if let Some(zp) = self.var_addr(vname) {
+                                self.emit(0xA5); self.emit(zp);
+                                self.emit(0x85); self.emit(zp_start);
+                                self.emit(0xA5); self.emit(zp + 1);
+                                self.emit(0x85); self.emit(zp_start + 1);
+                            }
+                        }
+                        ref other => {
+                            let other = other.clone();
+                            self.eval_expr(&other);
+                            self.emit(0x85); self.emit(zp_start);
+                            self.emit(0xA9); self.emit(0x00);
+                            self.emit(0x85); self.emit(zp_start + 1);
+                        }
+                    }
+                    // Compute end = start + len (16-bit add)
+                    match len_expr {
+                        Expr::Number(n) => {
+                            let l = n as u16;
+                            self.emit(0x18); // CLC
+                            self.emit(0xA5); self.emit(zp_start);
+                            self.emit(0x69); self.emit(l as u8);          // ADC #len_lo
+                            self.emit(0x85); self.emit(end_lo);
+                            self.emit(0xA5); self.emit(zp_start + 1);
+                            self.emit(0x69); self.emit((l >> 8) as u8);   // ADC #len_hi
+                            self.emit(0x85); self.emit(end_hi);
+                        }
+                        ref other => {
+                            let other = other.clone();
+                            let len_zp = self.tmp_zp; self.tmp_zp += 1;
+                            self.eval_expr(&other);
+                            self.emit(0x85); self.emit(len_zp); // STA len_lo
+                            self.emit(0x18); // CLC
+                            self.emit(0xA5); self.emit(zp_start);
+                            self.emit(0x65); self.emit(len_zp); // ADC len_lo
+                            self.emit(0x85); self.emit(end_lo);
+                            self.emit(0xA5); self.emit(zp_start + 1);
+                            self.emit(0x69); self.emit(0x00);   // ADC #0 + carry
+                            self.emit(0x85); self.emit(end_hi);
+                        }
+                    }
+                    // SAVE: A = ZP addr of start pointer, X = end_lo, Y = end_hi
+                    self.emit(0xA6); self.emit(end_lo);   // LDX end_lo
+                    self.emit(0xA4); self.emit(end_hi);   // LDY end_hi
+                    self.emit(0xA9); self.emit(zp_start); // LDA #zp_start (ZP pointer to start)
+                    self.emit(0x20); self.emit16(0xFFD8); // JSR $FFD8 (SAVE)
+                } else {
+                    // No addr/len given: call SAVE with null range (A=0, X=Y=0)
+                    self.emit(0xA9); self.emit(0x00);
+                    self.emit(0xA2); self.emit(0x00);
+                    self.emit(0xA0); self.emit(0x00);
+                    self.emit(0x20); self.emit16(0xFFD8); // JSR $FFD8 (SAVE)
+                }
+            }
+            Stmt::Cursor { x, y } => {
+                // KERNAL PLOT ($FFF0): X = row (0-24), Y = col (0-39), carry set
+                // cursor x, y → col=x, row=y
+                let x = x.clone();
+                let y = y.clone();
+                let row_zp = self.tmp_zp; self.tmp_zp += 1;
+                self.eval_expr(&y);                  // evaluate row
+                self.emit(0x85); self.emit(row_zp);  // STA row_zp
+                self.eval_expr(&x);                  // evaluate col → A
+                self.emit(0xA8);                      // TAY (col → Y)
+                self.emit(0xA6); self.emit(row_zp);  // LDX row_zp (row → X)
+                self.emit(0x38);                      // SEC (carry=1 → set cursor)
+                self.emit(0x20); self.emit16(0xFFF0); // JSR $FFF0 (KERNAL PLOT)
+            }
+            Stmt::RepeatLoop(body, cond) => {
+                let body = body.clone();
+                let cond = cond.clone();
+                self.break_patches.push(vec![]);
+                let loop_top = self.current_addr();
+                self.gen_stmts(&body);
+                // Evaluate until-condition: non-zero (1) = true → exit loop
+                self.eval_expr(&cond);
+                self.emit(0xC9); self.emit(0x01); // CMP #1
+                // BEQ +3: if cond==1 (true) → skip JMP back → exit loop
+                self.emit(0xF0); self.emit(0x03); // BEQ +3
+                self.emit(0x4C); self.emit16(loop_top); // JMP loop_top (loop again)
+                let loop_end = self.current_addr();
+                let breaks = self.break_patches.pop().unwrap_or_default();
+                for pos in breaks { self.patch_abs(pos, loop_end); }
+            }
+            Stmt::PlotErase(x_expr, y_expr) => {
+                // Clear (erase) a pixel in bitmap — uses shared plot ZP block
+                if let Some(zp) = self.plot_zp {
+                    let x = x_expr.clone(); let y = y_expr.clone();
+                    self.emit_store_expr_u8(&y, zp + 2);
+                    self.emit_store_expr_u16(&x, zp);
+                    self.emit(0x20); // JSR
+                    let patch = self.code.len(); self.emit16(0x0000);
+                    self.plot_erase_patches.push(patch);
+                }
+            }
+            Stmt::PlotXor(x_expr, y_expr) => {
+                // XOR a pixel in bitmap — uses shared plot ZP block
+                if let Some(zp) = self.plot_zp {
+                    let x = x_expr.clone(); let y = y_expr.clone();
+                    self.emit_store_expr_u8(&y, zp + 2);
+                    self.emit_store_expr_u16(&x, zp);
+                    self.emit(0x20); // JSR
+                    let patch = self.code.len(); self.emit16(0x0000);
+                    self.plot_xor_patches.push(patch);
+                }
+            }
             Stmt::SpriteDef { id, bytes } => {
                 let id = *id;
                 // After JMP (3 bytes), find the next 64-byte-aligned address.
@@ -3312,6 +3681,26 @@ impl Codegen {
                     self.code[pos]     = circle_addr as u8;
                     self.code[pos + 1] = (circle_addr >> 8) as u8;
                 }
+            }
+        }
+
+        // Emit plot-erase helper (clear pixel, AND ~mask)
+        if !self.plot_erase_patches.is_empty() {
+            let addr = self.current_addr();
+            self.emit_plot_erase_helper();
+            for &pos in &self.plot_erase_patches.clone() {
+                self.code[pos]     = addr as u8;
+                self.code[pos + 1] = (addr >> 8) as u8;
+            }
+        }
+
+        // Emit plot-xor helper (XOR pixel, EOR mask)
+        if !self.plot_xor_patches.is_empty() {
+            let addr = self.current_addr();
+            self.emit_plot_xor_helper();
+            for &pos in &self.plot_xor_patches.clone() {
+                self.code[pos]     = addr as u8;
+                self.code[pos + 1] = (addr >> 8) as u8;
             }
         }
 

@@ -114,6 +114,7 @@ const SCREEN = $0400     # compile-time constant (substituted inline)
 ```basic
 x = x + 1
 y = a * b - c / 2
+r = x mod 3              # 8-bit modulo (remainder); result 0–(divisor-1)
 z = x and 15             # bitwise AND  ($25 AND zp)
 w = a or b               # bitwise OR   ($05 ORA zp)
 v = a xor b              # bitwise XOR  ($45 EOR zp)
@@ -123,6 +124,7 @@ n = x shr 2              # shift right 2 bits (unrolled LSR loop)
 
 `and` / `or` / `xor` / `shl` / `shr` are **bitwise**, consistent with C64 BASIC convention.
 `not x` is **logical NOT** (0 → 1, non-zero → 0) — for bitwise complement use `x xor 255`.
+`mod` implements 8-bit unsigned remainder via an SEC/SBC/BCS loop followed by CLC/ADC restore.
 
 ### Comparison
 
@@ -194,6 +196,10 @@ end
 while x < 100
   x = x + 1
 end
+
+repeat               # do-while: body executes at least once
+  x = x + 1
+until x == 100       # loop back if condition is false, exit when true
 ```
 
 ### Labels and Goto
@@ -290,11 +296,14 @@ to show the result without the initial bitmap-RAM flash.
 ### Keyboard
 
 ```basic
-var key = getch()        # busy-loop on $FFE4 until keypress; returns ASCII
+var key = getch()        # busy-loop on $FFE4 until keypress; returns PETSCII code
+var k   = inkey()        # non-blocking $FFE4: returns PETSCII code, or 0 if no key pressed
 var j = joy(2)           # read joystick port 2 (CIA1 $DC00); returns inverted bits 0-4
 var j = joy(1)           # read joystick port 1 (CIA1 $DC01)
                          # bit0=up(1), bit1=down(2), bit2=left(4), bit3=right(8), bit4=fire(16)
 ```
+
+`getch()` busy-loops until a key is pressed. `inkey()` returns immediately with 0 if no key is available — use it in game loops.
 
 ### Timing
 
@@ -347,9 +356,22 @@ sprite off 0             # disable sprite 0 ($D015 &= ~bit0)
 sprite color 0, 7        # sprite 0 color = yellow ($D027)
 sprite multicolor 0, on  # enable multicolor mode for sprite 0 ($D01C |= bit0)
 sprite multicolor 0, off # disable multicolor mode ($D01C &= ~bit0)
+sprite expand x 0, on    # double width for sprite 0 ($D01D |= bit0)
+sprite expand x 0, off   # normal width ($D01D &= ~bit0)
+sprite expand y 0, on    # double height for sprite 0 ($D017 |= bit0)
+sprite expand y 0, off   # normal height ($D017 &= ~bit0)
+sprite priority 0, on    # sprite behind background ($D01B |= bit0)
+sprite priority 0, off   # sprite in front of background ($D01B &= ~bit0)
 var h = sprite_hit()     # sprite–sprite collision ($D01E, cleared on read)
 var b = sprite_bg_hit()  # sprite–background collision ($D01F, cleared on read)
+
+sprdef 0                 # inline sprite data: 63 bytes, 64-byte aligned, sets $07F8+id
+  %00111100,0            # 3 bytes per row × 21 rows = 63 bytes total
+  ...
+end
 ```
+
+`sprdef id ... end` embeds 63 sprite bytes at the next 64-byte-aligned address in the code segment (preceded by a `JMP` to skip over it), then writes `addr>>6` to `$07F8+id` at runtime. Fewer than 63 bytes are zero-padded. Values must be compile-time constants; use `%` prefix for binary literals.
 
 | Concept | Notes |
 |---|---|
@@ -358,6 +380,8 @@ var b = sprite_bg_hit()  # sprite–background collision ($D01F, cleared on read
 | Y | 8-bit expression, 0–255 |
 | `data_addr` | 64-byte-aligned address; stored as `addr>>6` at `$07F8+id` |
 | Multicolor | shared colors in `$D025` / `$D026`; set individually via `poke` |
+| Expand | doubles sprite size in X (`$D01D`) or Y (`$D017`) direction |
+| Priority | `on` = sprite behind background, `off` = sprite in front |
 
 **VIC-II sprite registers:**
 
@@ -367,7 +391,10 @@ var b = sprite_bg_hit()  # sprite–background collision ($D01F, cleared on read
 | `$D001+id×2` | Sprite Y |
 | `$D010` | Sprite X MSB (bit per sprite) |
 | `$D015` | Sprite enable (bit per sprite) |
+| `$D017` | Sprite expand Y (bit per sprite) |
+| `$D01B` | Sprite priority / bg collision (bit per sprite) |
 | `$D01C` | Sprite multicolor enable |
+| `$D01D` | Sprite expand X (bit per sprite) |
 | `$D01E` | Sprite–sprite collision (read-clears) |
 | `$D01F` | Sprite–background collision (read-clears) |
 | `$D027+id` | Sprite color (0–15) |
@@ -381,6 +408,17 @@ poke addr_var, 6         # STA (addr_var),Y  if addr_var is word type
 var v = peek($D012)      # LDA $D012
 var v = peek(addr_var)   # LDA (addr_var),Y  if addr_var is word type
 ```
+
+### String Functions
+
+```basic
+var n = len(msg)         # length of null-terminated string var (0–255); byte-count loop
+var c = asc(msg)         # PETSCII code of first character (0 if empty string)
+var c = asc("A")         # compile-time: returns constant PETSCII code
+```
+
+`len(s)` walks the string until it finds a `$00` byte and returns the count in A.
+`asc(s)` loads the first byte of the string via `(ptr),Y` with Y=0. Both accept string literals (compile-time constant) or string variables (runtime).
 
 ### Math Functions
 
@@ -458,11 +496,23 @@ include "defs.ub"        # inline another .ub source file (lexed+parsed in place
 load "PROGRAM"           # KERNAL LOAD from device 8, to file's own load address
 load "DATA", $C000       # load to specific address (secondary address = 1)
 load "DATA", ptr         # address from word variable
+
+save "DATA", $C000, 4096 # KERNAL SAVE from $C000, 4096 bytes → device 8
+save "PROG", start, len  # addr and len from word/int variables
 ```
 
-Calls `SETNAM` ($FFBD) + `SETLFS` ($FFBA, device 8) + `LOAD` ($FFD5).
-Without address arg: secondary = 0 (file header address used).
-With address arg: secondary = 1, X/Y = lo/hi of target.
+Calls `SETNAM` ($FFBD) + `SETLFS` ($FFBA, device 8) + `LOAD` ($FFD5) or `SAVE` ($FFD8).
+`save` requires both `addr` and `len`. The `addr` is stored in a scratch ZP pair; KERNAL SAVE receives that ZP address in A, end address (addr+len) in X/Y.
+
+### Cursor Positioning
+
+```basic
+cursor 20, 10            # move cursor to column 20, row 10 (KERNAL PLOT $FFF0)
+cursor x, y              # column from variable x (0-39), row from y (0-24)
+```
+
+Calls KERNAL PLOT ($FFF0) with carry set. PLOT expects X = row, Y = column.
+`cursor col, row` maps: col → Y register, row → X register.
 
 ### Input
 
@@ -548,6 +598,8 @@ graphics on multi        # VIC-II multicolor bitmap mode (160×200, 4 colors per
 graphics off             # back to text mode
 gcls                     # clear bitmap (zero-fill $2000-$3FFF)
 plot x, y                # set pixel at (x, y);  x: 0-319, y: 0-199
+plot erase x, y          # clear pixel at (x, y) — AND ~mask into byte
+plot xor x, y            # toggle (XOR) pixel at (x, y) — EOR mask into byte
 circle x, y, r           # midpoint circle centered at (x, y) with radius r; clips off-screen points
 line x1, y1, x2, y2      # Bresenham line from (x1,y1) to (x2,y2); x: 0-255, y: 0-199
 ```
@@ -560,6 +612,7 @@ mode-switch glitches, then re-enable it in the new mode.
 
 `gcls` should be called after `graphics on` to start with a blank screen.
 `plot` emits a compact helper subroutine once per program (all `plot` calls share it via `JSR`).
+`plot erase` and `plot xor` each emit their own helper (only if used); all three share the same ZP block.
 
 X supports the full 320-pixel width. For x ≤ 255 the high byte is 0; for x = 256–319 it is 1, which the helper adds as an extra +256 to the byte address. `word` variables work directly as x.
 
@@ -590,9 +643,11 @@ asm {
 ### String ↔ Integer
 
 ```basic
-int_to_str score, $0340  # writes "042\0" to $0340 (always 3 digits)
+numstr score, $0340      # writes "042\0" to $0340 (always 3 digits, zero-padded)
 var n = str_to_int("42") # compile-time: Expr::Number(42)
 ```
+
+`numstr` converts an 8-bit variable to a 3-character decimal ASCII string (always 3 digits, e.g. `5` → `"005"`) stored at the given absolute address, followed by a null terminator. The keyword is `numstr` (not `int_to_str`).
 
 ---
 
@@ -658,7 +713,6 @@ data pointer) and a full hex dump of the generated machine code.
 | String concat runtime | `s1 + s2` prints sequentially — no heap allocation or length tracking |
 | `rnd()` | Simple LCG, not cryptographic; period = 256 |
 | `abs()` / `sgn()` / `min()` / `max()` | 8-bit values only |
-| `plot` | No erase/XOR mode — only pixel-set (OR); no bounds checking |
-| `plot` | Plotting outside 0–319 × 0–199 corrupts adjacent memory |
+| `plot` | No bounds checking; plotting outside 0–319 × 0–199 corrupts adjacent memory |
 | `chr$` | No PETSCII↔ASCII mapping — n is passed as-is to CHROUT |
 | Error reporting | Compile-time only; no runtime error handling |

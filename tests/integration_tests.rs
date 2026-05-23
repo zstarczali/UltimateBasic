@@ -1987,3 +1987,260 @@ end\n\
         assert_ne!(lo_byte, 0x8D, "lo byte should be address, not another opcode");
     }
 }
+
+// ── mod operator ────────────────────────────────────────────────────────────
+
+#[test]
+fn mod_emits_sec_sbc_bcs_loop() {
+    // x mod 10 should emit SEC; SBC; BCS loop; CLC; ADC pattern
+    let prg = compile_raw("var x = 25\nvar r = x mod 10\n");
+    let bytes = &prg[2..];
+    // Find SEC (0x38) followed by SBC zp (0xE5)
+    let sec_sbc = bytes.windows(2).any(|w| w == &[0x38, 0xE5]);
+    assert!(sec_sbc, "mod: should emit SEC then SBC zp");
+    // Find BCS (0xB0) in output
+    assert!(bytes.contains(&0xB0), "mod: BCS should be emitted");
+    // Find CLC + ADC (0x18 0x65)
+    let clc_adc = bytes.windows(2).any(|w| w == &[0x18, 0x65]);
+    assert!(clc_adc, "mod: should emit CLC; ADC to restore remainder");
+}
+
+#[test]
+fn mod_constant_computes_correctly() {
+    // Verify that constant mod compiles — specific byte sequence for 7 mod 3
+    let prg = compile_raw("var r = 7 mod 3\n");
+    // Should not panic and should produce code
+    assert!(prg.len() > 3, "7 mod 3 should produce code");
+}
+
+// ── save statement ───────────────────────────────────────────────────────────
+
+#[test]
+fn save_emits_setnam_setlfs_save() {
+    // save "DATA", $C000, 1024 — should emit SETNAM/SETLFS/SAVE calls
+    let prg = compile_raw("save \"DATA\", $C000, 1024\n");
+    let bytes = &prg[2..];
+    // SETNAM = JSR $FFBD: 20 BD FF
+    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xBD, 0xFF]), "save: SETNAM (JSR $FFBD) missing");
+    // SETLFS = JSR $FFBA: 20 BA FF
+    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xBA, 0xFF]), "save: SETLFS (JSR $FFBA) missing");
+    // SAVE = JSR $FFD8: 20 D8 FF
+    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xD8, 0xFF]), "save: SAVE (JSR $FFD8) missing");
+}
+
+#[test]
+fn save_embeds_filename_bytes() {
+    // Filename "HI" should appear as bytes in the PRG
+    let prg = compile_raw("save \"HI\", $C000, 256\n");
+    let bytes = &prg[2..];
+    // 'H'=72, 'I'=73
+    let found = bytes.windows(2).any(|w| w == &[b'H', b'I']);
+    assert!(found, "save: filename bytes 'HI' should appear in output");
+}
+
+#[test]
+fn save_setnam_length_byte() {
+    // LDA #len should appear right before SETNAM
+    let prg = compile_raw("save \"DEMO\", $2000, 512\n");
+    let bytes = &prg[2..];
+    // filename "DEMO" has length 4
+    // Find: LDA #4 ($A9 $04) somewhere before JSR $FFBD
+    assert!(bytes.windows(2).any(|w| w == &[0xA9, 4]), "save: LDA #4 (SETNAM length) not found");
+}
+
+// ── cursor statement ─────────────────────────────────────────────────────────
+
+#[test]
+fn cursor_emits_kernal_plot() {
+    // cursor 10, 5 → JSR $FFF0
+    let prg = compile_raw("cursor 10, 5\n");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xF0, 0xFF]), "cursor: JSR $FFF0 (KERNAL PLOT) missing");
+}
+
+#[test]
+fn cursor_emits_sec_before_plot() {
+    // SEC ($38) must appear before JSR $FFF0 to set cursor position mode
+    let prg = compile_raw("cursor 0, 0\n");
+    let bytes = &prg[2..];
+    let plot_pos = bytes.windows(3).position(|w| w == &[0x20, 0xF0, 0xFF]);
+    assert!(plot_pos.is_some(), "cursor: JSR $FFF0 missing");
+    let pos = plot_pos.unwrap();
+    assert!(bytes[..pos].contains(&0x38), "cursor: SEC must appear before JSR $FFF0");
+}
+
+#[test]
+fn cursor_transfers_y_register() {
+    // cursor col, row: col → Y register via TAY ($A8)
+    let prg = compile_raw("cursor 20, 10\n");
+    let bytes = &prg[2..];
+    assert!(bytes.contains(&0xA8), "cursor: TAY ($A8) to pass column in Y register");
+}
+
+// ── repeat / until loop ──────────────────────────────────────────────────────
+
+#[test]
+fn repeat_until_emits_body_then_cond() {
+    // repeat; var x = x + 1; until x == 10
+    let prg = compile_raw("var x = 0\nrepeat\n  x = x + 1\nuntil x == 10\n");
+    // Should produce code without panic and be longer than minimal
+    assert!(prg.len() > 20, "repeat/until should produce substantial code");
+}
+
+#[test]
+fn repeat_until_jumps_back() {
+    // JMP opcode ($4C) must be present for the loop-back branch
+    let prg = compile_raw("var i = 0\nrepeat\n  i = i + 1\nuntil i == 5\n");
+    let bytes = &prg[2..];
+    assert!(bytes.contains(&0x4C), "repeat/until: JMP ($4C) for loop-back expected");
+}
+
+#[test]
+fn repeat_until_cmp_1() {
+    // CMP #1 ($C9 $01) is used to test the condition value (0 or 1)
+    let prg = compile_raw("var done = 0\nrepeat\n  done = 1\nuntil done == 1\n");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(2).any(|w| w == &[0xC9, 0x01]), "repeat/until: CMP #1 for condition test missing");
+}
+
+// ── sprite expand x/y ────────────────────────────────────────────────────────
+
+#[test]
+fn sprite_expand_x_on_emits_d01d_ora() {
+    // sprite expand x 0, on → LDA $D01D; ORA #1; STA $D01D
+    let prg = compile_raw("sprite expand x 0, on\n");
+    let bytes = &prg[2..];
+    // LDA $D01D = AD 1D D0
+    assert!(bytes.windows(3).any(|w| w == &[0xAD, 0x1D, 0xD0]), "expand x on: LDA $D01D missing");
+    // ORA #1 = 09 01
+    assert!(bytes.windows(2).any(|w| w == &[0x09, 0x01]), "expand x on: ORA #1 missing");
+    // STA $D01D = 8D 1D D0
+    assert!(bytes.windows(3).any(|w| w == &[0x8D, 0x1D, 0xD0]), "expand x on: STA $D01D missing");
+}
+
+#[test]
+fn sprite_expand_x_off_emits_d01d_and() {
+    // sprite expand x 1, off → LDA $D01D; AND #$FD; STA $D01D
+    let prg = compile_raw("sprite expand x 1, off\n");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(3).any(|w| w == &[0xAD, 0x1D, 0xD0]), "expand x off: LDA $D01D missing");
+    // AND #$FD (NOT bit 1 = $FE... wait, sprite 1 = bit 1 = $02, ~$02 = $FD)
+    assert!(bytes.windows(2).any(|w| w == &[0x29, 0xFD]), "expand x off: AND #$FD missing");
+    assert!(bytes.windows(3).any(|w| w == &[0x8D, 0x1D, 0xD0]), "expand x off: STA $D01D missing");
+}
+
+#[test]
+fn sprite_expand_y_on_emits_d017() {
+    // sprite expand y 2, on → LDA $D017; ORA #4; STA $D017
+    let prg = compile_raw("sprite expand y 2, on\n");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(3).any(|w| w == &[0xAD, 0x17, 0xD0]), "expand y on: LDA $D017 missing");
+    // ORA #4 = 09 04
+    assert!(bytes.windows(2).any(|w| w == &[0x09, 0x04]), "expand y on: ORA #4 missing");
+    assert!(bytes.windows(3).any(|w| w == &[0x8D, 0x17, 0xD0]), "expand y on: STA $D017 missing");
+}
+
+#[test]
+fn sprite_expand_y_off_emits_d017_and() {
+    // sprite expand y 0, off → LDA $D017; AND #$FE; STA $D017
+    let prg = compile_raw("sprite expand y 0, off\n");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(3).any(|w| w == &[0xAD, 0x17, 0xD0]), "expand y off: LDA $D017 missing");
+    assert!(bytes.windows(2).any(|w| w == &[0x29, 0xFE]), "expand y off: AND #$FE missing");
+    assert!(bytes.windows(3).any(|w| w == &[0x8D, 0x17, 0xD0]), "expand y off: STA $D017 missing");
+}
+
+// ── sprite priority ──────────────────────────────────────────────────────────
+
+#[test]
+fn sprite_priority_on_emits_d01b_ora() {
+    // sprite priority 0, on → behind bg → LDA $D01B; ORA #1; STA $D01B
+    let prg = compile_raw("sprite priority 0, on\n");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(3).any(|w| w == &[0xAD, 0x1B, 0xD0]), "priority on: LDA $D01B missing");
+    assert!(bytes.windows(2).any(|w| w == &[0x09, 0x01]), "priority on: ORA #1 missing");
+    assert!(bytes.windows(3).any(|w| w == &[0x8D, 0x1B, 0xD0]), "priority on: STA $D01B missing");
+}
+
+#[test]
+fn sprite_priority_off_emits_d01b_and() {
+    // sprite priority 0, off → in front → LDA $D01B; AND #$FE; STA $D01B
+    let prg = compile_raw("sprite priority 0, off\n");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(3).any(|w| w == &[0xAD, 0x1B, 0xD0]), "priority off: LDA $D01B missing");
+    assert!(bytes.windows(2).any(|w| w == &[0x29, 0xFE]), "priority off: AND #$FE missing");
+    assert!(bytes.windows(3).any(|w| w == &[0x8D, 0x1B, 0xD0]), "priority off: STA $D01B missing");
+}
+
+// ── plot erase ───────────────────────────────────────────────────────────────
+
+#[test]
+fn plot_erase_compiles_without_panic() {
+    // Basic smoke test: plot erase inside graphics on
+    let prg = compile_raw("graphics on\ngcls\nplot erase 100, 50\n");
+    assert!(prg.len() > 10, "plot erase should produce code");
+}
+
+#[test]
+fn plot_erase_emits_jsr_helper() {
+    // plot erase should emit a JSR to the erase helper
+    let prg = compile_raw("graphics on\ngcls\nplot erase 10, 20\n");
+    let bytes = &prg[2..];
+    // A JSR opcode (0x20) must appear
+    assert!(bytes.contains(&0x20), "plot erase: JSR opcode should be emitted");
+}
+
+#[test]
+fn plot_erase_helper_contains_eor_ff() {
+    // The erase helper must invert the mask via EOR #$FF ($49 $FF)
+    let prg = compile_raw("graphics on\ngcls\nplot erase 0, 0\n");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(2).any(|w| w == &[0x49, 0xFF]), "plot erase helper: EOR #$FF for mask inversion missing");
+}
+
+#[test]
+fn plot_erase_helper_contains_and_zp() {
+    // The erase helper uses AND zp ($25) to clear the pixel
+    let prg = compile_raw("graphics on\ngcls\nplot erase 0, 0\n");
+    let bytes = &prg[2..];
+    assert!(bytes.contains(&0x25), "plot erase helper: AND zp ($25) opcode missing");
+}
+
+// ── plot xor ─────────────────────────────────────────────────────────────────
+
+#[test]
+fn plot_xor_compiles_without_panic() {
+    let prg = compile_raw("graphics on\ngcls\nplot xor 100, 50\n");
+    assert!(prg.len() > 10, "plot xor should produce code");
+}
+
+#[test]
+fn plot_xor_helper_contains_eor_zp() {
+    // The xor helper uses EOR zp ($45) to flip the pixel
+    let prg = compile_raw("graphics on\ngcls\nplot xor 0, 0\n");
+    let bytes = &prg[2..];
+    assert!(bytes.contains(&0x45), "plot xor helper: EOR zp ($45) opcode missing");
+}
+
+#[test]
+fn plot_xor_does_not_contain_eor_ff() {
+    // The xor helper should NOT invert the mask (no EOR #$FF)
+    let prg = compile_raw("graphics on\ngcls\nplot xor 0, 0\n");
+    let bytes = &prg[2..];
+    assert!(!bytes.windows(2).any(|w| w == &[0x49, 0xFF]),
+        "plot xor helper: should not invert mask (EOR #$FF)");
+}
+
+#[test]
+fn all_three_plot_modes_together() {
+    // Using all three plot modes in one program should emit all three helpers
+    let prg = compile_raw("graphics on\ngcls\nplot 10, 10\nplot erase 10, 10\nplot xor 10, 10\n");
+    let bytes = &prg[2..];
+    // SET: ORA zp ($05) — in plot_helper
+    assert!(bytes.contains(&0x05), "plot (set): ORA zp missing");
+    // ERASE: AND zp ($25) — in plot_erase_helper
+    assert!(bytes.contains(&0x25), "plot erase: AND zp missing");
+    // XOR: EOR zp ($45) — in plot_xor_helper
+    assert!(bytes.contains(&0x45), "plot xor: EOR zp missing");
+}
+

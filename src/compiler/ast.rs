@@ -29,7 +29,7 @@ pub enum Expr {
 
 #[derive(Debug, Clone)]
 pub enum BinOp {
-    Add, Sub, Mul, Div,
+    Add, Sub, Mul, Div, Mod,
     Eq, NotEq, Lt, Gt, LtEq, GtEq,
     And, Or, Xor,
     Shl, Shr,
@@ -88,6 +88,14 @@ pub enum Stmt {
     Fill { addr: Expr, len: Expr, val: Expr },     // fill addr, len, val — memory block fill
     Memcopy { src: Expr, dst: Expr, len: Expr },   // memcopy src, dst, len — memory block copy
     Irq { handler: Expr, line: Option<Expr> },     // irq handler [, raster_line] — raster IRQ setup
+    Save { filename: String, addr: Option<Expr>, len: Option<Expr> }, // save "file" [, addr, len] — KERNAL SAVE
+    Cursor { x: Expr, y: Expr },                   // cursor x, y — KERNAL PLOT set cursor position
+    RepeatLoop(Vec<Stmt>, Expr),                   // repeat ... until cond — do-while loop
+    PlotErase(Expr, Expr),                         // plot erase x, y — clear pixel in bitmap
+    PlotXor(Expr, Expr),                           // plot xor x, y — XOR pixel in bitmap
+    SpriteExpandX { id: Expr, on: bool },          // sprite expand x id, on/off — $D01D
+    SpriteExpandY { id: Expr, on: bool },          // sprite expand y id, on/off — $D017
+    SpritePriority { id: Expr, on: bool },         // sprite priority id, on/off — $D01B
     Reu { op: ReuOp, c64_addr: Expr, reu_bank: Expr, reu_addr: Expr, length: Expr },
     // reu stash/fetch/swap c64_addr, bank, reu_addr, length — DMA transfer to/from REU
     Wait { raster_target: bool, value: Expr }, // wait N (raster lines) / wait raster N (specific line)
