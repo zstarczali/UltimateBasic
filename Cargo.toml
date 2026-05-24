@@ -5,4 +5,11 @@ edition = "2024"
 description = "Ultimate Basic – C64 BASIC compiler to 6502 machine code"
 authors = ["Zsolt Tarczali (c) - 2026"]
 
+[[bin]]
+name = "ub"
+path = "src/main.rs"
+
+[build-dependencies]
+winresource = "0.1"
+
 [dependencies]
