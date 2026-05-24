@@ -137,6 +137,33 @@ n = x shr 2              # shift right 2 bits (unrolled LSR loop)
 `not x` is **logical NOT** (0 → 1, non-zero → 0) — for bitwise complement use `x xor 255`.
 `mod` implements 8-bit unsigned remainder via an SEC/SBC/BCS loop followed by CLC/ADC restore.
 
+### Increment / Decrement
+
+```basic
+inc x                    # x = x + 1  (INC zp — single 6502 instruction)
+dec x                    # x = x - 1  (DEC zp — single 6502 instruction)
+```
+
+For `word` variables, 16-bit carry is handled automatically:
+- `inc`: `INC lo; BNE skip; INC hi` — wraps correctly through 0→1 in the high byte
+- `dec`: `LDA lo; BNE skip; DEC hi; DEC lo` — borrows correctly from the high byte
+
+### Compound Assignments
+
+```basic
+x += 5                   # x = x + 5
+x -= 3                   # x = x - 3
+x *= 2                   # x = x * 2
+x /= 4                   # x = x / 4
+x and= 15                # x = x and 15   (bitwise AND)
+x or= 64                 # x = x or 64    (bitwise OR)
+x xor= 255               # x = x xor 255  (bitwise XOR)
+x shl= 2                 # x = x shl 2    (shift left)
+x shr= 1                 # x = x shr 1    (shift right)
+```
+
+All compound assignments generate the same code as the expanded form. They are syntax sugar only; any valid expression is accepted on the right side.
+
 ### Comparison
 
 ```basic
@@ -157,6 +184,11 @@ print x, y, "text"            # any mix of vars, numbers, strings
 print "Score: ", score, "!"
 print                          # blank line (newline only)
 
+# Spacing / cursor control in print
+print spc(5)                  # print 5 space characters
+print tab(20), "VALUE"        # move cursor to column 20, then print
+print "A", spc(3), "B"        # mix freely with other print args
+
 # String concatenation with +
 print "Hello " + "World"      # compile-time fold → single literal
 print s1 + s2                 # runtime: prints s1 then s2 (no alloc)
@@ -164,6 +196,9 @@ print "Name: " + name         # literal + string var
 print "Score: " + n           # string literal + numeric var
 print n, " items" + " left"   # mixed — works in any order
 ```
+
+`spc(n)` emits n space characters (`$20`) via CHROUT. If n = 0, nothing is printed.
+`tab(n)` moves the cursor to absolute column n using KERNAL PLOT (`$FFF0`); column n is 0-based (0–39).
 
 String `+` in a **print context**:
 - `StringLit + StringLit` → folded at **compile time** to one literal (zero extra code)
@@ -180,6 +215,21 @@ else
 end
 ```
 
+### Select / Case
+
+```basic
+select x
+  case 1:
+    print "ONE"
+  case 2:
+    print "TWO"
+  else:
+    print "OTHER"
+end
+```
+
+`select expr` evaluates the expression once and compares it against each `case` value in order. The first matching case body is executed and control jumps to after `end` (subsequent cases are skipped). The optional `else:` body runs if no case matches. Any number of `case` arms is supported; `else:` must come last. All values must be 8-bit (0–255).
+
 ### Loops
 
 ```basic
@@ -189,10 +239,12 @@ end
 
 loop                 # infinite loop
   x = x + 1
+  if x == 5 then continue end  # skip to next iteration
   if x == 100 then break end
 end
 
 for i = 1 to 10      # for..next (preferred syntax)
+  if i == 5 then continue end  # skip to increment step
   print i
 next
 
@@ -307,7 +359,16 @@ graphics on multi        # VIC-II multicolor bitmap mode (160×200, 4 colors/cel
 graphics off             # back to text mode
 display on               # re-enable VIC display ($D011 bit4 = DEN → 1)
 display off              # blank display  ($D011 bit4 = DEN → 0)
+
+screen 0, 0, 65          # write char code 65 ('A') to screen RAM at col 0, row 0 ($0400)
+screen 10, 5, ch         # col 10, row 5 — col/row can be variables
+screen 5, 3, 42, 7       # char 42 at col 5, row 3, color 7 (also writes to color RAM $D800)
+screen x, y, ch, col     # all four arguments as variables
 ```
+
+`screen col, row, char [, color]` writes directly to screen RAM (`$0400 + row*40 + col`) and
+optionally to color RAM (`$D800 + row*40 + col`). For constant col/row the address is computed
+at compile time (a single `STA abs`); for variable col/row the address is computed at runtime.
 
 `graphics on` and `graphics on multi` leave the display **blanked** (DEN=0). Call `display on`
 after `gcls` and drawing to show the result without the initial bitmap-RAM flash.
@@ -464,6 +525,7 @@ var b = min(x, 39)       # 8-bit minimum
 var c = max(x, 0)        # 8-bit maximum
 var s = sgn(score)       # 0 = zero, 1 = positive (1–127), $FF = negative (128–255)
 var r = rnd()            # LCG pseudo-random 0–255; seed from raster line
+var r = rnd(10)          # LCG pseudo-random 0–9 (rnd() mod n; result 0..n-1)
 var s = sin(angle)       # sine lookup: angle 0-255 (full circle), returns 0-255 (center=128)
 var c = cos(angle)       # cosine = sin(angle+64); same scale
 ```

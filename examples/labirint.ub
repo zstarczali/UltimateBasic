@@ -1,0 +1,2 @@
+label tenprint
+print chr$(205+rnd(2)); : goto tenprint

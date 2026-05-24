@@ -64,6 +64,29 @@ r = x mod 40             # 8-bit modulo (remainder); SEC/SBC/BCS loop
 
 Comparisons: `==`  `!=`  `<`  `>`  `<=`  `>=`  (return 1/0)
 
+### Increment / Decrement
+
+```basic
+inc x                    # x = x + 1  (INC zp — single instruction)
+dec x                    # x = x - 1  (DEC zp — single instruction)
+```
+
+For `word` variables carry is handled: `inc` uses `INC lo; BNE skip; INC hi`; `dec` uses `LDA lo; BNE skip; DEC hi; DEC lo`.
+
+### Compound Assignments
+
+```basic
+x += 5                   # x = x + 5
+x -= 3                   # x = x - 3
+x *= 2                   # x = x * 2
+x /= 4                   # x = x / 4
+x and= 15                # x = x and 15   (bitwise AND)
+x or= 64                 # x = x or 64    (bitwise OR)
+x xor= 255               # x = x xor 255  (bitwise XOR)
+x shl= 2                 # x = x shl 2
+x shr= 1                 # x = x shr 1
+```
+
 ### Print
 
 ```basic
@@ -71,6 +94,10 @@ print "HELLO"
 print x
 print x, y, "text"
 print                     # blank line
+
+print spc(5)             # print 5 space characters
+print tab(20), "VALUE"  # move cursor to column 20, then print
+print "A", spc(3), "B" # mix freely
 
 print "A=" + a           # string + numeric var
 print s1 + s2            # two string vars → sequential print
@@ -96,6 +123,21 @@ else
 end
 ```
 
+### Select / Case
+
+```basic
+select x
+  case 1:
+    print "ONE"
+  case 2:
+    print "TWO"
+  else:
+    print "OTHER"
+end
+```
+
+`select expr` evaluates the expression once and compares it against each `case` value in order. The first matching case body is executed and control jumps to after `end`. The optional `else:` body runs if no case matches. All values must be 8-bit (0–255).
+
 ### Loops
 
 ```basic
@@ -105,10 +147,12 @@ end
 
 loop                 # infinite loop
   x = x + 1
+  if x == 5 then continue end  # skip to next iteration
   if x == 100 then break end
 end
 
 for i = 1 to 10      # for..next (preferred)
+  if i == 5 then continue end  # skip to increment step
   print i
 next
 
@@ -213,6 +257,11 @@ color text 14            # text color register $0286
 color border 6           # $D020
 color bg 0               # $D021
 
+screen 0, 0, 65          # write char 65 ('A') to screen RAM at col 0, row 0 ($0400)
+screen 10, 5, ch         # col 10, row 5 — col/row can be variables
+screen 5, 3, 42, 7       # char 42 at col 5, row 3, color 7 (writes color RAM $D800 too)
+screen x, y, ch, col     # all four arguments as variables
+
 display on               # re-enable VIC display ($D011 DEN bit)
 
 cursor 20, 10            # move cursor to col 20, row 10 (KERNAL PLOT $FFF0)
@@ -223,6 +272,9 @@ print at x, y, "Score:", score  # any mix of exprs
 print at 0, 0            # position only (no text)
 display off              # blank display
 ```
+
+`screen col, row, char [, color]` writes directly to screen RAM (`$0400 + row*40 + col`) and
+optionally to color RAM (`$D800 + row*40 + col`). Constant col/row: address computed at compile time.
 
 ### Keyboard
 
@@ -431,6 +483,7 @@ var b = min(x, 39)       # 8-bit minimum
 var c = max(x, 0)        # 8-bit maximum
 var s = sgn(score)       # 0 = zero, 1 = positive (1–127), $FF = negative (128–255)
 var r = rnd()            # LCG pseudo-random 0-255; seed from raster line
+var r = rnd(10)          # LCG pseudo-random 0-9 (rnd() mod n; result 0..n-1)
 var s = sin(angle)       # sine: angle 0-255 (full circle), returns 0-255 (center=128)
 var c = cos(angle)       # cosine = sin(angle+64)
 
@@ -724,7 +777,7 @@ cargo test               # unit + integration tests
 | Subroutines | No recursion — ZP parameter slots are statically allocated |
 | String vars | Read-only after init; assignment replaces the pointer, not the data |
 | String concat runtime | `s1 + s2` prints sequentially — no heap allocation or length tracking |
-| `rnd()` | Simple LCG, not cryptographic; period = 256 |
+| `rnd()` / `rnd(n)` | Simple LCG, not cryptographic; period = 256 |
 | `abs()` / `sgn()` / `min()` / `max()` | 8-bit values only; `abs`/`sgn` treat values as signed (bit 7 = negative → `abs` two's-complements, `sgn` returns `$FF`); `min`/`max` are unsigned (0–255) |
 | `plot` | Out-of-range pixels are silently clipped (Y ≥ 200 or X ≥ 320 → no-op) |
 | `chr$` | No PETSCII↔ASCII mapping — n is passed as-is to CHROUT |

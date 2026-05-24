@@ -421,6 +421,7 @@ pub struct Codegen {
     perm_zp: u8,
     tmp_zp: u8,
     break_patches: Vec<Vec<usize>>,
+    continue_patches: Vec<Vec<usize>>,
     arrays: HashMap<String, u16>,           // array_name → base address ($C000+)
     array_sizes: HashMap<String, u16>,      // array_name → size in bytes
     array_ptr: u16,                         // next free array slot
@@ -474,6 +475,7 @@ impl Codegen {
             perm_zp: ZP_BASE,
             tmp_zp: TMP_BASE,
             break_patches: vec![],
+            continue_patches: vec![],
             arrays: HashMap::new(),
             array_sizes: HashMap::new(),
             array_ptr: 0xC000,
@@ -1104,6 +1106,41 @@ impl Codegen {
                 self.emit(0x85); self.emit(RND_SEED_ZP);  // STA seed
                 self.emit(0x4D); self.emit(0x12); self.emit(0xD0); // EOR $D012 (post-whiten)
             }
+            Expr::RndN(n) => {
+                // rnd(n) = rnd() mod n — generate LCG value then apply modulo
+                let n = n.clone();
+                // Step 1: LCG — same as Expr::Rnd
+                if !self.rnd_seeded {
+                    self.emit(0xAD); self.emit(0x12); self.emit(0xD0); // LDA $D012
+                    self.emit(0x85); self.emit(RND_SEED_ZP);
+                    self.rnd_seeded = true;
+                }
+                self.emit(0xA5); self.emit(RND_SEED_ZP);
+                self.emit(0x0A);
+                self.emit(0x0A);
+                self.emit(0x18);
+                self.emit(0x65); self.emit(RND_SEED_ZP);
+                self.emit(0x18);
+                self.emit(0x69); self.emit(0x01);
+                self.emit(0x85); self.emit(RND_SEED_ZP);
+                self.emit(0x4D); self.emit(0x12); self.emit(0xD0); // EOR $D012
+                // Step 2: mod by n — same as BinOp::Mod
+                let tmp = self.tmp_zp; self.tmp_zp += 1;  // dividend (rnd value)
+                self.emit(0x85); self.emit(tmp);           // STA tmp
+                let divisor = self.tmp_zp; self.tmp_zp += 1;
+                self.eval_expr(&n);
+                self.emit(0x85); self.emit(divisor);       // STA divisor
+                self.emit(0xA5); self.emit(tmp);           // LDA tmp (dividend)
+                // mod loop: SEC; SBC divisor; BCS loop_top; CLC; ADC divisor
+                let loop_top = self.current_addr();
+                self.emit(0x38);                            // SEC
+                self.emit(0xE5); self.emit(divisor);        // SBC divisor
+                self.emit(0xB0);                            // BCS loop_top
+                let bcs = self.code.len(); self.emit(0x00);
+                self.patch_bxx(bcs, loop_top);
+                self.emit(0x18);                            // CLC
+                self.emit(0x65); self.emit(divisor);        // ADC divisor → remainder in A
+            }
             Expr::Abs(expr) => {
                 let expr = expr.clone();
                 self.eval_expr(&expr);
@@ -1194,6 +1231,11 @@ impl Codegen {
             }
             Expr::HexFmt(inner) | Expr::BinFmt(inner) => {
                 // In non-print context, evaluate the inner expression (pass-through)
+                let inner = inner.clone();
+                self.eval_expr(&inner);
+            }
+            Expr::Spc(inner) | Expr::Tab(inner) => {
+                // In non-print context, evaluate the inner expression only
                 let inner = inner.clone();
                 self.eval_expr(&inner);
             }
@@ -1469,6 +1511,269 @@ impl Codegen {
         self.patch_bxx(bne_skip_pos, skip_pos);
         let after_skip = self.current_addr();
         self.patch_abs(jmp_pos, after_skip);
+    }
+
+    /// Returns true when the expression may produce a value > 255
+    /// (word variable, or a sub-expression that contains one, or large constant).
+    fn can_be_word_result(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::Number(n) => *n > 255_i16 || *n < 0_i16,
+            Expr::Var(name) => matches!(self.var_types.get(name), Some(VarType::Word)),
+            Expr::BinOp(l, _, r) => self.can_be_word_result(l) || self.can_be_word_result(r),
+            _ => false,
+        }
+    }
+
+    /// Evaluate `expr` as a 16-bit result, storing lo-byte at ZP `lo`, hi-byte at `lo+1`.
+    /// Handles: Number, Var (int/word), BinOp Add/Sub.  All others fall back to 8-bit, hi=0.
+    fn eval_expr_word(&mut self, expr: &Expr, lo: u8, hi: u8) {
+        match expr {
+            Expr::Number(n) => {
+                let v = *n as u16;
+                self.emit(0xA9); self.emit(v as u8);
+                self.emit(0x85); self.emit(lo);
+                self.emit(0xA9); self.emit((v >> 8) as u8);
+                self.emit(0x85); self.emit(hi);
+            }
+            Expr::Var(name) => {
+                if let Some(zp) = self.var_addr(name) {
+                    self.emit(0xA5); self.emit(zp);
+                    self.emit(0x85); self.emit(lo);
+                    if matches!(self.var_types.get(name), Some(VarType::Word)) {
+                        self.emit(0xA5); self.emit(zp + 1);
+                    } else {
+                        self.emit(0xA9); self.emit(0x00);
+                    }
+                    self.emit(0x85); self.emit(hi);
+                } else {
+                    self.emit(0xA9); self.emit(0x00); self.emit(0x85); self.emit(lo);
+                    self.emit(0xA9); self.emit(0x00); self.emit(0x85); self.emit(hi);
+                }
+            }
+            Expr::BinOp(l, BinOp::Add, r) => {
+                let tmp_lo = self.tmp_zp; self.tmp_zp += 1;
+                let tmp_hi = self.tmp_zp; self.tmp_zp += 1;
+                let (l, r) = (l.clone(), r.clone());
+                self.eval_expr_word(&l, tmp_lo, tmp_hi);
+                self.eval_expr_word(&r, lo, hi);
+                // 16-bit add: result = r + l
+                self.emit(0x18);                           // CLC
+                self.emit(0xA5); self.emit(lo);            // LDA lo
+                self.emit(0x65); self.emit(tmp_lo);        // ADC tmp_lo
+                self.emit(0x85); self.emit(lo);            // STA lo
+                self.emit(0xA5); self.emit(hi);            // LDA hi
+                self.emit(0x65); self.emit(tmp_hi);        // ADC tmp_hi
+                self.emit(0x85); self.emit(hi);            // STA hi
+            }
+            Expr::BinOp(l, BinOp::Sub, r) => {
+                let tmp_lo = self.tmp_zp; self.tmp_zp += 1;
+                let tmp_hi = self.tmp_zp; self.tmp_zp += 1;
+                let (l, r) = (l.clone(), r.clone());
+                self.eval_expr_word(&l, lo, hi);
+                self.eval_expr_word(&r, tmp_lo, tmp_hi);
+                self.emit(0x38);                           // SEC
+                self.emit(0xA5); self.emit(lo);            // LDA lo
+                self.emit(0xE5); self.emit(tmp_lo);        // SBC tmp_lo
+                self.emit(0x85); self.emit(lo);            // STA lo
+                self.emit(0xA5); self.emit(hi);            // LDA hi
+                self.emit(0xE5); self.emit(tmp_hi);        // SBC tmp_hi
+                self.emit(0x85); self.emit(hi);            // STA hi
+            }
+            Expr::BinOp(l, BinOp::And, r) => {
+                let tmp_lo = self.tmp_zp; self.tmp_zp += 1;
+                let tmp_hi = self.tmp_zp; self.tmp_zp += 1;
+                let (l, r) = (l.clone(), r.clone());
+                self.eval_expr_word(&l, tmp_lo, tmp_hi);
+                self.eval_expr_word(&r, lo, hi);
+                self.emit(0xA5); self.emit(lo); self.emit(0x25); self.emit(tmp_lo); self.emit(0x85); self.emit(lo);
+                self.emit(0xA5); self.emit(hi); self.emit(0x25); self.emit(tmp_hi); self.emit(0x85); self.emit(hi);
+            }
+            Expr::BinOp(l, BinOp::Or, r) => {
+                let tmp_lo = self.tmp_zp; self.tmp_zp += 1;
+                let tmp_hi = self.tmp_zp; self.tmp_zp += 1;
+                let (l, r) = (l.clone(), r.clone());
+                self.eval_expr_word(&l, tmp_lo, tmp_hi);
+                self.eval_expr_word(&r, lo, hi);
+                self.emit(0xA5); self.emit(lo); self.emit(0x05); self.emit(tmp_lo); self.emit(0x85); self.emit(lo);
+                self.emit(0xA5); self.emit(hi); self.emit(0x05); self.emit(tmp_hi); self.emit(0x85); self.emit(hi);
+            }
+            Expr::BinOp(l, BinOp::Xor, r) => {
+                let tmp_lo = self.tmp_zp; self.tmp_zp += 1;
+                let tmp_hi = self.tmp_zp; self.tmp_zp += 1;
+                let (l, r) = (l.clone(), r.clone());
+                self.eval_expr_word(&l, tmp_lo, tmp_hi);
+                self.eval_expr_word(&r, lo, hi);
+                self.emit(0xA5); self.emit(lo); self.emit(0x45); self.emit(tmp_lo); self.emit(0x85); self.emit(lo);
+                self.emit(0xA5); self.emit(hi); self.emit(0x45); self.emit(tmp_hi); self.emit(0x85); self.emit(hi);
+            }
+            // 16×8 multiply: l as 16-bit multiplicand, lo byte of r as 8-bit multiplier
+            Expr::BinOp(l, BinOp::Mul, r) => {
+                let mc_lo = self.tmp_zp; self.tmp_zp += 1;
+                let mc_hi = self.tmp_zp; self.tmp_zp += 1;
+                let mr    = self.tmp_zp; self.tmp_zp += 1;
+                let (l, r) = (l.clone(), r.clone());
+                self.eval_expr_word(&l, mc_lo, mc_hi);
+                self.eval_expr(&r);                        // 8-bit multiplier
+                self.emit(0x85); self.emit(mr);
+                self.emit(0xA9); self.emit(0x00);
+                self.emit(0x85); self.emit(lo);
+                self.emit(0x85); self.emit(hi);
+                self.emit(0xA2); self.emit(0x08);          // LDX #8
+                let loop_top = self.current_addr();
+                self.emit(0x46); self.emit(mr);            // LSR mr
+                self.emit(0x90); let bcc = self.code.len(); self.emit(0x00); // BCC skip
+                self.emit(0x18);                           // CLC
+                self.emit(0xA5); self.emit(lo);  self.emit(0x65); self.emit(mc_lo); self.emit(0x85); self.emit(lo);
+                self.emit(0xA5); self.emit(hi);  self.emit(0x65); self.emit(mc_hi); self.emit(0x85); self.emit(hi);
+                let skip = self.current_addr();
+                self.patch_bxx(bcc, skip);
+                self.emit(0x06); self.emit(mc_lo);         // ASL mc_lo
+                self.emit(0x26); self.emit(mc_hi);         // ROL mc_hi
+                self.emit(0xCA);                           // DEX
+                self.emit(0xD0); let bne = self.code.len(); self.emit(0x00);
+                self.patch_bxx(bne, loop_top);
+            }
+            Expr::BinOp(l, BinOp::Shl, r) => {
+                let l = l.clone();
+                self.eval_expr_word(&l, lo, hi);
+                match r.as_ref() {
+                    Expr::Number(n) => {
+                        let n = (*n as usize).min(15);
+                        for _ in 0..n {
+                            self.emit(0x06); self.emit(lo);  // ASL lo
+                            self.emit(0x26); self.emit(hi);  // ROL hi
+                        }
+                    }
+                    other => {
+                        let other = other.clone();
+                        let cnt = self.tmp_zp; self.tmp_zp += 1;
+                        self.eval_expr(&other);
+                        self.emit(0xF0); let beq_done = self.code.len(); self.emit(0x00);
+                        self.emit(0x85); self.emit(cnt);
+                        let loop_top = self.current_addr();
+                        self.emit(0x06); self.emit(lo);
+                        self.emit(0x26); self.emit(hi);
+                        self.emit(0xC6); self.emit(cnt);
+                        self.emit(0xD0); let bne = self.code.len(); self.emit(0x00);
+                        let done = self.current_addr();
+                        self.patch_bxx(bne, loop_top);
+                        self.patch_bxx(beq_done, done);
+                    }
+                }
+            }
+            Expr::BinOp(l, BinOp::Shr, r) => {
+                let l = l.clone();
+                self.eval_expr_word(&l, lo, hi);
+                match r.as_ref() {
+                    Expr::Number(n) => {
+                        let n = (*n as usize).min(15);
+                        for _ in 0..n {
+                            self.emit(0x46); self.emit(hi);  // LSR hi (MSB first)
+                            self.emit(0x66); self.emit(lo);  // ROR lo
+                        }
+                    }
+                    other => {
+                        let other = other.clone();
+                        let cnt = self.tmp_zp; self.tmp_zp += 1;
+                        self.eval_expr(&other);
+                        self.emit(0xF0); let beq_done = self.code.len(); self.emit(0x00);
+                        self.emit(0x85); self.emit(cnt);
+                        let loop_top = self.current_addr();
+                        self.emit(0x46); self.emit(hi);
+                        self.emit(0x66); self.emit(lo);
+                        self.emit(0xC6); self.emit(cnt);
+                        self.emit(0xD0); let bne = self.code.len(); self.emit(0x00);
+                        let done = self.current_addr();
+                        self.patch_bxx(bne, loop_top);
+                        self.patch_bxx(beq_done, done);
+                    }
+                }
+            }
+            _ => {
+                // Fallback: 8-bit eval, zero-extend
+                let expr = expr.clone();
+                self.eval_expr(&expr);
+                self.emit(0x85); self.emit(lo);
+                self.emit(0xA9); self.emit(0x00);
+                self.emit(0x85); self.emit(hi);
+            }
+        }
+    }
+
+    /// Print the 16-bit value at ZP `zp` (lo) / `zp+1` (hi) as decimal (0-65535).
+    fn print_decimal_word(&mut self, zp: u8) {
+        let t_lo = self.tmp_zp; self.tmp_zp += 1;
+        let t_hi = self.tmp_zp; self.tmp_zp += 1;
+        let t_lz = self.tmp_zp; self.tmp_zp += 1;
+        // Copy working value
+        self.emit(0xA5); self.emit(zp);       self.emit(0x85); self.emit(t_lo);
+        self.emit(0xA5); self.emit(zp + 1);   self.emit(0x85); self.emit(t_hi);
+        self.emit(0xA9); self.emit(0x01);      self.emit(0x85); self.emit(t_lz); // lz=1
+        // Divisors: 10000 ($2710), 1000 ($03E8), 100 ($0064), 10 ($000A)
+        let divisors: &[(u8, u8)] = &[
+            (0x10, 0x27), // 10000
+            (0xE8, 0x03), // 1000
+            (0x64, 0x00), // 100
+            (0x0A, 0x00), // 10
+        ];
+        for &(div_lo, div_hi) in divisors {
+            self.print_word_digit_loop(t_lo, t_hi, div_lo, div_hi, t_lz);
+        }
+        // Ones: always print
+        self.emit(0xA5); self.emit(t_lo);
+        self.emit(0x09); self.emit(0x30);      // ORA #'0'
+        self.emit(0x20); self.emit16(CHROUT);
+    }
+
+    /// Emit a single-digit extraction loop for `print_decimal_word`.
+    /// Subtracts `div` repeatedly from `t_lo/t_hi`, counts in a fresh tmp byte,
+    /// then prints the digit with leading-zero suppression via `t_lz`.
+    fn print_word_digit_loop(&mut self, t_lo: u8, t_hi: u8, div_lo: u8, div_hi: u8, t_lz: u8) {
+        let t_dig = self.tmp_zp; self.tmp_zp += 1;
+        self.emit(0xA9); self.emit(0x00);
+        self.emit(0x85); self.emit(t_dig);            // t_dig = 0
+
+        let loop_top = self.current_addr();
+        // Compare t_hi vs div_hi
+        self.emit(0xA5); self.emit(t_hi);
+        self.emit(0xC9); self.emit(div_hi);           // CMP #div_hi
+        self.emit(0x90);                               // BCC → loop_done
+        let bcc1_pos = self.code.len(); self.emit(0x00);
+        self.emit(0xD0);                               // BNE → do_sub (t_hi > div_hi)
+        let bne1_pos = self.code.len(); self.emit(0x00);
+        // t_hi == div_hi: compare lo bytes
+        self.emit(0xA5); self.emit(t_lo);
+        self.emit(0xC9); self.emit(div_lo);           // CMP #div_lo
+        self.emit(0x90);                               // BCC → loop_done
+        let bcc2_pos = self.code.len(); self.emit(0x00);
+        // do_sub:
+        let do_sub = self.current_addr();
+        self.patch_bxx(bne1_pos, do_sub);
+        self.emit(0x38);                               // SEC
+        self.emit(0xA5); self.emit(t_lo); self.emit(0xE9); self.emit(div_lo); self.emit(0x85); self.emit(t_lo);
+        self.emit(0xA5); self.emit(t_hi); self.emit(0xE9); self.emit(div_hi); self.emit(0x85); self.emit(t_hi);
+        self.emit(0xE6); self.emit(t_dig);            // INC t_dig
+        self.emit(0x4C); self.emit16(loop_top);       // JMP loop_top
+        let loop_done = self.current_addr();
+        self.patch_bxx(bcc1_pos, loop_done);
+        self.patch_bxx(bcc2_pos, loop_done);
+
+        // Print digit with leading-zero suppression
+        self.emit(0xA5); self.emit(t_dig);
+        self.emit(0xD0); let bne_nonzero = self.code.len(); self.emit(0x00); // BNE → print
+        self.emit(0xA5); self.emit(t_lz);
+        self.emit(0xD0); let bne_skip = self.code.len(); self.emit(0x00);    // BNE → skip
+        let print_pos = self.current_addr();
+        self.patch_bxx(bne_nonzero, print_pos);
+        self.emit(0xA5); self.emit(t_dig);
+        self.emit(0x09); self.emit(0x30);             // ORA #'0'
+        self.emit(0x20); self.emit16(CHROUT);
+        self.emit(0xA9); self.emit(0x00); self.emit(0x85); self.emit(t_lz); // t_lz = 0
+        self.emit(0x4C); let jmp_pos = self.code.len(); self.emit16(0x0000);
+        let skip_pos = self.current_addr();
+        self.patch_bxx(bne_skip, skip_pos);
+        let after = self.current_addr();
+        self.patch_abs(jmp_pos, after);
     }
 
     fn patch_bxx(&mut self, offset_pos: usize, target: u16) {
@@ -3088,6 +3393,11 @@ impl Codegen {
     /// when at least one operand is a string; otherwise evaluates numerically.
     fn print_single_arg(&mut self, arg: &Expr) {
         match arg {
+            // Large constant (> 255): emit digits as a compile-time string literal
+            Expr::Number(n) if *n > 255_i16 || *n < 0_i16 => {
+                let s = n.to_string();
+                self.print_str_inline(&s);
+            }
             Expr::StringLit(s) => {
                 let s = s.clone();
                 self.print_str_inline(&s);
@@ -3116,11 +3426,52 @@ impl Codegen {
                 self.emit16(0x0000);
                 self.bin_helper_patches.push(patch);
             }
+            Expr::Spc(n) => {
+                // spc(n): print n space characters ($20)
+                // LDA n; BEQ skip; TAX; LDA #$20; loop: JSR CHROUT; DEX; BNE loop; skip:
+                let n = n.clone();
+                self.eval_expr(&n);                  // A = n
+                self.emit(0xF0);                     // BEQ skip (if n==0 skip everything)
+                let beq_offset_pos = self.code.len();
+                self.emit(0x00);                     // BEQ offset placeholder
+                self.emit(0xAA);                     // TAX (X = n)
+                self.emit(0xA9); self.emit(0x20);    // LDA #$20 (space)
+                let loop_addr = self.code.len();
+                self.emit(0x20); self.emit16(CHROUT); // JSR CHROUT
+                self.emit(0xCA);                     // DEX
+                let bne_pos = self.code.len();
+                self.emit(0xD0);                     // BNE loop
+                let back_offset = (loop_addr as i32 - (bne_pos as i32 + 2)) as i8;
+                self.emit(back_offset as u8);        // BNE offset
+                // Patch BEQ offset
+                let skip_addr = self.code.len();
+                let beq_offset = (skip_addr as i32 - (beq_offset_pos as i32 + 1)) as i8;
+                self.code[beq_offset_pos] = beq_offset as u8;
+            }
+            Expr::Tab(n) => {
+                // tab(n): move cursor to column n, keeping current row
+                // SEC; JSR $FFF0 → read cursor: X=row, Y=col
+                // STX tmp; eval n → TAY; LDX tmp; CLC; JSR $FFF0 → set cursor
+                let n = n.clone();
+                let tmp = self.tmp_zp; self.tmp_zp += 1;
+                self.emit(0x38);                      // SEC (read mode for PLOT)
+                self.emit(0x20); self.emit16(0xFFF0); // JSR $FFF0 (KERNAL PLOT — read cursor)
+                self.emit(0x86); self.emit(tmp);      // STX tmp (save row)
+                self.eval_expr(&n);                   // A = column target
+                self.emit(0xA8);                      // TAY (Y = new column)
+                self.emit(0xA6); self.emit(tmp);      // LDX tmp (restore row)
+                self.emit(0x18);                      // CLC (write mode for PLOT)
+                self.emit(0x20); self.emit16(0xFFF0); // JSR $FFF0 (KERNAL PLOT — set cursor)
+            }
             Expr::Var(name) => {
                 let name = name.clone();
                 if matches!(self.var_types.get(&name), Some(VarType::Str)) {
                     if let Some(zp) = self.var_addr(&name) {
                         self.print_str_via_ptr(zp);
+                    }
+                } else if matches!(self.var_types.get(&name), Some(VarType::Word)) {
+                    if let Some(zp) = self.var_addr(&name) {
+                        self.print_decimal_word(zp);
                     }
                 } else if let Some(zp) = self.var_addr(&name) {
                     self.print_decimal(zp);
@@ -3135,12 +3486,20 @@ impl Codegen {
                 self.print_single_arg(&r);
             }
             _ => {
-                // Numeric expression: evaluate → print as decimal
-                let tmp = self.tmp_zp; self.tmp_zp += 1;
                 let arg = arg.clone();
-                self.eval_expr(&arg);
-                self.emit(0x85); self.emit(tmp);
-                self.print_decimal(tmp);
+                if self.can_be_word_result(&arg) {
+                    // 16-bit expression: evaluate as word and print
+                    let lo = self.tmp_zp; self.tmp_zp += 1;
+                    let hi = self.tmp_zp; self.tmp_zp += 1;
+                    self.eval_expr_word(&arg, lo, hi);
+                    self.print_decimal_word(lo);
+                } else {
+                    // 8-bit expression
+                    let tmp = self.tmp_zp; self.tmp_zp += 1;
+                    self.eval_expr(&arg);
+                    self.emit(0x85); self.emit(tmp);
+                    self.print_decimal(tmp);
+                }
             }
         }
     }
@@ -3925,9 +4284,30 @@ impl Codegen {
                     }
                     _ => {
                         let zp = self.alloc_var(name);
-                        let expr = expr.clone();
-                        self.eval_expr(&expr);
-                        self.emit(0x85); self.emit(zp);
+                        // Auto-promote to word when initial value > 255
+                        if let Expr::Number(n) = expr {
+                            if *n > 255_i16 || *n < 0_i16 {
+                                self.var_types.insert(name.clone(), VarType::Word);
+                                let v = *n as u16;
+                                self.emit(0xA9); self.emit(v as u8);
+                                self.emit(0x85); self.emit(zp);
+                                self.emit(0xA9); self.emit((v >> 8) as u8);
+                                self.emit(0x85); self.emit(zp + 1);
+                            } else {
+                                let expr = expr.clone();
+                                self.eval_expr(&expr);
+                                self.emit(0x85); self.emit(zp);
+                            }
+                        } else if self.can_be_word_result(expr) {
+                            // Expression involves word variables — auto-promote to word
+                            self.var_types.insert(name.clone(), VarType::Word);
+                            let expr = expr.clone();
+                            self.eval_expr_word(&expr, zp, zp + 1);
+                        } else {
+                            let expr = expr.clone();
+                            self.eval_expr(&expr);
+                            self.emit(0x85); self.emit(zp);
+                        }
                     }
                 }
             }
@@ -3948,12 +4328,12 @@ impl Codegen {
                     self.emit(0x85); self.emit(zp);
                 }
             }
-            Stmt::Print(args) => {
+            Stmt::Print { args, no_newline } => {
                 for arg in args {
                     let arg = arg.clone();
                     self.print_single_arg(&arg);
                 }
-                self.print_newline();
+                if !no_newline { self.print_newline(); }
             }
             Stmt::PrintAt { col, row, args } => {
                 // Cursor positioning (same as Stmt::Cursor): KERNAL PLOT $FFF0, carry set
@@ -4004,11 +4384,15 @@ impl Codegen {
             }
             Stmt::Loop(count, body) => {
                 self.break_patches.push(vec![]);
+                self.continue_patches.push(vec![]);
 
                 if *count == 0 {
                     // Infinite loop: JMP back unconditionally
                     let loop_start = self.current_addr();
                     self.gen_stmts(body);
+                    // patch continues to loop_start (re-run body from the top)
+                    let conts = self.continue_patches.pop().unwrap_or_default();
+                    for pos in conts { self.patch_abs(pos, loop_start); }
                     self.emit(0x4C); self.emit16(loop_start);
                 } else {
                     let cnt = self.perm_zp; self.perm_zp += 1; // permanent: persists across iterations
@@ -4016,6 +4400,10 @@ impl Codegen {
                     self.emit(0x85); self.emit(cnt);
                     let loop_start = self.current_addr();
                     self.gen_stmts(body);
+                    // patch continues to DEC cnt (after body, before decrement check)
+                    let continue_target = self.current_addr();
+                    let conts = self.continue_patches.pop().unwrap_or_default();
+                    for pos in conts { self.patch_abs(pos, continue_target); }
                     self.emit(0xC6); self.emit(cnt);   // DEC cnt
                     // Use BEQ+JMP so any body size works (BNE only reaches ±128 bytes)
                     self.emit(0xF0); self.emit(0x03);  // BEQ +3 → skip JMP when done
@@ -4046,6 +4434,7 @@ impl Codegen {
                 self.emit(0x85); self.emit(zp_step);
 
                 self.break_patches.push(vec![]);
+                self.continue_patches.push(vec![]);
                 let loop_top = self.current_addr();
 
                 // if var > zp_to → exit  (unsigned: zp_to < var → C=0 after CMP zp_to,var? no)
@@ -4065,6 +4454,11 @@ impl Codegen {
                 self.patch_bxx(beq_pos, body_start);
 
                 self.gen_stmts(body);
+
+                // continue target: var += step (skip body tail, redo increment+check)
+                let continue_target = self.current_addr();
+                let conts = self.continue_patches.pop().unwrap_or_default();
+                for pos in conts { self.patch_abs(pos, continue_target); }
 
                 // var += step
                 self.emit(0xA5); self.emit(zp);
@@ -4087,6 +4481,7 @@ impl Codegen {
             }
             Stmt::WhileLoop(cond, body) => {
                 self.break_patches.push(vec![]);
+                self.continue_patches.push(vec![]);
                 let loop_top = self.current_addr();
                 self.eval_expr(cond);
                 self.emit(0xC9); self.emit(0x01); // CMP #1
@@ -4097,6 +4492,9 @@ impl Codegen {
                 let exit_patch = self.code.len(); self.emit16(0x0000);
                 // continue:
                 self.gen_stmts(body);
+                // patch continues to loop_top (re-evaluate condition)
+                let conts = self.continue_patches.pop().unwrap_or_default();
+                for pos in conts { self.patch_abs(pos, loop_top); }
                 self.emit(0x4C); self.emit16(loop_top);
                 let loop_end = self.current_addr();
                 self.patch_abs(exit_patch, loop_end);
@@ -4110,6 +4508,56 @@ impl Codegen {
                 if let Some(list) = self.break_patches.last_mut() {
                     list.push(pos);
                 }
+            }
+            Stmt::Continue => {
+                self.emit(0x4C); // JMP (address patched later)
+                let pos = self.code.len();
+                self.emit16(0x0000);
+                if let Some(list) = self.continue_patches.last_mut() {
+                    list.push(pos);
+                }
+            }
+            Stmt::Select { expr, cases, else_body } => {
+                let expr = expr.clone();
+                let cases = cases.clone();
+                let else_body = else_body.clone();
+                // Store select value in permanent ZP (survives across body codegen which resets tmp_zp)
+                let tmp_select = self.perm_zp; self.perm_zp += 1;
+                self.eval_expr(&expr);
+                self.emit(0x85); self.emit(tmp_select); // STA tmp_select
+
+                let mut end_patches: Vec<usize> = vec![];
+
+                for (val, body) in &cases {
+                    let val = val.clone();
+                    let body = body.clone();
+                    // Allocate scratch slot for this case's value (used before gen_stmts clobbers tmp_zp)
+                    let tmp_val = self.tmp_zp; self.tmp_zp += 1;
+                    self.eval_expr(&val);
+                    self.emit(0x85); self.emit(tmp_val);       // STA tmp_val
+                    self.emit(0xA5); self.emit(tmp_select);    // LDA tmp_select
+                    self.emit(0xC5); self.emit(tmp_val);       // CMP tmp_val
+                    // BEQ +3 → match (skip JMP next_case); JMP next_case
+                    self.emit(0xF0); self.emit(0x03);           // BEQ +3
+                    self.emit(0x4C);
+                    let next_patch = self.code.len(); self.emit16(0x0000);
+
+                    self.gen_stmts(&body);
+
+                    self.emit(0x4C); // JMP end_select
+                    let end_patch = self.code.len(); self.emit16(0x0000);
+                    end_patches.push(end_patch);
+
+                    let next_addr = self.current_addr();
+                    self.patch_abs(next_patch, next_addr);
+                }
+
+                if let Some(body) = &else_body {
+                    self.gen_stmts(body);
+                }
+
+                let end_addr = self.current_addr();
+                for pos in end_patches { self.patch_abs(pos, end_addr); }
             }
             Stmt::Sys { addr, arg } => {
                 if let Some(a) = arg {
@@ -5407,8 +5855,13 @@ impl Codegen {
                 let body = body.clone();
                 let cond = cond.clone();
                 self.break_patches.push(vec![]);
+                self.continue_patches.push(vec![]);
                 let loop_top = self.current_addr();
                 self.gen_stmts(&body);
+                // continue target: the until-condition evaluation (skip remaining body, re-check)
+                let continue_target = self.current_addr();
+                let conts = self.continue_patches.pop().unwrap_or_default();
+                for pos in conts { self.patch_abs(pos, continue_target); }
                 // Evaluate until-condition: non-zero (1) = true → exit loop
                 self.eval_expr(&cond);
                 self.emit(0xC9); self.emit(0x01); // CMP #1
@@ -5534,6 +5987,127 @@ impl Codegen {
                 };
                 self.emit(0xA9); self.emit(cmd);      // LDA #cmd
                 self.emit(0x8D); self.emit16(0xDF01); // STA $DF01 — trigger DMA
+            }
+            // ── inc var / dec var ──────────────────────────────────────────────
+            Stmt::Inc(name) => {
+                let name = name.clone();
+                if let Some(zp) = self.var_addr(&name) {
+                    if matches!(self.var_types.get(name.as_str()), Some(VarType::Word)) {
+                        // 16-bit: INC lo; BNE skip; INC hi; skip:
+                        self.emit(0xE6); self.emit(zp);       // INC lo
+                        self.emit(0xD0); self.emit(0x02);     // BNE skip (+2)
+                        self.emit(0xE6); self.emit(zp + 1);  // INC hi
+                        // skip: (falls through)
+                    } else {
+                        self.emit(0xE6); self.emit(zp);       // INC zp
+                    }
+                }
+            }
+            Stmt::Dec(name) => {
+                let name = name.clone();
+                if let Some(zp) = self.var_addr(&name) {
+                    if matches!(self.var_types.get(name.as_str()), Some(VarType::Word)) {
+                        // 16-bit: LDA lo; BNE skip; DEC hi; skip: DEC lo
+                        self.emit(0xA5); self.emit(zp);       // LDA lo
+                        self.emit(0xD0); self.emit(0x02);     // BNE skip (+2)
+                        self.emit(0xC6); self.emit(zp + 1);  // DEC hi
+                        // skip:
+                        self.emit(0xC6); self.emit(zp);       // DEC lo
+                    } else {
+                        self.emit(0xC6); self.emit(zp);       // DEC zp
+                    }
+                }
+            }
+            // ── screen col, row, char [, color] ───────────────────────────────
+            // Directly poke a character (and optionally color) into screen RAM.
+            // screen addr = $0400 + row*40 + col;  color addr = $D800 + row*40 + col
+            Stmt::Screen { col, row, char_expr, color_expr } => {
+                let col = col.clone();
+                let row = row.clone();
+                let char_expr = char_expr.clone();
+                let color_expr = color_expr.clone();
+                match (&col, &row) {
+                    (Expr::Number(c), Expr::Number(r))
+                        if *r >= 0 && *r <= 24 && *c >= 0 && *c <= 39 =>
+                    {
+                        // Compile-time: compute absolute addresses directly
+                        let offset = (*r as u16) * 40 + (*c as u16);
+                        let screen_addr = 0x0400u16 + offset;
+                        let color_addr  = 0xD800u16 + offset;
+                        self.eval_expr(&char_expr);
+                        self.emit(0x8D); self.emit(screen_addr as u8); self.emit((screen_addr >> 8) as u8);
+                        if let Some(col_expr) = &color_expr {
+                            let col_expr = col_expr.clone();
+                            self.eval_expr(&col_expr);
+                            self.emit(0x8D); self.emit(color_addr as u8); self.emit((color_addr >> 8) as u8);
+                        }
+                    }
+                    _ => {
+                        // Runtime: compute row*40 + col + $0400 as 16-bit pointer
+                        let tmp_row  = self.tmp_zp; self.tmp_zp += 1;
+                        let tmp10    = self.tmp_zp; self.tmp_zp += 1;
+                        let ptr_lo   = self.tmp_zp; self.tmp_zp += 1;
+                        let ptr_hi   = self.tmp_zp; self.tmp_zp += 1;
+                        let tmp_char = self.tmp_zp; self.tmp_zp += 1;
+
+                        // Evaluate and save character first
+                        self.eval_expr(&char_expr);
+                        self.emit(0x85); self.emit(tmp_char); // STA tmp_char
+
+                        // Evaluate row → tmp_row
+                        self.eval_expr(&row);
+                        self.emit(0x85); self.emit(tmp_row);  // STA tmp_row
+
+                        // row*10 = row*2 + row*8 (fits in u8 for row 0-24)
+                        self.emit(0xA5); self.emit(tmp_row);  // LDA tmp_row
+                        self.emit(0x0A);                       // ASL A (×2)
+                        self.emit(0x85); self.emit(tmp10);    // STA tmp10 = row*2
+                        self.emit(0x0A);                       // ASL A (×4)
+                        self.emit(0x0A);                       // ASL A (×8)
+                        self.emit(0x18);                       // CLC
+                        self.emit(0x65); self.emit(tmp10);    // ADC tmp10 → row*10
+                        self.emit(0x85); self.emit(tmp10);    // STA tmp10
+
+                        // row*40 = row*10 * 4, tracking carry into ptr_hi
+                        self.emit(0xA9); self.emit(0x00);
+                        self.emit(0x85); self.emit(ptr_hi);   // ptr_hi = 0
+                        self.emit(0xA5); self.emit(tmp10);    // LDA tmp10
+                        self.emit(0x0A);                       // ASL A → row*20, carry
+                        self.emit(0x26); self.emit(ptr_hi);   // ROL ptr_hi
+                        self.emit(0x0A);                       // ASL A → row*40 lo, carry
+                        self.emit(0x26); self.emit(ptr_hi);   // ROL ptr_hi
+                        self.emit(0x85); self.emit(ptr_lo);   // STA ptr_lo = row*40 lo
+
+                        // Add col; carry propagates into ptr_hi + $04
+                        self.eval_expr(&col);
+                        self.emit(0x18);                       // CLC
+                        self.emit(0x65); self.emit(ptr_lo);   // ADC ptr_lo
+                        self.emit(0x85); self.emit(ptr_lo);   // STA ptr_lo
+                        // ptr_hi = row*40_hi + carry_from_col + $04
+                        self.emit(0xA5); self.emit(ptr_hi);   // LDA ptr_hi
+                        self.emit(0x69); self.emit(0x04);     // ADC #$04 (carry still live)
+                        self.emit(0x85); self.emit(ptr_hi);   // STA ptr_hi
+
+                        // STA (ptr_lo), Y with Y=0
+                        self.emit(0xA5); self.emit(tmp_char); // LDA tmp_char
+                        self.emit(0xA0); self.emit(0x00);     // LDY #0
+                        self.emit(0x91); self.emit(ptr_lo);   // STA (ptr_lo), Y
+
+                        // Color (if present): ptr_hi += $D4 (maps $04xx → $D8xx)
+                        if let Some(col_expr) = &color_expr {
+                            let col_expr = col_expr.clone();
+                            self.eval_expr(&col_expr);
+                            self.emit(0x85); self.emit(tmp_char); // reuse for color value
+                            self.emit(0xA5); self.emit(ptr_hi);
+                            self.emit(0x18);                       // CLC
+                            self.emit(0x69); self.emit(0xD4);     // ADC #$D4
+                            self.emit(0x85); self.emit(ptr_hi);
+                            self.emit(0xA5); self.emit(tmp_char); // LDA color value
+                            self.emit(0xA0); self.emit(0x00);     // LDY #0
+                            self.emit(0x91); self.emit(ptr_lo);   // STA (ptr_lo), Y
+                        }
+                    }
+                }
             }
             Stmt::Poke(addr, val) => {
                 let val = val.clone();

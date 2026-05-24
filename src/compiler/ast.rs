@@ -19,6 +19,7 @@ pub enum Expr {
     BinFmt(Box<Expr>), // bin(n) — in print: shows value as 8-bit binary string
     Peek(Box<Expr>),
     Rnd,
+    RndN(Box<Expr>),         // rnd(n) — random 0..n-1 (rnd() mod n)
     Abs(Box<Expr>),
     Min(Box<Expr>, Box<Expr>),
     Max(Box<Expr>, Box<Expr>),
@@ -30,6 +31,8 @@ pub enum Expr {
     StrLen(Box<Expr>),           // len(s)  — length of null-terminated string var, 0–255
     Asc(Box<Expr>),              // asc(s)  — PETSCII code of first character (0 if empty)
     Peek16(Box<Expr>),           // peek16(addr) — read 16-bit word: lo at addr, hi at addr+1
+    Spc(Box<Expr>),              // spc(n) — in print: print n spaces
+    Tab(Box<Expr>),              // tab(n) — in print: move cursor to column n
 }
 
 #[derive(Debug, Clone)]
@@ -60,7 +63,7 @@ pub enum Stmt {
     VarDecl { name: String, vtype: Option<VarType>, expr: Expr },
     Assign(String, Expr),
     ArraySet(String, Expr, Expr),  // arr[idx] = val
-    Print(Vec<Expr>),
+    Print { args: Vec<Expr>, no_newline: bool },
     /// `print at col, row, expr...` — cursor position then print (shorthand for cursor+print).
     PrintAt { col: Expr, row: Expr, args: Vec<Expr> },
     If(Expr, Vec<Stmt>, Option<Vec<Stmt>>),
@@ -68,6 +71,13 @@ pub enum Stmt {
     ForLoop { var: String, from: Expr, to: Expr, step: Option<Expr>, body: Vec<Stmt> },
     WhileLoop(Expr, Vec<Stmt>),
     Break,
+    Continue,
+    /// `select expr / case val: / ... / else: / end`
+    Select {
+        expr: Expr,
+        cases: Vec<(Expr, Vec<Stmt>)>,
+        else_body: Option<Vec<Stmt>>,
+    },
     Cls { fast: bool },
     Graphics { on: bool, multi: bool, block: bool }, // multi=true → multicolor bitmap; block=true → 4×4 text block mode
     Display { on: bool },  // display on/off — controls VIC DEN bit ($D011 bit4)
@@ -136,6 +146,12 @@ pub enum Stmt {
     SpriteDef { id: u8, bytes: Vec<u8> },
     /// poke16 addr, val — write 16-bit little-endian value to two consecutive bytes.
     Poke16(Expr, Expr),
+    /// inc var — INC zp (or 16-bit for word vars)
+    Inc(String),
+    /// dec var — DEC zp (or 16-bit for word vars)
+    Dec(String),
+    /// screen col, row, char [, color] — direct POKE to screen and optional color RAM
+    Screen { col: Expr, row: Expr, char_expr: Expr, color_expr: Option<Expr> },
     /// open channel, device, secondary [, "filename"] — KERNAL OPEN (SETNAM+SETLFS+OPEN)
     Open { channel: Expr, device: Expr, secondary: Expr, filename: Option<String> },
     /// close channel — KERNAL CLOSE ($FFC3) with A = channel number
