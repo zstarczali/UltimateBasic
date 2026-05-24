@@ -2244,3 +2244,118 @@ fn all_three_plot_modes_together() {
     assert!(bytes.contains(&0x45), "plot xor: EOR zp missing");
 }
 
+// ── peek16 / poke16 ─────────────────────────────────────────────────────────
+
+#[test]
+fn peek16_constant_addr_reads_two_bytes() {
+    // var p: word = peek16($D012) — should emit two LDA abs instructions
+    let prg = compile_raw("var p: word = peek16($D012)");
+    let bytes = &prg[2..];
+    // LDA $D012 = AD 12 D0 and LDA $D013 = AD 13 D0
+    assert!(bytes.windows(3).any(|w| w == &[0xAD, 0x12, 0xD0]), "peek16 lo: LDA $D012");
+    assert!(bytes.windows(3).any(|w| w == &[0xAD, 0x13, 0xD0]), "peek16 hi: LDA $D013");
+}
+
+#[test]
+fn poke16_constant_addr_writes_two_bytes() {
+    // poke16 $0314, $EA81 — writes lo=$81 to $0314, hi=$EA to $0315
+    let prg = compile_raw("poke16 $0314, $EA81");
+    let bytes = &prg[2..];
+    // STA $0314 = 8D 14 03  and  STA $0315 = 8D 15 03
+    assert!(bytes.windows(3).any(|w| w == &[0x8D, 0x14, 0x03]), "poke16: STA $0314 (lo)");
+    assert!(bytes.windows(3).any(|w| w == &[0x8D, 0x15, 0x03]), "poke16: STA $0315 (hi)");
+}
+
+#[test]
+fn poke16_word_value_emits_both_bytes() {
+    // var v: word = $1234 \n poke16 $C000, v
+    let prg = compile_raw("var v: word = $1234\npoke16 $C000, v");
+    let bytes = &prg[2..];
+    // Value lo = $34, hi = $12 loaded via LDA zp ($A5)
+    let has_lda_zp_twice = bytes.windows(1).filter(|w| *w == &[0xA5]).count() >= 2;
+    assert!(has_lda_zp_twice, "poke16 word var: should LDA zp twice (lo then hi)");
+    // STA $C000 = 8D 00 C0
+    assert!(bytes.windows(3).any(|w| w == &[0x8D, 0x00, 0xC0]), "poke16: STA $C000");
+}
+
+#[test]
+fn poke16_word_addr_uses_indirect() {
+    // var ptr: word = $C000 \n poke16 ptr, 0
+    let prg = compile_raw("var ptr: word = $C000\npoke16 ptr, 0");
+    let bytes = &prg[2..];
+    // STA (ptr),Y — opcode $91
+    assert!(bytes.contains(&0x91), "poke16 via word ptr: STA (zp),Y missing");
+}
+
+#[test]
+fn word_vardecl_with_add_emits_clc() {
+    // var ptr: word = $00FF \n  var ptr2: word = ptr + 1
+    let prg = compile_raw("var ptr: word = $00FF\nvar ptr2: word = ptr + 1");
+    let bytes = &prg[2..];
+    assert!(bytes.contains(&0x18), "word VarDecl += should emit CLC");
+    assert!(bytes.windows(2).any(|w| w == &[0x69, 0x00]),
+        "word VarDecl += should propagate carry with ADC #0");
+}
+
+#[test]
+fn word_vardecl_sub_emits_sec() {
+    let prg = compile_raw("var ptr: word = $0200\nvar ptr2: word = ptr - 5");
+    let bytes = &prg[2..];
+    assert!(bytes.contains(&0x38), "word VarDecl -= should emit SEC");
+    assert!(bytes.windows(2).any(|w| w == &[0xE9, 0x00]),
+        "word VarDecl -= should propagate borrow with SBC #0");
+}
+
+// ── open / close / print# ────────────────────────────────────────────────────
+
+#[test]
+fn open_emits_setnam_setlfs_open() {
+    // open 1, 8, 2, "TEST" → SETNAM($FFBD) + SETLFS($FFBA) + OPEN($FFC0)
+    let prg = compile_raw("open 1, 8, 2, \"TEST\"");
+    let bytes = &prg[2..];
+    // JSR $FFBD = 20 BD FF
+    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xBD, 0xFF]), "open: JSR SETNAM missing");
+    // JSR $FFBA = 20 BA FF
+    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xBA, 0xFF]), "open: JSR SETLFS missing");
+    // JSR $FFC0 = 20 C0 FF
+    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xC0, 0xFF]), "open: JSR OPEN missing");
+}
+
+#[test]
+fn close_emits_kernal_close() {
+    // close 1 → A = 1, JSR $FFC3
+    let prg = compile_raw("close 1");
+    let bytes = &prg[2..];
+    // LDA #1 = A9 01
+    assert!(bytes.windows(2).any(|w| w == &[0xA9, 0x01]), "close: LDA #1 missing");
+    // JSR $FFC3 = 20 C3 FF
+    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xC3, 0xFF]), "close: JSR CLOSE missing");
+}
+
+#[test]
+fn print_hash_emits_chkout_clrchn() {
+    // print# 3, "HI" → CHKOUT($FFC9) + CHROUT + CLRCHN($FFCC)
+    let prg = compile_raw("print# 3, \"HI\"");
+    let bytes = &prg[2..];
+    // TAX = AA (channel → X for CHKOUT)
+    assert!(bytes.contains(&0xAA), "print#: TAX missing");
+    // JSR $FFC9 = 20 C9 FF
+    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xC9, 0xFF]), "print#: JSR CHKOUT missing");
+    // JSR $FFCC = 20 CC FF
+    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xCC, 0xFF]), "print#: JSR CLRCHN missing");
+    // 'H' in PETSCII = $48
+    assert!(bytes.contains(&0x48), "print#: 'H' PETSCII byte missing");
+}
+
+#[test]
+fn open_no_filename_emits_empty_setnam() {
+    // open 2, 4, 7  (no filename → SETNAM with len=0)
+    let prg = compile_raw("open 2, 4, 7");
+    let bytes = &prg[2..];
+    // LDA #0 (len=0 for SETNAM) = A9 00 followed by LDX #0, LDY #0
+    // Check SETNAM is still called
+    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xBD, 0xFF]), "open no filename: JSR SETNAM missing");
+    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xFFC0u16 as u8, (0xFFC0u16 >> 8) as u8]),
+        "open no filename: JSR OPEN missing");
+}
+

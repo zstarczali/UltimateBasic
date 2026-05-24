@@ -490,6 +490,36 @@ impl Codegen {
                     }
                 }
             }
+            // peek16(addr) in 8-bit context: return lo byte only
+            Expr::Peek16(addr) => {
+                match addr.as_ref() {
+                    Expr::Number(n) => {
+                        let n = *n as u16;
+                        self.emit(0xAD); self.emit(n as u8); self.emit((n >> 8) as u8); // LDA abs lo
+                    }
+                    Expr::Var(name) => {
+                        let name = name.clone();
+                        if matches!(self.var_types.get(&name), Some(VarType::Word)) {
+                            if let Some(zp) = self.var_addr(&name) {
+                                self.emit(0xA0); self.emit(0x00); // LDY #0
+                                self.emit(0xB1); self.emit(zp);   // LDA (zp),Y → lo byte
+                            }
+                        } else if let Some(zp) = self.var_addr(&name) {
+                            self.emit(0xA5); self.emit(zp); // LDA zp
+                        }
+                    }
+                    _ => {
+                        let addr = addr.clone();
+                        let ptr = self.tmp_zp; self.tmp_zp += 2;
+                        self.eval_expr(&addr);
+                        self.emit(0x85); self.emit(ptr);
+                        self.emit(0xA9); self.emit(0x00);
+                        self.emit(0x85); self.emit(ptr + 1);
+                        self.emit(0xA0); self.emit(0x00);
+                        self.emit(0xB1); self.emit(ptr); // LDA (ptr),Y → lo byte
+                    }
+                }
+            }
             Expr::ArrayGet(arr_name, idx_expr) => {
                 let base = self.arrays.get(arr_name).copied().unwrap_or(0xC000);
                 match idx_expr.as_ref() {
@@ -1999,6 +2029,191 @@ impl Codegen {
         }
     }
 
+    /// Generate 16-bit assignment code for a word-typed destination at ZP `dst_zp`.
+    /// Returns `true` when a 16-bit pattern was matched and code was emitted.
+    /// Returns `false` on fallback (caller should emit 8-bit eval + STA lo + clear hi).
+    fn gen_word_assign(&mut self, dst_zp: u8, expr: &Expr) -> bool {
+        match expr {
+            // ── constant ──────────────────────────────────────────────────────────
+            Expr::Number(n) => {
+                let n = *n;
+                self.emit(0xA9); self.emit(n as u8);        // LDA #lo
+                self.emit(0x85); self.emit(dst_zp);          // STA lo
+                self.emit(0xA9); self.emit((n >> 8) as u8); // LDA #hi
+                self.emit(0x85); self.emit(dst_zp + 1);     // STA hi
+                true
+            }
+            // ── word_var copy ─────────────────────────────────────────────────────
+            Expr::Var(src) if matches!(self.var_types.get(src), Some(VarType::Word)) => {
+                if let Some(src_zp) = self.var_addr(src) {
+                    self.emit(0xA5); self.emit(src_zp);         // LDA lo
+                    self.emit(0x85); self.emit(dst_zp);          // STA lo
+                    self.emit(0xA5); self.emit(src_zp + 1);     // LDA hi
+                    self.emit(0x85); self.emit(dst_zp + 1);     // STA hi
+                    true
+                } else { false }
+            }
+            // ── peek16(addr) ──────────────────────────────────────────────────────
+            Expr::Peek16(addr) => {
+                let addr = addr.clone();
+                match addr.as_ref() {
+                    Expr::Number(n) => {
+                        let n = *n as u16;
+                        // LDA abs     → lo byte
+                        self.emit(0xAD); self.emit(n as u8); self.emit((n >> 8) as u8);
+                        self.emit(0x85); self.emit(dst_zp);          // STA lo
+                        // LDA abs+1   → hi byte
+                        let n1 = n.wrapping_add(1);
+                        self.emit(0xAD); self.emit(n1 as u8); self.emit((n1 >> 8) as u8);
+                        self.emit(0x85); self.emit(dst_zp + 1);     // STA hi
+                        true
+                    }
+                    Expr::Var(vname) if matches!(self.var_types.get(vname.as_str()), Some(VarType::Word)) => {
+                        if let Some(ptr_zp) = self.var_addr(vname) {
+                            // LDA (ptr),Y with Y=0 → lo
+                            self.emit(0xA0); self.emit(0x00);        // LDY #0
+                            self.emit(0xB1); self.emit(ptr_zp);      // LDA (ptr),Y
+                            self.emit(0x85); self.emit(dst_zp);       // STA lo
+                            // LDA (ptr),Y with Y=1 → hi
+                            self.emit(0xA0); self.emit(0x01);        // LDY #1
+                            self.emit(0xB1); self.emit(ptr_zp);      // LDA (ptr),Y
+                            self.emit(0x85); self.emit(dst_zp + 1);  // STA hi
+                            true
+                        } else { false }
+                    }
+                    other => {
+                        // General expr → compute address into tmp ZP pair, then LDA (ptr),Y
+                        let other = other.clone();
+                        let ptr = self.tmp_zp; self.tmp_zp += 2;
+                        self.eval_expr(&other);
+                        self.emit(0x85); self.emit(ptr);              // STA ptr_lo
+                        self.emit(0xA9); self.emit(0x00);
+                        self.emit(0x85); self.emit(ptr + 1);          // STA ptr_hi = 0
+                        self.emit(0xA0); self.emit(0x00);             // LDY #0
+                        self.emit(0xB1); self.emit(ptr);              // LDA (ptr),Y → lo
+                        self.emit(0x85); self.emit(dst_zp);
+                        self.emit(0xA0); self.emit(0x01);             // LDY #1
+                        self.emit(0xB1); self.emit(ptr);              // LDA (ptr),Y → hi
+                        self.emit(0x85); self.emit(dst_zp + 1);
+                        true
+                    }
+                }
+            }
+            // ── word_src + rhs  (16-bit add with carry) ───────────────────────────
+            Expr::BinOp(l, BinOp::Add, r)
+                if matches!(l.as_ref(), Expr::Var(n) if matches!(self.var_types.get(n), Some(VarType::Word))) =>
+            {
+                if let Expr::Var(lname) = l.as_ref() {
+                    if let Some(lzp) = self.var_addr(lname) {
+                        match r.as_ref() {
+                            Expr::Number(n) => {
+                                let n = *n as u16;
+                                self.emit(0x18);                           // CLC
+                                self.emit(0xA5); self.emit(lzp);           // LDA lo_l
+                                self.emit(0x69); self.emit(n as u8);       // ADC #lo_n
+                                self.emit(0x85); self.emit(dst_zp);         // STA lo
+                                self.emit(0xA5); self.emit(lzp + 1);       // LDA hi_l
+                                self.emit(0x69); self.emit((n >> 8) as u8);// ADC #hi_n
+                                self.emit(0x85); self.emit(dst_zp + 1);    // STA hi
+                                return true;
+                            }
+                            Expr::Var(rname)
+                                if matches!(self.var_types.get(rname), Some(VarType::Word)) =>
+                            {
+                                if let Some(rzp) = self.var_addr(rname) {
+                                    self.emit(0x18);                        // CLC
+                                    self.emit(0xA5); self.emit(lzp);        // LDA lo_l
+                                    self.emit(0x65); self.emit(rzp);        // ADC lo_r
+                                    self.emit(0x85); self.emit(dst_zp);      // STA lo
+                                    self.emit(0xA5); self.emit(lzp + 1);    // LDA hi_l
+                                    self.emit(0x65); self.emit(rzp + 1);    // ADC hi_r
+                                    self.emit(0x85); self.emit(dst_zp + 1); // STA hi
+                                    return true;
+                                }
+                            }
+                            // word + 8-bit expr: add to lo, propagate carry to hi
+                            other => {
+                                let other = other.clone();
+                                self.eval_expr(&other);
+                                let tmp = self.tmp_zp; self.tmp_zp += 1;
+                                self.emit(0x85); self.emit(tmp);             // STA tmp
+                                self.emit(0x18);                              // CLC
+                                self.emit(0xA5); self.emit(lzp);              // LDA lo_l
+                                self.emit(0x65); self.emit(tmp);              // ADC tmp
+                                self.emit(0x85); self.emit(dst_zp);           // STA lo
+                                self.emit(0xA5); self.emit(lzp + 1);         // LDA hi_l
+                                self.emit(0x69); self.emit(0x00);             // ADC #0 (carry)
+                                self.emit(0x85); self.emit(dst_zp + 1);      // STA hi
+                                return true;
+                            }
+                        }
+                    }
+                }
+                false
+            }
+            // ── number + word_src  (commutative: swap and use above pattern) ──────
+            Expr::BinOp(l, BinOp::Add, r)
+                if matches!(r.as_ref(), Expr::Var(n) if matches!(self.var_types.get(n), Some(VarType::Word))) =>
+            {
+                let swapped = Expr::BinOp(r.clone(), BinOp::Add, l.clone());
+                self.gen_word_assign(dst_zp, &swapped)
+            }
+            // ── word_src - rhs  (16-bit sub with borrow) ─────────────────────────
+            Expr::BinOp(l, BinOp::Sub, r)
+                if matches!(l.as_ref(), Expr::Var(n) if matches!(self.var_types.get(n), Some(VarType::Word))) =>
+            {
+                if let Expr::Var(lname) = l.as_ref() {
+                    if let Some(lzp) = self.var_addr(lname) {
+                        match r.as_ref() {
+                            Expr::Number(n) => {
+                                let n = *n as u16;
+                                self.emit(0x38);                           // SEC
+                                self.emit(0xA5); self.emit(lzp);           // LDA lo_l
+                                self.emit(0xE9); self.emit(n as u8);       // SBC #lo_n
+                                self.emit(0x85); self.emit(dst_zp);         // STA lo
+                                self.emit(0xA5); self.emit(lzp + 1);       // LDA hi_l
+                                self.emit(0xE9); self.emit((n >> 8) as u8);// SBC #hi_n
+                                self.emit(0x85); self.emit(dst_zp + 1);    // STA hi
+                                return true;
+                            }
+                            Expr::Var(rname)
+                                if matches!(self.var_types.get(rname), Some(VarType::Word)) =>
+                            {
+                                if let Some(rzp) = self.var_addr(rname) {
+                                    self.emit(0x38);                         // SEC
+                                    self.emit(0xA5); self.emit(lzp);         // LDA lo_l
+                                    self.emit(0xE5); self.emit(rzp);         // SBC lo_r
+                                    self.emit(0x85); self.emit(dst_zp);       // STA lo
+                                    self.emit(0xA5); self.emit(lzp + 1);     // LDA hi_l
+                                    self.emit(0xE5); self.emit(rzp + 1);     // SBC hi_r
+                                    self.emit(0x85); self.emit(dst_zp + 1);  // STA hi
+                                    return true;
+                                }
+                            }
+                            // word - 8-bit expr
+                            other => {
+                                let other = other.clone();
+                                self.eval_expr(&other);
+                                let tmp = self.tmp_zp; self.tmp_zp += 1;
+                                self.emit(0x85); self.emit(tmp);             // STA tmp
+                                self.emit(0x38);                              // SEC
+                                self.emit(0xA5); self.emit(lzp);              // LDA lo_l
+                                self.emit(0xE5); self.emit(tmp);              // SBC tmp
+                                self.emit(0x85); self.emit(dst_zp);           // STA lo
+                                self.emit(0xA5); self.emit(lzp + 1);         // LDA hi_l
+                                self.emit(0xE9); self.emit(0x00);             // SBC #0 (borrow)
+                                self.emit(0x85); self.emit(dst_zp + 1);      // STA hi
+                                return true;
+                            }
+                        }
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
     fn gen_stmt(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::VarDecl { name, vtype, expr } => {
@@ -2015,14 +2230,9 @@ impl Codegen {
                     Some(VarType::Word) => {
                         let zp = self.alloc_var(name);
                         self.var_types.insert(name.clone(), VarType::Word);
-                        if let Expr::Number(n) = expr {
-                            let n = *n;
-                            self.emit(0xA9); self.emit(n as u8);
-                            self.emit(0x85); self.emit(zp);
-                            self.emit(0xA9); self.emit((n >> 8) as u8);
-                            self.emit(0x85); self.emit(zp + 1);
-                        } else {
-                            let expr = expr.clone();
+                        let expr = expr.clone();
+                        if !self.gen_word_assign(zp, &expr) {
+                            // Fallback: 8-bit eval, lo only
                             self.eval_expr(&expr);
                             self.emit(0x85); self.emit(zp);
                             self.emit(0xA9); self.emit(0x00);
@@ -2062,133 +2272,9 @@ impl Codegen {
             Stmt::Assign(name, expr) => {
                 if matches!(self.var_types.get(name), Some(VarType::Word)) {
                     if let Some(zp) = self.var_addr(name) {
-                        // ── 16-bit patterns ─────────────────────────────────────────
-                        let handled = match expr {
-                            // word_var = number  (already splits lo/hi)
-                            Expr::Number(n) => {
-                                let n = *n;
-                                self.emit(0xA9); self.emit(n as u8);
-                                self.emit(0x85); self.emit(zp);
-                                self.emit(0xA9); self.emit((n >> 8) as u8);
-                                self.emit(0x85); self.emit(zp + 1);
-                                true
-                            }
-                            // word_dst = word_src   (copy both bytes)
-                            Expr::Var(src) if matches!(self.var_types.get(src), Some(VarType::Word)) => {
-                                if let Some(src_zp) = self.var_addr(src) {
-                                    self.emit(0xA5); self.emit(src_zp);     // LDA lo
-                                    self.emit(0x85); self.emit(zp);          // STA lo
-                                    self.emit(0xA5); self.emit(src_zp + 1); // LDA hi
-                                    self.emit(0x85); self.emit(zp + 1);     // STA hi
-                                    true
-                                } else { false }
-                            }
-                            // word_dst = word_src + expr  (16-bit add)
-                            Expr::BinOp(l, BinOp::Add, r)
-                                if matches!(l.as_ref(), Expr::Var(n) if matches!(self.var_types.get(n), Some(VarType::Word))) =>
-                            {
-                                if let Expr::Var(lname) = l.as_ref() {
-                                    if let Some(lzp) = self.var_addr(lname) {
-                                        match r.as_ref() {
-                                            Expr::Number(n) => {
-                                                let n = *n as u16;
-                                                self.emit(0x18);                      // CLC
-                                                self.emit(0xA5); self.emit(lzp);      // LDA lo_l
-                                                self.emit(0x69); self.emit(n as u8);  // ADC #lo_n
-                                                self.emit(0x85); self.emit(zp);        // STA lo
-                                                self.emit(0xA5); self.emit(lzp + 1);  // LDA hi_l
-                                                self.emit(0x69); self.emit((n>>8) as u8); // ADC #hi_n
-                                                self.emit(0x85); self.emit(zp + 1);   // STA hi
-                                                true
-                                            }
-                                            Expr::Var(rname)
-                                                if matches!(self.var_types.get(rname), Some(VarType::Word)) =>
-                                            {
-                                                if let Some(rzp) = self.var_addr(rname) {
-                                                    self.emit(0x18);                     // CLC
-                                                    self.emit(0xA5); self.emit(lzp);     // LDA lo_l
-                                                    self.emit(0x65); self.emit(rzp);     // ADC lo_r
-                                                    self.emit(0x85); self.emit(zp);       // STA lo
-                                                    self.emit(0xA5); self.emit(lzp + 1); // LDA hi_l
-                                                    self.emit(0x65); self.emit(rzp + 1); // ADC hi_r
-                                                    self.emit(0x85); self.emit(zp + 1);  // STA hi
-                                                    true
-                                                } else { false }
-                                            }
-                                            // word + 8-bit-expr: add to lo, propagate carry to hi
-                                            other => {
-                                                let other = other.clone();
-                                                self.eval_expr(&other);
-                                                let tmp = self.tmp_zp; self.tmp_zp += 1;
-                                                self.emit(0x85); self.emit(tmp);         // STA tmp
-                                                self.emit(0x18);                          // CLC
-                                                self.emit(0xA5); self.emit(lzp);          // LDA lo_l
-                                                self.emit(0x65); self.emit(tmp);          // ADC tmp
-                                                self.emit(0x85); self.emit(zp);           // STA lo
-                                                self.emit(0xA5); self.emit(lzp + 1);     // LDA hi_l
-                                                self.emit(0x69); self.emit(0x00);         // ADC #0 (carry)
-                                                self.emit(0x85); self.emit(zp + 1);      // STA hi
-                                                true
-                                            }
-                                        }
-                                    } else { false }
-                                } else { false }
-                            }
-                            // word_dst = word_src - expr  (16-bit sub)
-                            Expr::BinOp(l, BinOp::Sub, r)
-                                if matches!(l.as_ref(), Expr::Var(n) if matches!(self.var_types.get(n), Some(VarType::Word))) =>
-                            {
-                                if let Expr::Var(lname) = l.as_ref() {
-                                    if let Some(lzp) = self.var_addr(lname) {
-                                        match r.as_ref() {
-                                            Expr::Number(n) => {
-                                                let n = *n as u16;
-                                                self.emit(0x38);                         // SEC
-                                                self.emit(0xA5); self.emit(lzp);         // LDA lo_l
-                                                self.emit(0xE9); self.emit(n as u8);     // SBC #lo_n
-                                                self.emit(0x85); self.emit(zp);           // STA lo
-                                                self.emit(0xA5); self.emit(lzp + 1);     // LDA hi_l
-                                                self.emit(0xE9); self.emit((n>>8) as u8); // SBC #hi_n
-                                                self.emit(0x85); self.emit(zp + 1);      // STA hi
-                                                true
-                                            }
-                                            Expr::Var(rname)
-                                                if matches!(self.var_types.get(rname), Some(VarType::Word)) =>
-                                            {
-                                                if let Some(rzp) = self.var_addr(rname) {
-                                                    self.emit(0x38);                      // SEC
-                                                    self.emit(0xA5); self.emit(lzp);      // LDA lo_l
-                                                    self.emit(0xE5); self.emit(rzp);      // SBC lo_r
-                                                    self.emit(0x85); self.emit(zp);        // STA lo
-                                                    self.emit(0xA5); self.emit(lzp + 1);  // LDA hi_l
-                                                    self.emit(0xE5); self.emit(rzp + 1);  // SBC hi_r
-                                                    self.emit(0x85); self.emit(zp + 1);   // STA hi
-                                                    true
-                                                } else { false }
-                                            }
-                                            other => {
-                                                let other = other.clone();
-                                                self.eval_expr(&other);
-                                                let tmp = self.tmp_zp; self.tmp_zp += 1;
-                                                self.emit(0x85); self.emit(tmp);          // STA tmp
-                                                self.emit(0x38);                           // SEC
-                                                self.emit(0xA5); self.emit(lzp);           // LDA lo_l
-                                                self.emit(0xE5); self.emit(tmp);           // SBC tmp
-                                                self.emit(0x85); self.emit(zp);            // STA lo
-                                                self.emit(0xA5); self.emit(lzp + 1);      // LDA hi_l
-                                                self.emit(0xE9); self.emit(0x00);          // SBC #0 (borrow)
-                                                self.emit(0x85); self.emit(zp + 1);       // STA hi
-                                                true
-                                            }
-                                        }
-                                    } else { false }
-                                } else { false }
-                            }
-                            _ => false,
-                        };
-                        if !handled {
+                        let expr = expr.clone();
+                        if !self.gen_word_assign(zp, &expr) {
                             // Fallback: 8-bit eval, store lo only
-                            let expr = expr.clone();
                             self.eval_expr(&expr);
                             self.emit(0x85); self.emit(zp);
                         }
@@ -3586,6 +3672,138 @@ impl Codegen {
                     self.emit(0xA8);                      // TAY (Y=0)
                     self.emit(0xA5); self.emit(tmp_val); // LDA tmp_val
                     self.emit(0x91); self.emit(ptr);     // STA (ptr),Y
+                }
+            }
+            // ── open channel, device, secondary [, "filename"] ───────────────────
+            // KERNAL: SETNAM ($FFBD) → SETLFS ($FFBA) → OPEN ($FFC0)
+            Stmt::Open { channel, device, secondary, filename } => {
+                let channel   = channel.clone();
+                let device    = device.clone();
+                let secondary = secondary.clone();
+                let filename  = filename.clone();
+
+                if let Some(ref fname) = filename {
+                    // Embed filename inline, JMP over it
+                    self.emit(0x4C);
+                    let jmp_pos = self.code.len(); self.emit16(0x0000);
+                    let name_addr = self.current_addr();
+                    for c in fname.chars() { self.emit(ascii_to_petscii(c)); }
+                    self.patch_abs(jmp_pos, self.current_addr());
+                    // SETNAM: A=len, X=lo, Y=hi
+                    self.emit(0xA9); self.emit(fname.len() as u8);
+                    self.emit(0xA2); self.emit(name_addr as u8);
+                    self.emit(0xA0); self.emit((name_addr >> 8) as u8);
+                } else {
+                    // SETNAM with empty name
+                    self.emit(0xA9); self.emit(0x00);
+                    self.emit(0xA2); self.emit(0x00);
+                    self.emit(0xA0); self.emit(0x00);
+                }
+                self.emit(0x20); self.emit16(0xFFBD); // JSR $FFBD (SETNAM)
+
+                // SETLFS: A=logical#, X=device#, Y=secondary#
+                let tmp_dev = self.tmp_zp; self.tmp_zp += 1;
+                let tmp_sec = self.tmp_zp; self.tmp_zp += 1;
+                self.eval_expr(&device);
+                self.emit(0x85); self.emit(tmp_dev);    // STA tmp_dev
+                self.eval_expr(&secondary);
+                self.emit(0x85); self.emit(tmp_sec);    // STA tmp_sec
+                self.eval_expr(&channel);               // A = logical#
+                self.emit(0xA6); self.emit(tmp_dev);    // LDX device
+                self.emit(0xA4); self.emit(tmp_sec);    // LDY secondary
+                self.emit(0x20); self.emit16(0xFFBA);   // JSR $FFBA (SETLFS)
+
+                self.emit(0x20); self.emit16(0xFFC0);   // JSR $FFC0 (OPEN)
+            }
+            // ── close channel ────────────────────────────────────────────────────
+            // KERNAL: CLOSE ($FFC3) with A = logical file number
+            Stmt::Close(channel) => {
+                let channel = channel.clone();
+                self.eval_expr(&channel);                // A = logical#
+                self.emit(0x20); self.emit16(0xFFC3);   // JSR $FFC3 (CLOSE)
+            }
+            // ── print# channel, args... ──────────────────────────────────────────
+            // CHKOUT ($FFC9) redirects output; each arg is printed via CHROUT;
+            // CLRCHN ($FFCC) restores default output.
+            Stmt::PrintHash { channel, args } => {
+                let channel = channel.clone();
+                let args    = args.clone();
+                self.eval_expr(&channel);                // A = logical#
+                self.emit(0xAA);                          // TAX  (CHKOUT takes channel in X)
+                self.emit(0x20); self.emit16(0xFFC9);    // JSR $FFC9 (CHKOUT)
+                // Print each argument via CHROUT (same as regular print)
+                for arg in &args {
+                    self.print_single_arg(arg);
+                }
+                // Newline (CR = $0D)
+                self.emit(0xA9); self.emit(0x0D);
+                self.emit(0x20); self.emit16(CHROUT);    // JSR $FFD2
+                self.emit(0x20); self.emit16(0xFFCC);    // JSR $FFCC (CLRCHN)
+            }
+            // ── poke16 addr, val ─────────────────────────────────────────────────
+            // Write 16-bit value (lo then hi) to two consecutive bytes.
+            Stmt::Poke16(addr, val) => {
+                let addr = addr.clone();
+                let val  = val.clone();
+                // Evaluate the 16-bit value into (val_lo, val_hi) ZP scratch
+                let val_lo = self.tmp_zp; self.tmp_zp += 1;
+                let val_hi = self.tmp_zp; self.tmp_zp += 1;
+                match &val {
+                    Expr::Number(n) => {
+                        let n = *n;
+                        self.emit(0xA9); self.emit(n as u8);        // LDA #lo
+                        self.emit(0x85); self.emit(val_lo);
+                        self.emit(0xA9); self.emit((n >> 8) as u8); // LDA #hi
+                        self.emit(0x85); self.emit(val_hi);
+                    }
+                    Expr::Var(vname) if matches!(self.var_types.get(vname.as_str()), Some(VarType::Word)) => {
+                        if let Some(src_zp) = self.var_addr(vname) {
+                            self.emit(0xA5); self.emit(src_zp);       // LDA lo
+                            self.emit(0x85); self.emit(val_lo);
+                            self.emit(0xA5); self.emit(src_zp + 1);  // LDA hi
+                            self.emit(0x85); self.emit(val_hi);
+                        }
+                    }
+                    _ => {
+                        self.eval_expr(&val);
+                        self.emit(0x85); self.emit(val_lo);
+                        self.emit(0xA9); self.emit(0x00);
+                        self.emit(0x85); self.emit(val_hi);
+                    }
+                }
+                // Write lo byte to addr, hi byte to addr+1
+                match &addr {
+                    Expr::Number(n) => {
+                        let a = *n as u16;
+                        self.emit(0xA5); self.emit(val_lo);
+                        self.emit(0x8D); self.emit(a as u8); self.emit((a >> 8) as u8);
+                        let a1 = a.wrapping_add(1);
+                        self.emit(0xA5); self.emit(val_hi);
+                        self.emit(0x8D); self.emit(a1 as u8); self.emit((a1 >> 8) as u8);
+                    }
+                    Expr::Var(vname) if matches!(self.var_types.get(vname.as_str()), Some(VarType::Word)) => {
+                        if let Some(ptr_zp) = self.var_addr(vname) {
+                            self.emit(0xA0); self.emit(0x00);         // LDY #0
+                            self.emit(0xA5); self.emit(val_lo);
+                            self.emit(0x91); self.emit(ptr_zp);       // STA (ptr),Y → lo
+                            self.emit(0xA0); self.emit(0x01);         // LDY #1
+                            self.emit(0xA5); self.emit(val_hi);
+                            self.emit(0x91); self.emit(ptr_zp);       // STA (ptr),Y → hi
+                        }
+                    }
+                    _ => {
+                        let ptr = self.tmp_zp; self.tmp_zp += 2;
+                        self.eval_expr(&addr);
+                        self.emit(0x85); self.emit(ptr);
+                        self.emit(0xA9); self.emit(0x00);
+                        self.emit(0x85); self.emit(ptr + 1);
+                        self.emit(0xA0); self.emit(0x00);             // LDY #0
+                        self.emit(0xA5); self.emit(val_lo);
+                        self.emit(0x91); self.emit(ptr);              // STA (ptr),Y → lo
+                        self.emit(0xA0); self.emit(0x01);             // LDY #1
+                        self.emit(0xA5); self.emit(val_hi);
+                        self.emit(0x91); self.emit(ptr);              // STA (ptr),Y → hi
+                    }
                 }
             }
         }

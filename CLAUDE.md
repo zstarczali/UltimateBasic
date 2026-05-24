@@ -407,7 +407,14 @@ poke $D020, 2            # STA $D020 (absolute)
 poke addr_var, 6         # STA (addr_var),Y  if addr_var is word type
 var v = peek($D012)      # LDA $D012
 var v = peek(addr_var)   # LDA (addr_var),Y  if addr_var is word type
+
+var w: word = peek16($C000)   # read 16-bit little-endian: lo=$C000, hi=$C001
+poke16 $0314, $EA81           # write 16-bit little-endian: lo→$0314, hi→$0315
+poke16 ptr, w                 # word var as address; word var as value
 ```
+
+`peek16(addr)` reads two consecutive bytes (lo, hi) and returns them as a 16-bit `word`. In an 8-bit context (e.g. assigned to an `int` var) only the low byte is returned.
+`poke16 addr, val` writes two bytes: lo(val) → addr, hi(val) → addr+1. Both `addr` and `val` may be constants, `word` variables, or expressions.
 
 ### String Functions
 
@@ -503,6 +510,33 @@ save "PROG", start, len  # addr and len from word/int variables
 
 Calls `SETNAM` ($FFBD) + `SETLFS` ($FFBA, device 8) + `LOAD` ($FFD5) or `SAVE` ($FFD8).
 `save` requires both `addr` and `len`. The `addr` is stored in a scratch ZP pair; KERNAL SAVE receives that ZP address in A, end address (addr+len) in X/Y.
+
+### Serial Channel File I/O
+
+```basic
+open 1, 8, 2, "MYFILE"  # open logical file 1, device 8, secondary 2, name "MYFILE"
+open 2, 4, 7             # open printer (device 4), no filename
+open ch, dev, sec        # channel, device, secondary from variables
+
+print# 1, "HELLO"        # send "HELLO"+CR to logical file 1
+print# ch, x, "text"     # any mix of vars, strings — same as print but to file
+
+close 1                  # close logical file 1
+close ch                 # channel from variable
+```
+
+`open` calls `SETNAM` ($FFBD) + `SETLFS` ($FFBA) + `OPEN` ($FFC0). Without a filename, SETNAM is called with length 0.
+`print#` routes output to the given logical file via `CHKOUT` ($FFC9), then calls `CHROUT` for each character (and a trailing CR), then restores output via `CLRCHN` ($FFCC).
+`close` puts the channel number in A and calls `CLOSE` ($FFC3).
+
+| KERNAL | Address | Description |
+|---|---|---|
+| `SETNAM` | `$FFBD` | Set filename (A=len, X/Y=ptr) |
+| `SETLFS` | `$FFBA` | Set logical/physical/secondary (A/X/Y) |
+| `OPEN`   | `$FFC0` | Open logical file |
+| `CLOSE`  | `$FFC3` | Close logical file (A=channel) |
+| `CHKOUT` | `$FFC9` | Direct output to channel (X=channel) |
+| `CLRCHN` | `$FFCC` | Restore default I/O channels |
 
 ### Cursor Positioning
 
@@ -705,8 +739,8 @@ data pointer) and a full hex dump of the generated machine code.
 
 | Feature | Limitation |
 |---|---|
-| Integer arithmetic | 8-bit unsigned (0–255); `word` vars hold 16-bit values but arithmetic is 8-bit |
-| 16-bit arithmetic | No carry propagation for `word + word`; use `poke`/`peek` patterns instead |
+| Integer arithmetic | 8-bit unsigned (0–255); `word` vars hold 16-bit values |
+| 16-bit arithmetic | `word + const`, `word + word`, `word - const`, `word - word` fully supported with carry/borrow propagation |
 | Arrays | Byte arrays only; max total size ~4 KB (`$C000–$CFFF`) |
 | Subroutines | No recursion — ZP parameter slots are statically allocated |
 | String vars | Read-only after init; assignment replaces the pointer, not the data |

@@ -449,6 +449,53 @@ impl Parser {
                 self.expect_newline();
                 Some(Stmt::Poke(addr, val))
             }
+            Token::Poke16 => {
+                self.advance();
+                let addr = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let val = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::Poke16(addr, val))
+            }
+            Token::Open => {
+                self.advance();
+                let channel = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let device = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let secondary = self.parse_expr();
+                let filename = if self.peek() == &Token::Comma {
+                    self.advance();
+                    if let Token::StringLit(s) = self.peek().clone() {
+                        self.advance(); Some(s)
+                    } else { None }
+                } else { None };
+                self.expect_newline();
+                Some(Stmt::Open { channel, device, secondary, filename })
+            }
+            Token::Close => {
+                self.advance();
+                let channel = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::Close(channel))
+            }
+            Token::PrintHash => {
+                self.advance();
+                let channel = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let mut args = vec![];
+                if !matches!(self.peek(), Token::Newline | Token::Eof | Token::Colon) {
+                    args.push(self.parse_expr());
+                    while self.peek() == &Token::Comma {
+                        self.advance();
+                        if !matches!(self.peek(), Token::Newline | Token::Eof | Token::Colon) {
+                            args.push(self.parse_expr());
+                        }
+                    }
+                }
+                self.expect_newline();
+                Some(Stmt::PrintHash { channel, args })
+            }
             Token::Plot => {
                 self.advance();
                 if matches!(self.peek(), Token::Erase) {
@@ -981,6 +1028,12 @@ impl Parser {
                 let arg = self.parse_expr();
                 if self.peek() == &Token::RParen { self.advance(); }
                 Expr::Peek(Box::new(arg))
+            }
+            Token::Peek16 => {
+                if self.peek() == &Token::LParen { self.advance(); }
+                let arg = self.parse_expr();
+                if self.peek() == &Token::RParen { self.advance(); }
+                Expr::Peek16(Box::new(arg))
             }
             Token::Rnd => {
                 if self.peek() == &Token::LParen { self.advance(); self.advance(); } // skip ()

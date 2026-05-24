@@ -25,6 +25,7 @@ pub enum Expr {
     SpriteBgHit,                 // sprbghit() — read $D01F (sprite–background collision, cleared on read)
     StrLen(Box<Expr>),           // len(s)  — length of null-terminated string var, 0–255
     Asc(Box<Expr>),              // asc(s)  — PETSCII code of first character (0 if empty)
+    Peek16(Box<Expr>),           // peek16(addr) — read 16-bit word: lo at addr, hi at addr+1
 }
 
 #[derive(Debug, Clone)]
@@ -109,4 +110,12 @@ pub enum Stmt {
     SpriteMulticolor { id: Expr, on: bool },       // sprite_multicolor id, on/off — bit in $D01C
     /// Align to 64-byte boundary, embed 63 sprite bytes, emit `LDA #page; STA $07F8+id`.
     SpriteDef { id: u8, bytes: Vec<u8> },
+    /// poke16 addr, val — write 16-bit little-endian value to two consecutive bytes.
+    Poke16(Expr, Expr),
+    /// open channel, device, secondary [, "filename"] — KERNAL OPEN (SETNAM+SETLFS+OPEN)
+    Open { channel: Expr, device: Expr, secondary: Expr, filename: Option<String> },
+    /// close channel — KERNAL CLOSE ($FFC3) with A = channel number
+    Close(Expr),
+    /// print# channel, ... — CHKOUT ($FFC9) then CHROUT per char then CLRCHN ($FFCC)
+    PrintHash { channel: Expr, args: Vec<Expr> },
 }

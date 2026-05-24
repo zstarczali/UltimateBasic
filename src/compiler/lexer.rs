@@ -101,6 +101,11 @@ pub enum Token {
     Expand,
     Priority,
     Mod,
+    Peek16,      // peek16(addr) — 16-bit memory read (lo at addr, hi at addr+1)
+    Poke16,      // poke16 addr, val — 16-bit memory write
+    Open,        // open channel, device, secondary [, "filename"]
+    Close,       // close channel — CLOSE ($FFC3)
+    PrintHash,   // print# channel, ... — CHKOUT + CHROUT + CLRCHN
 
     // Operators
     Plus,
@@ -256,6 +261,14 @@ impl Lexer {
             return Token::Chr;
         }
         match s.as_str() {
+            "print" => {
+                // print# (file print) — consume '#' immediately following with no space
+                if self.peek() == Some('#') {
+                    self.advance();
+                    return Token::PrintHash;
+                }
+                Token::Print
+            }
             "var"      => Token::Var,
             "sub"      => Token::Sub,
             "end"      => Token::End,
@@ -267,7 +280,7 @@ impl Lexer {
             "to"       => Token::To,
             "step"     => Token::Step,
             "break"    => Token::Break,
-            "print"    => Token::Print,
+            // "print" is handled above in the match (before the string match block)
             "return"   => Token::Return,
             "call"     => Token::Call,
             "cls"        => Token::Cls,
@@ -347,6 +360,10 @@ impl Lexer {
             "expand"     => Token::Expand,
             "priority"   => Token::Priority,
             "mod"        => Token::Mod,
+            "peek16"     => Token::Peek16,
+            "poke16"     => Token::Poke16,
+            "open"       => Token::Open,
+            "close"      => Token::Close,
             "sprite"     => Token::Sprite,
             "sprhit"     => Token::SpriteHit,
             "sprbghit"   => Token::SpriteBgHit,
