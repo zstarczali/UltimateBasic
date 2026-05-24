@@ -19,7 +19,7 @@ load sid "Ikari_Intro.sid"
 sub music_irq()
   poke $D019, $FF       # ACK VIC raster IRQ (must be first)
   sys sid_play          # advance one frame of music
-  asm { JMP $EA81 }     # JMP (not JSR!) to KERNAL end-of-IRQ: restore A/X/Y + RTI
+  irq_exit              # JMP $EA81: restore A/X/Y + RTI (proper IRQ exit)
 end
 
 # ── Main program ──────────────────────────────────────────────────────────────
@@ -28,24 +28,22 @@ color border 0
 color bg 0
 color text 14           # light blue text
 
-cursor 12, 10
-print "SID MUSIC DEMO"
-cursor 8, 12
-print "IKARI WARRIORS INTRO"
-cursor 7, 14
-print "PRESS ANY KEY TO EXIT"
+print at 12, 10, "SID MUSIC DEMO"
+print at 8, 12, "IKARI WARRIORS INTRO"
+print at 7, 14, "PRESS ANY KEY TO EXIT"
 
-# Initialise the SID tune: A=0 → first (and only) sub-tune
-asm { LDA #0 }
-sys sid_init
+# Initialise the SID tune: song 0 (first sub-tune), passed in the A register
+sys sid_init, 0
+sid volume 15        # master volume full ($D418 bits 0-3)
 
 # Set up a raster IRQ so music_irq() is called every frame
 irq music_irq, $C0
 
-# Wait for a keypress, then clean up and return to BASIC
-var k = getch()
+# Wait for any key — CIA1 matrix direct scan (works without CIA1 timer IRQ).
+# waitkey() selects all rows ($DC00=0), polls $DC01 until any bit goes low.
+waitkey()
 
 # Silence the SID before leaving
-poke $D418, 0           # master volume = 0
+sid stop             # zero all SID registers ($D400-$D418)
 
 bye

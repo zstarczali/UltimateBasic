@@ -1640,9 +1640,9 @@ print \"X=\", x
 fn poke_expression_address_compiles() {
     let src = "
 const SCREEN = $0400
-var off = 0
+var idx = 0
 var c = 1
-poke SCREEN + off, c
+poke SCREEN + idx, c
 ";
     let res = compile(src, &CompileOptions { basic_stub: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
@@ -1875,6 +1875,112 @@ fn load_sid_override_addr_places_data_at_specified_address() {
     // The load address override means the PRG must be large enough to reach $2000
     // (PRG starts at $0801, so offset to $2000 is $1800 - 2 = $17FE bytes minimum incl. header)
     assert!(res.prg.len() >= 0x17FF, "PRG must extend to $2000");
+}
+
+#[test]
+fn print_at_positions_cursor_then_prints() {
+    let src = "print at 10, 5, \"HI\"";
+    let res = compile(src, &CompileOptions { basic_stub: false });
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    // Must call KERNAL PLOT: JSR $FFF0 = $20 $F0 $FF
+    assert!(res.prg.windows(3).any(|w| w == [0x20, 0xF0, 0xFF]),
+        "print at should emit JSR $FFF0 (KERNAL PLOT)");
+    // SEC = $38 must appear before the JSR $FFF0
+    let plot_pos = res.prg.windows(3).position(|w| w == [0x20, 0xF0, 0xFF]).unwrap();
+    assert!(res.prg[..plot_pos].contains(&0x38), "print at should set carry (SEC) before PLOT");
+    // Must also call CHROUT: JSR $FFD2 = $20 $D2 $FF (for the string)
+    assert!(res.prg.windows(3).any(|w| w == [0x20, 0xD2, 0xFF]),
+        "print at should emit JSR $FFD2 (KERNAL CHROUT) for string output");
+}
+
+#[test]
+fn print_at_no_args_still_positions() {
+    let src = "print at 0, 0";
+    let res = compile(src, &CompileOptions { basic_stub: false });
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    assert!(res.prg.windows(3).any(|w| w == [0x20, 0xF0, 0xFF]),
+        "print at with no print args should still emit JSR $FFF0");
+}
+
+#[test]
+fn sid_volume_emits_sta_d418() {
+    let src = "sid volume 15";
+    let res = compile(src, &CompileOptions { basic_stub: false });
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    // LDA #15 = $A9 $0F; STA $D418 = $8D $18 $D4
+    assert!(res.prg.windows(2).any(|w| w == [0xA9, 0x0F]),
+        "sid volume 15 should emit LDA #$0F");
+    assert!(res.prg.windows(3).any(|w| w == [0x8D, 0x18, 0xD4]),
+        "sid volume should emit STA $D418");
+}
+
+#[test]
+fn sid_stop_zeros_all_registers() {
+    let src = "sid stop";
+    let res = compile(src, &CompileOptions { basic_stub: false });
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    // LDX #$18 = $A2 $18; LDA #$00 = $A9 $00; STA $D400,X = $9D $00 $D4; DEX=$CA; BPL=-6=$10 $FA
+    assert!(res.prg.windows(10).any(|w| w == [0xA2, 0x18, 0xA9, 0x00, 0x9D, 0x00, 0xD4, 0xCA, 0x10, 0xFA]),
+        "sid stop should emit zero-fill loop for $D400-$D418");
+}
+
+#[test]
+fn waitkey_polls_cia1_matrix() {
+    let src = "var k = waitkey()";
+    let res = compile(src, &CompileOptions { basic_stub: false });
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    // LDA #$00 = $A9 $00 — select all CIA1 rows
+    assert!(res.prg.windows(2).any(|w| w == [0xA9, 0x00]),
+        "waitkey should emit LDA #$00 to select CIA1 rows");
+    // STA $DC00 = $8D $00 $DC
+    assert!(res.prg.windows(3).any(|w| w == [0x8D, 0x00, 0xDC]),
+        "waitkey should emit STA $DC00");
+    // LDA $DC01 = $AD $01 $DC
+    assert!(res.prg.windows(3).any(|w| w == [0xAD, 0x01, 0xDC]),
+        "waitkey should emit LDA $DC01 in polling loop");
+    // CMP #$FF = $C9 $FF
+    assert!(res.prg.windows(2).any(|w| w == [0xC9, 0xFF]),
+        "waitkey should emit CMP #$FF");
+}
+
+#[test]
+fn irq_exit_emits_jmp_ea81() {
+    let src = "irq_exit";
+    let res = compile(src, &CompileOptions { basic_stub: false });
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    // irq_exit must emit JMP $EA81 = $4C $81 $EA
+    assert!(res.prg.windows(3).any(|w| w == [0x4C, 0x81, 0xEA]),
+        "irq_exit should emit JMP $EA81 ($4C $81 $EA)");
+    // Must NOT contain a JSR $EA81 ($20 $81 $EA) — that would corrupt the IRQ stack
+    assert!(!res.prg.windows(3).any(|w| w == [0x20, 0x81, 0xEA]),
+        "irq_exit must not emit JSR $EA81");
+}
+
+#[test]
+fn sys_with_arg_emits_lda_imm_then_jsr() {
+    let src = "sys $FFD2, 7";
+    let res = compile(src, &CompileOptions { basic_stub: false });
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    // LDA #7 = $A9 $07
+    assert!(res.prg.windows(2).any(|w| w == [0xA9, 0x07]),
+        "sys addr, val should emit LDA #val ($A9 $07)");
+    // JSR $FFD2 = $20 $D2 $FF
+    assert!(res.prg.windows(3).any(|w| w == [0x20, 0xD2, 0xFF]),
+        "sys addr, val should emit JSR addr ($20 $D2 $FF)");
+}
+
+#[test]
+fn sys_without_arg_emits_only_jsr() {
+    let src = "sys $FFD2";
+    let res = compile(src, &CompileOptions { basic_stub: false });
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    // JSR $FFD2 = $20 $D2 $FF
+    assert!(res.prg.windows(3).any(|w| w == [0x20, 0xD2, 0xFF]),
+        "sys addr should emit JSR addr");
+    // No LDA immediate before the JSR (no spurious LDA #n)
+    let pos = res.prg.windows(3).position(|w| w == [0x20, 0xD2, 0xFF]).unwrap();
+    assert!(pos == 0 || res.prg[pos - 2] != 0xA9,
+        "sys addr (no arg) should not emit LDA #n before JSR");
 }
 
 #[test]

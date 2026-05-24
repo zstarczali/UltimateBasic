@@ -350,6 +350,10 @@ exit                     # alias for bye
 sound 0, $1CAD, 25       # voice 0, freq $1CAD (≈ middle C on PAL), 25 PAL frames
 sound 1, freq_word, 50   # voice 1, freq from word var, 50 frames (1 s)
 sound 2, 0, 0            # voice 2, silence (gate on/off immediately)
+
+sid volume 15            # master volume full ($D418 = $0F); range 0-15
+sid volume 0             # silence (master volume = 0)
+sid stop                 # zero all 25 SID registers ($D400-$D418) — complete silence
 ```
 
 Syntax: `sound <channel>, <freq>, <duration>`
@@ -363,6 +367,9 @@ Syntax: `sound <channel>, <freq>, <duration>`
 SID note frequencies (PAL, 985 248 Hz): freq = note_hz × 16.78. E.g. middle C (261.63 Hz) ≈ $1CAD.
 Fixed ADSR: attack/decay = `$09`, sustain/release = `$F0`, waveform = sawtooth.
 Master volume (`$D418`) is always set to `$0F`.
+
+`sid volume N` writes N directly to `$D418`. Bits 0-3 = volume (0-15), bits 4-7 = filter mode.
+`sid stop` emits a 10-byte zero-fill loop (`LDX #24; LDA #0; STA $D400,X; DEX; BPL`) — faster than 25 individual pokes.
 
 `bye` uses `JSR $E544` (direct KERNAL clear-screen) then `SEI; LDA #$FF; STA $91; CLI; RTS`.
 Clearing `$91` prevents BASIC from printing "BREAK IN 10" if the user pressed RUN/STOP during
@@ -557,11 +564,10 @@ load sid "music.sid"          # embeds tune, defines sid_init / sid_play
 sub music_irq()
   poke $D019, $FF             # ACK VIC raster IRQ
   sys sid_play                # advance one frame of playback
-  asm { JMP $EA81 }           # JMP (NOT JSR!) to KERNAL end-of-IRQ
+  irq_exit                    # JMP $EA81: restore A/X/Y + RTI (proper IRQ exit)
 end
 
-asm { LDA #0 }                # A = song number (0 = first sub-tune)
-sys sid_init                  # initialise the SID chip
+sys sid_init, 0               # initialise SID chip: A=0 → first sub-tune
 irq music_irq, $C0            # fire the IRQ at raster line $C0 (50 Hz)
 
 poke $D418, $0F               # master volume on
@@ -610,6 +616,16 @@ cursor x, y              # column from variable x (0-39), row from y (0-24)
 
 Calls KERNAL PLOT ($FFF0) with carry set. PLOT expects X = row, Y = column.
 `cursor col, row` maps: col → Y register, row → X register.
+
+`print at col, row` combines cursor positioning and printing in one statement:
+
+```basic
+print at 20, 10, "HELLO"          # move to col 20, row 10, then print
+print at x, y, "Score:", score    # any mix of exprs — same as print, but positioned
+print at 0, 0                     # move cursor only (no text, but still emits newline)
+```
+
+`print col, row, "text"` without `at` still prints col and row **as values** (existing behaviour).
 
 ### Input
 
@@ -673,7 +689,7 @@ the `$0314` vector. The handler should also ACK the VIC IRQ before any other wor
 sub my_handler()
   poke $D019, $FF      # ACK VIC IRQ (write 1s to clear flags)
   # ... your IRQ work here ...
-  asm { JMP $EA81 }    # JMP (NOT JSR!) to KERNAL end-of-IRQ (restores regs, RTI)
+  irq_exit             # JMP $EA81: restore A/X/Y + RTI (proper IRQ handler exit)
 end
 ```
 
@@ -740,6 +756,8 @@ print ">" + chr$(42)     # works in string concat context
 
 ```basic
 sys $FFD2                # JSR $FFD2
+sys $FFD2, 7             # LDA #7 ; JSR $FFD2  (pass byte value in A register)
+irq_exit                 # JMP $EA81 — proper IRQ handler exit (restore A/X/Y + RTI)
 asm $EA, $EA             # inline raw bytes (NOP NOP) — legacy form
 asm {
   ; Full 6502 mnemonics and addressing modes

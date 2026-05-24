@@ -414,10 +414,10 @@ pub struct Codegen {
     vars: HashMap<String, u8>,
     var_types: HashMap<String, VarType>,
     subs: HashMap<String, u16>,
-    sub_patches: Vec<(usize, String)>,
+    sub_patches: Vec<(usize, String, usize)>,
     sub_params: HashMap<String, Vec<u8>>,   // sub_name → [zp_addr per param]
     labels: HashMap<String, u16>,
-    goto_patches: Vec<(usize, String)>,
+    goto_patches: Vec<(usize, String, usize)>,
     perm_zp: u8,
     tmp_zp: u8,
     break_patches: Vec<Vec<usize>>,
@@ -898,6 +898,20 @@ impl Codegen {
             Expr::Inkey => {
                 // Non-blocking GETIN: single call, returns 0 if no key pressed.
                 self.emit(0x20); self.emit16(0xFFE4); // JSR $FFE4
+            }
+            Expr::Waitkey => {
+                // CIA1 matrix direct scan — works even when CIA1 timer IRQ is disabled.
+                // Select all rows (active-low: $00 = all rows selected)
+                self.emit(0xA9); self.emit(0x00);         // LDA #$00
+                self.emit(0x8D); self.emit(0x00); self.emit(0xDC); // STA $DC00
+                // Busy-loop: read columns; $FF = no key pressed
+                let loop_addr = self.current_addr();
+                self.emit(0xAD); self.emit(0x01); self.emit(0xDC); // LDA $DC01
+                self.emit(0xC9); self.emit(0xFF);                   // CMP #$FF
+                self.emit(0xF0);                                     // BEQ loop
+                let beq_off = self.code.len(); self.emit(0x00);
+                self.patch_bxx(beq_off, loop_addr);
+                // A = raw $DC01 value on exit (column bits; 0 bit = key pressed)
             }
             Expr::StrLen(inner) => {
                 let inner = inner.clone();
@@ -3941,6 +3955,25 @@ impl Codegen {
                 }
                 self.print_newline();
             }
+            Stmt::PrintAt { col, row, args } => {
+                // Cursor positioning (same as Stmt::Cursor): KERNAL PLOT $FFF0, carry set
+                let col = col.clone();
+                let row = row.clone();
+                let args = args.clone();
+                let row_zp = self.tmp_zp; self.tmp_zp += 1;
+                self.eval_expr(&row);
+                self.emit(0x85); self.emit(row_zp);  // STA row_zp
+                self.eval_expr(&col);
+                self.emit(0xA8);                      // TAY (col → Y)
+                self.emit(0xA6); self.emit(row_zp);  // LDX row_zp (row → X)
+                self.emit(0x38);                      // SEC
+                self.emit(0x20); self.emit16(0xFFF0); // JSR $FFF0 (KERNAL PLOT)
+                // Print arguments
+                for arg in &args {
+                    self.print_single_arg(arg);
+                }
+                self.print_newline();
+            }
             Stmt::If(cond, then_body, else_body) => {
                 self.eval_expr(cond);
                 self.emit(0xC9); self.emit(0x00); // CMP #0  (nonzero = true)
@@ -4078,8 +4111,37 @@ impl Codegen {
                     list.push(pos);
                 }
             }
-            Stmt::Sys(addr) => {
+            Stmt::Sys { addr, arg } => {
+                if let Some(a) = arg {
+                    self.eval_expr(a);   // result in A register before JSR
+                }
                 self.emit(0x20); self.emit16(*addr); // JSR addr
+            }
+            Stmt::IrqExit => {
+                self.emit(0x4C); self.emit16(0xEA81); // JMP $EA81 (KERNAL end-of-IRQ: restores Y/X/A, RTI)
+            }
+            Stmt::SidVolume(expr) => {
+                self.eval_expr(expr);          // A = volume/filter byte
+                self.emit(0x8D); self.emit16(0xD418); // STA $D418 (master volume + filter mode)
+            }
+            Stmt::WaitKey => {
+                // CIA1 matrix direct scan — same as Expr::Waitkey but as a statement
+                self.emit(0xA9); self.emit(0x00);         // LDA #$00 — select all rows
+                self.emit(0x8D); self.emit(0x00); self.emit(0xDC); // STA $DC00
+                let loop_addr = self.current_addr();
+                self.emit(0xAD); self.emit(0x01); self.emit(0xDC); // LDA $DC01
+                self.emit(0xC9); self.emit(0xFF);                   // CMP #$FF
+                self.emit(0xF0);                                     // BEQ loop
+                let beq_off = self.code.len(); self.emit(0x00);
+                self.patch_bxx(beq_off, loop_addr);
+            }
+            Stmt::SidStop => {
+                // Zero all 25 SID registers ($D400–$D418): LDX #24; LDA #0; loop: STA $D400,X; DEX; BPL loop
+                self.emit(0xA2); self.emit(0x18); // LDX #$18  (24)
+                self.emit(0xA9); self.emit(0x00); // LDA #$00
+                self.emit(0x9D); self.emit16(0xD400); // STA $D400,X
+                self.emit(0xCA);                   // DEX
+                self.emit(0x10); self.emit(0xFA);  // BPL -6 → back to STA
             }
             Stmt::AsmBytes(bytes) => {
                 for &b in bytes { self.emit(b); }
@@ -4150,7 +4212,7 @@ impl Codegen {
                 self.gen_stmts(body);
                 self.emit(0x60); // RTS
             }
-            Stmt::Call(name, args) => {
+            Stmt::Call(name, args, src_line) => {
                 // Store args into the sub's parameter ZP slots before calling
                 if let Some(param_addrs) = self.sub_params.get(name).cloned() {
                     for (i, arg) in args.iter().enumerate() {
@@ -4168,7 +4230,7 @@ impl Codegen {
                     // Forward reference — patch later
                     let patch = self.code.len();
                     self.emit16(0x0000);
-                    self.sub_patches.push((patch, name.clone()));
+                    self.sub_patches.push((patch, name.clone(), *src_line));
                 }
             }
             Stmt::Return => {
@@ -4182,14 +4244,14 @@ impl Codegen {
                 let addr = self.current_addr();
                 self.labels.insert(name.clone(), addr);
             }
-            Stmt::Goto(name) => {
+            Stmt::Goto(name, src_line) => {
                 self.emit(0x4C); // JMP
                 if let Some(&addr) = self.labels.get(name) {
                     self.emit16(addr);
                 } else {
                     let pos = self.code.len();
                     self.emit16(0x0000);
-                    self.goto_patches.push((pos, name.clone()));
+                    self.goto_patches.push((pos, name.clone(), *src_line));
                 }
             }
             Stmt::ArraySet(arr_name, idx_expr, val_expr) => {
@@ -5650,13 +5712,13 @@ impl Codegen {
     }
 
     fn patch_forward_refs(&mut self) {
-        for (offset, name) in self.sub_patches.clone() {
+        for (offset, name, _) in self.sub_patches.clone() {
             if let Some(&addr) = self.subs.get(&name) {
                 self.code[offset] = addr as u8;
                 self.code[offset + 1] = (addr >> 8) as u8;
             }
         }
-        for (offset, name) in self.goto_patches.clone() {
+        for (offset, name, _) in self.goto_patches.clone() {
             if let Some(&addr) = self.labels.get(&name) {
                 self.code[offset] = addr as u8;
                 self.code[offset + 1] = (addr >> 8) as u8;
@@ -5869,14 +5931,14 @@ impl Codegen {
 
     pub fn errors(&self) -> Vec<String> {
         let mut errs = vec![];
-        for (_, name) in &self.sub_patches {
+        for (_, name, src_line) in &self.sub_patches {
             if !self.subs.contains_key(name) {
-                errs.push(format!("Undefined subroutine: {name}"));
+                errs.push(format!("line {src_line}: Undefined subroutine: {name}"));
             }
         }
-        for (_, name) in &self.goto_patches {
+        for (_, name, src_line) in &self.goto_patches {
             if !self.labels.contains_key(name) {
-                errs.push(format!("Undefined label: {name}"));
+                errs.push(format!("line {src_line}: Undefined label: {name}"));
             }
         }
         errs

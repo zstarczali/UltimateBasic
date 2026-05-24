@@ -217,6 +217,10 @@ display on               # re-enable VIC display ($D011 DEN bit)
 
 cursor 20, 10            # move cursor to col 20, row 10 (KERNAL PLOT $FFF0)
 cursor x, y              # column from variable x (0–39), row from y (0–24)
+
+print at 20, 10, "HELLO" # cursor(20,10) + print in one statement
+print at x, y, "Score:", score  # any mix of exprs
+print at 0, 0            # position only (no text)
 display off              # blank display
 ```
 
@@ -253,11 +257,18 @@ wait raster 100          # spin until $D012 == 100 (raster-split effects)
 sound 0, $1CAD, 25       # voice 0, freq $1CAD (≈ middle C PAL), 25 frames duration
 sound 1, freq_word, 50   # voice 1, freq from word var, 50 frames (1 s at 50 Hz)
 sound 2, 0, 0            # voice 2, silence
+
+sid volume 15            # master volume full ($D418 = $0F); range 0-15
+sid volume 0             # silence (master volume = 0)
+sid stop                 # zero all 25 SID registers ($D400–$D418) — complete silence
 ```
 
 `sound <channel>, <freq>, <duration>` — duration in PAL frames (1/50 s each).
 Fixed ADSR: attack/decay `$09`, sustain/release `$F0`, sawtooth waveform.
 Master volume `$D418` always set to `$0F`.
+
+`sid volume N` writes N to `$D418`. Bits 0-3 = volume (0-15), bits 4-7 = filter mode.
+`sid stop` emits a 10-byte zero-fill loop — faster than 25 individual pokes.
 
 ### Sprites
 
@@ -368,14 +379,13 @@ load sid "music.sid"
 sub music_irq()
   poke $D019, $FF       # ACK VIC raster IRQ
   sys sid_play          # advance one frame of music
-  asm { JMP $EA81 }     # JMP (NOT JSR!) to KERNAL end-of-IRQ
+  irq_exit              # JMP $EA81: restore A/X/Y + RTI (proper IRQ exit)
 end
 
-asm { LDA #0 }          # A = song number (0 = first sub-tune)
-sys sid_init            # initialise SID chip
+sys sid_init, 0         # initialise SID chip: A=0 → first sub-tune
 irq music_irq, $C0      # raster IRQ at line $C0 → 50 Hz on PAL
 
-poke $D418, $0F         # master volume on
+sid volume 15           # master volume on
 ```
 
 **Notes:**
@@ -527,6 +537,8 @@ allocated and initialised at program start. Each `read` advances the pointer.
 
 ```basic
 sys $FFD2                # JSR $FFD2
+sys $FFD2, 7             # LDA #7 ; JSR $FFD2  (pass byte value in A register)
+irq_exit                 # JMP $EA81 — proper IRQ handler exit (restore A/X/Y + RTI)
 asm $EA, $EA             # inline raw bytes (NOP NOP) — legacy form
 asm {
   ; Full 6502 mnemonics and addressing modes
@@ -643,6 +655,7 @@ var n = str_to_int("42") # compile-time: Expr::Number(42)
 | `examples/sprite_mux_orbit.ub` | 24-sprite orbit demo with sprdef + precomputed positions |
 | `examples/sprite_orbit_demo.ub` | 8 hardware sprites in circular orbit via sin/cos table |
 | `examples/reu_bitmap_demo.ub` | REU stash/fetch with bitmap graphics |
+| `examples/sid_music_demo.ub` | SID music player with raster IRQ and keyboard exit |
 
 ## Architecture
 

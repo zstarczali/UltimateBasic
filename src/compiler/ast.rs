@@ -7,6 +7,7 @@ pub enum Expr {
     Not(Box<Expr>),
     Getch,
     Inkey,    // inkey() — non-blocking $FFE4; 0 = no key, else PETSCII code
+    Waitkey,  // waitkey() — CIA1 matrix direct scan; blocks until any key; works without CIA1 timer IRQ
     ReuPresent,  // reu_present() — 1 if REU detected, 0 otherwise
     Joy(u8),  // joy(1) or joy(2) — read joystick port, returns inverted bits 0-4
     MouseX,   // mouse_x()  — SID $D419 POT X register (0-255)
@@ -60,6 +61,8 @@ pub enum Stmt {
     Assign(String, Expr),
     ArraySet(String, Expr, Expr),  // arr[idx] = val
     Print(Vec<Expr>),
+    /// `print at col, row, expr...` — cursor position then print (shorthand for cursor+print).
+    PrintAt { col: Expr, row: Expr, args: Vec<Expr> },
     If(Expr, Vec<Stmt>, Option<Vec<Stmt>>),
     Loop(u8, Vec<Stmt>),
     ForLoop { var: String, from: Expr, to: Expr, step: Option<Expr>, body: Vec<Stmt> },
@@ -68,16 +71,22 @@ pub enum Stmt {
     Cls { fast: bool },
     Graphics { on: bool, multi: bool, block: bool }, // multi=true → multicolor bitmap; block=true → 4×4 text block mode
     Display { on: bool },  // display on/off — controls VIC DEN bit ($D011 bit4)
-    Sys(u16),
+    Sys { addr: u16, arg: Option<Expr> },  // sys addr [, val] — optional LDA #val before JSR
+    WaitKey,                                 // waitkey() standalone statement — CIA1 matrix scan until any key
+    IrqExit,                                 // irq_exit — JMP $EA81 (proper IRQ handler exit)
+    /// `sid volume N` — write N to $D418 (master volume + filter mode, bits 0-3 = vol 0-15).
+    SidVolume(Expr),
+    /// `sid stop` — zero all 25 SID registers ($D400–$D418), silencing all voices.
+    SidStop,
     AsmBytes(Vec<u8>),
     IntToStr { var: String, addr: u16 },
     Color { target: ColorTarget, expr: Expr },
     SubDef(String, Vec<String>, Vec<Stmt>), // name, params, body
-    Call(String, Vec<Expr>),                // name, args
+    Call(String, Vec<Expr>, usize),          // name, args, line
     Return,
     Const(String, Expr),
     Label(String),
-    Goto(String),
+    Goto(String, usize),                     // label name, line
     Poke(Expr, Expr),
     Plot(Expr, Expr), // plot x, y — set pixel in bitmap mode
     Plot4(Expr, Expr),      // plot4 x, y — set 4×4 block pixel

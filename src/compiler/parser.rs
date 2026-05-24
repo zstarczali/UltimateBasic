@@ -2,9 +2,40 @@ use super::lexer::Token;
 use super::ast::{Expr, BinOp, Stmt, ColorTarget, VarType};
 use super::lexer::Token::{LBracket, RBracket};
 
+fn token_label(t: &Token) -> String {
+    match t {
+        Token::StringLit(s)  => format!("\"{}\"", s),
+        Token::Number(n)     => n.to_string(),
+        Token::Addr(n)       => format!("${:04X}", n),
+        Token::Ident(s)      => s.clone(),
+        Token::Eof           => "<end of file>".into(),
+        Token::Newline       => "<newline>".into(),
+        Token::Assign        => "'='".into(),
+        Token::Plus          => "'+'".into(),
+        Token::Minus         => "'-'".into(),
+        Token::Star          => "'*'".into(),
+        Token::Slash         => "'/'".into(),
+        Token::LParen        => "'('".into(),
+        Token::RParen        => "')'".into(),
+        Token::LBracket      => "'['".into(),
+        Token::RBracket      => "']'".into(),
+        Token::Comma         => "','".into(),
+        Token::Colon         => "':'".into(),
+        Token::Eq            => "'=='".into(),
+        Token::NotEq         => "'!='".into(),
+        Token::Lt            => "'<'".into(),
+        Token::Gt            => "'>'".into(),
+        Token::LtEq          => "'<='".into(),
+        Token::GtEq          => "'>='".into(),
+        // Keywords: show as lowercase source text
+        other => format!("'{}'", format!("{:?}", other).to_lowercase()),
+    }
+}
+
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    line: usize,
     consts: std::collections::HashMap<String, i16>,
     base_dir: Option<std::path::PathBuf>,
     errors: Vec<String>,
@@ -12,19 +43,19 @@ pub struct Parser {
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0, consts: std::collections::HashMap::new(), base_dir: None, errors: vec![] }
+        Self { tokens, pos: 0, line: 1, consts: std::collections::HashMap::new(), base_dir: None, errors: vec![] }
     }
 
     pub fn new_with_base(tokens: Vec<Token>, base_dir: std::path::PathBuf) -> Self {
-        Self { tokens, pos: 0, consts: std::collections::HashMap::new(), base_dir: Some(base_dir), errors: vec![] }
+        Self { tokens, pos: 0, line: 1, consts: std::collections::HashMap::new(), base_dir: Some(base_dir), errors: vec![] }
     }
 
     pub fn new_with_consts(tokens: Vec<Token>, consts: std::collections::HashMap<String, i16>) -> Self {
-        Self { tokens, pos: 0, consts, base_dir: None, errors: vec![] }
+        Self { tokens, pos: 0, line: 1, consts, base_dir: None, errors: vec![] }
     }
 
     pub fn new_with_consts_and_base(tokens: Vec<Token>, consts: std::collections::HashMap<String, i16>, base_dir: Option<std::path::PathBuf>) -> Self {
-        Self { tokens, pos: 0, consts, base_dir, errors: vec![] }
+        Self { tokens, pos: 0, line: 1, consts, base_dir, errors: vec![] }
     }
 
     pub fn errors(&self) -> &[String] {
@@ -106,6 +137,7 @@ impl Parser {
     fn advance(&mut self) -> Token {
         let t = self.tokens.get(self.pos).cloned().unwrap_or(Token::Eof);
         self.pos += 1;
+        if matches!(t, Token::Newline) { self.line += 1; }
         t
     }
 
@@ -123,7 +155,7 @@ impl Parser {
     }
 
     fn reject_stmt(&mut self, message: &str) -> Option<Stmt> {
-        self.errors.push(message.to_string());
+        self.errors.push(format!("line {}: {}", self.line, message));
         while !matches!(self.peek(), Token::Newline | Token::Eof) {
             self.advance();
         }
@@ -308,14 +340,36 @@ impl Parser {
                     }
                     if self.peek() == &Token::RParen { self.advance(); } // )
                     self.expect_newline();
-                    Some(Stmt::Call(name, args))
+                    Some(Stmt::Call(name, args, self.line))
                 } else {
                     self.expect_newline();
-                    Some(Stmt::Call(name, vec![]))
+                    Some(Stmt::Call(name, vec![], self.line))
                 }
             }
             Token::Print => {
                 self.advance();
+                // `print at col, row, expr...` — position cursor then print
+                if self.peek() == &Token::At {
+                    self.advance(); // consume 'at'
+                    let col = self.parse_expr();
+                    if self.peek() == &Token::Comma { self.advance(); }
+                    let row = self.parse_expr();
+                    let mut args = vec![];
+                    if self.peek() == &Token::Comma {
+                        self.advance();
+                        if !matches!(self.peek(), Token::Newline | Token::Eof | Token::Colon) {
+                            args.push(self.parse_expr());
+                            while self.peek() == &Token::Comma {
+                                self.advance();
+                                if !matches!(self.peek(), Token::Newline | Token::Eof | Token::Colon) {
+                                    args.push(self.parse_expr());
+                                }
+                            }
+                        }
+                    }
+                    self.expect_newline();
+                    return Some(Stmt::PrintAt { col, row, args });
+                }
                 let mut args = vec![];
                 // Collect comma-separated exprs until end of line or colon separator
                 if !matches!(self.peek(), Token::Newline | Token::Eof | Token::Colon) {
@@ -458,8 +512,19 @@ impl Parser {
             Token::Sys => {
                 self.advance();
                 let addr = self.parse_addr();
+                let arg = if self.peek() == &Token::Comma {
+                    self.advance(); // consume ','
+                    Some(self.parse_expr())
+                } else {
+                    None
+                };
                 self.expect_newline();
-                Some(Stmt::Sys(addr))
+                Some(Stmt::Sys { addr, arg })
+            }
+            Token::IrqExit => {
+                self.advance();
+                self.expect_newline();
+                Some(Stmt::IrqExit)
             }
             Token::Asm => {
                 self.advance();
@@ -549,8 +614,9 @@ impl Parser {
             Token::Goto => {
                 self.advance();
                 let name = if let Token::Ident(n) = self.advance() { n } else { return None; };
+                let line = self.line;
                 self.expect_newline();
-                Some(Stmt::Goto(name))
+                Some(Stmt::Goto(name, line))
             }
             Token::Poke => {
                 self.advance();
@@ -684,6 +750,27 @@ impl Parser {
                 } else {
                     self.expect_newline();
                     None
+                }
+            }
+            Token::Sid => {
+                self.advance();
+                match self.peek().clone() {
+                    Token::Volume => {
+                        self.advance();
+                        let expr = self.parse_expr();
+                        self.expect_newline();
+                        Some(Stmt::SidVolume(expr))
+                    }
+                    Token::Ident(ref s) if s == "stop" => {
+                        self.advance();
+                        self.expect_newline();
+                        Some(Stmt::SidStop)
+                    }
+                    _ => {
+                        self.errors.push("sid: expected 'volume N' or 'stop'".to_string());
+                        self.expect_newline();
+                        None
+                    }
                 }
             }
             Token::Load => {
@@ -971,6 +1058,13 @@ impl Parser {
                 self.expect_newline();
                 Some(Stmt::Reu { op, c64_addr, reu_bank, reu_addr, length })
             }
+            Token::Waitkey => {
+                self.advance();
+                if self.peek() == &Token::LParen { self.advance(); } // skip (
+                if self.peek() == &Token::RParen { self.advance(); } // skip )
+                self.expect_newline();
+                Some(Stmt::WaitKey)
+            }
             Token::Call => {
                 self.advance();
                 let name = if let Token::Ident(n) = self.advance() { n } else { return None; };
@@ -984,9 +1078,15 @@ impl Parser {
                     if self.peek() == &Token::RParen { self.advance(); } // )
                 }
                 self.expect_newline();
-                Some(Stmt::Call(name, args))
+                Some(Stmt::Call(name, args, self.line))
             }
-            _ => { self.advance(); None }
+            _ => {
+                let tok = self.advance();
+                self.errors.push(format!("line {}: unexpected {}", self.line, token_label(&tok)));
+                while !matches!(self.peek(), Token::Newline | Token::Eof) { self.advance(); }
+                self.expect_newline();
+                None
+            }
         }
     }
 
@@ -1042,6 +1142,15 @@ impl Parser {
         if matches!(self.peek(), Token::Not) {
             self.advance();
             return Expr::Not(Box::new(self.parse_unary()));
+        }
+        if matches!(self.peek(), Token::Minus) {
+            self.advance();
+            let inner = self.parse_unary();
+            // Fold constant negative literals at parse time
+            if let Expr::Number(n) = inner {
+                return Expr::Number(n.wrapping_neg());
+            }
+            return Expr::BinOp(Box::new(Expr::Number(0)), BinOp::Sub, Box::new(inner));
         }
         self.parse_comparison()
     }
@@ -1142,6 +1251,11 @@ impl Parser {
                 if self.peek() == &Token::LParen { self.advance(); } // skip (
                 if self.peek() == &Token::RParen { self.advance(); } // skip )
                 Expr::Inkey
+            }
+            Token::Waitkey => {
+                if self.peek() == &Token::LParen { self.advance(); } // skip (
+                if self.peek() == &Token::RParen { self.advance(); } // skip )
+                Expr::Waitkey
             }
             Token::StrLen => {
                 if self.peek() == &Token::LParen { self.advance(); }
@@ -1548,13 +1662,13 @@ mod tests {
     #[test]
     fn call_stmt() {
         let stmts = parse("test()");
-        assert!(matches!(&stmts[0], Stmt::Call(name, _) if name == "test"));
+        assert!(matches!(&stmts[0], Stmt::Call(name, _, _) if name == "test"));
     }
 
     #[test]
     fn call_with_args() {
         let stmts = parse("draw(10, 20)");
-        if let Stmt::Call(name, args) = &stmts[0] {
+        if let Stmt::Call(name, args, _) = &stmts[0] {
             assert_eq!(name, "draw");
             assert_eq!(args.len(), 2);
         } else { panic!("Expected Call"); }
@@ -1613,7 +1727,15 @@ mod tests {
 
     #[test] fn sys_stmt() {
         let stmts = parse("sys $FFD2");
-        assert!(matches!(&stmts[0], Stmt::Sys(0xFFD2)));
+        assert!(matches!(&stmts[0], Stmt::Sys { addr: 0xFFD2, arg: None }));
+    }
+    #[test] fn sys_stmt_with_arg() {
+        let stmts = parse("sys $1000, 0");
+        assert!(matches!(&stmts[0], Stmt::Sys { addr: 0x1000, arg: Some(_) }));
+    }
+    #[test] fn irq_exit_stmt() {
+        let stmts = parse("irq_exit");
+        assert!(matches!(&stmts[0], Stmt::IrqExit));
     }
     #[test] fn asm_inline() {
         let stmts = parse("asm $EA, $EA");
@@ -1651,7 +1773,7 @@ mod tests {
 
     #[test] fn goto_stmt() {
         let stmts = parse("goto main_loop");
-        assert!(matches!(&stmts[0], Stmt::Goto(name) if name == "main_loop"));
+        assert!(matches!(&stmts[0], Stmt::Goto(name, _) if name == "main_loop"));
     }
 
     #[test] fn poke_stmt() {
@@ -1788,6 +1910,6 @@ mod tests {
         assert_eq!(stmts.len(), 3);
         assert!(matches!(&stmts[0], Stmt::Label(_)));
         assert!(matches!(&stmts[1], Stmt::Assign(_, _)));
-        assert!(matches!(&stmts[2], Stmt::Goto(_)));
+        assert!(matches!(&stmts[2], Stmt::Goto(_, _)));
     }
 }

@@ -36,6 +36,7 @@ pub enum Token {
     Bg,
     Getch,
     Inkey,
+    Waitkey, // waitkey() — CIA1 matrix scan, any key, works without CIA1 IRQ
     StrLen,  // len()
     Asc,     // asc()
     ReuDet,      // reudet() — inline REU detection, returns 0 or 1
@@ -91,7 +92,9 @@ pub enum Token {
     Multi,
     Block,    // block pixel mode keyword
     Plot4,    // plot4 — 4×4 block pixel set/erase
-    Sid,      // load sid "file.sid" — embed SID music
+    Sid,      // load sid "file.sid" — embed SID music; also: sid volume / sid stop
+    Volume,   // volume — used in sid volume N
+    At,       // at — used in print at x, y, ...
     Incbin,
     Include,
     Data,
@@ -102,6 +105,7 @@ pub enum Token {
     Memcopy,
     DrawMem,
     Irq,
+    IrqExit,  // irq_exit — emits JMP $EA81 (proper IRQ handler exit, replaces asm { JMP $EA81 })
     Save,
     Cursor,
     Repeat,
@@ -149,11 +153,17 @@ pub enum Token {
 pub struct Lexer {
     input: Vec<char>,
     pos: usize,
+    line: usize,
+    errors: Vec<String>,
 }
 
 impl Lexer {
     pub fn new(src: &str) -> Self {
-        Self { input: src.chars().collect(), pos: 0 }
+        Self { input: src.chars().collect(), pos: 0, line: 1, errors: vec![] }
+    }
+
+    pub fn errors(&self) -> &[String] {
+        &self.errors
     }
 
     fn peek(&self) -> Option<char> {
@@ -178,7 +188,7 @@ impl Lexer {
             self.skip_spaces();
             match self.peek() {
                 None => { tokens.push(Token::Eof); break; }
-                Some('\n') => { self.advance(); tokens.push(Token::Newline); }
+                Some('\n') => { self.advance(); tokens.push(Token::Newline); self.line += 1; }
                 Some('#') | Some(';') => { while !matches!(self.peek(), None | Some('\n')) { self.advance(); } }
                 Some('"') => tokens.push(self.read_string()),
                 Some('$') => tokens.push(self.read_hex()),
@@ -224,7 +234,7 @@ impl Lexer {
                 Some(')') => { self.advance(); tokens.push(Token::RParen); }
                 Some(',') => { self.advance(); tokens.push(Token::Comma); }
                 Some(':') => { self.advance(); tokens.push(Token::Colon); }
-                Some(c) => { self.advance(); eprintln!("Unknown char: {c}"); }
+                Some(c) => { self.advance(); self.errors.push(format!("line {}: unknown character '{c}'", self.line)); }
             }
         }
         tokens
@@ -326,6 +336,7 @@ impl Lexer {
             "bg"         => Token::Bg,
             "getch"      => Token::Getch,
             "inkey"      => Token::Inkey,
+            "waitkey"    => Token::Waitkey,
             "len"        => Token::StrLen,
             "asc"        => Token::Asc,
             "reudet"      => Token::ReuDet,
@@ -388,7 +399,10 @@ impl Lexer {
             "memcopy"    => Token::Memcopy,
             "drawmem"    => Token::DrawMem,
             "irq"        => Token::Irq,
+            "irq_exit"   => Token::IrqExit,
             "save"       => Token::Save,
+            "volume"     => Token::Volume,
+            "at"         => Token::At,
             "cursor"     => Token::Cursor,
             "repeat"     => Token::Repeat,
             "until"      => Token::Until,
