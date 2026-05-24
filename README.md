@@ -197,6 +197,7 @@ plot erase x, y          # clear pixel (AND ~mask)
 plot xor x, y            # toggle pixel (EOR mask) — flicker-free animation
 circle x, y, r           # midpoint circle centered at (x, y) with radius r; clips off-screen points
 line x1, y1, x2, y2      # Bresenham line from (x1,y1) to (x2,y2); x: 0-255, y: 0-199
+paint x, y               # 4-connected flood fill from (x, y); fills clear pixels bounded by set ones
 ```
 
 Both `graphics on` variants blank the display (`LDA $D011 / AND #$EF / STA $D011`) while
@@ -227,6 +228,9 @@ var k   = inkey()        # non-blocking: returns PETSCII code, or 0 if no key pr
 var j = joy(2)           # read joystick port 2; returns inverted bits 0-4
 var j = joy(1)           # read joystick port 1
                          # bit0=up(1) bit1=down(2) bit2=left(4) bit3=right(8) bit4=fire(16)
+var mx = mouse_x()       # 1351 mouse X: SID POT X ($D419), 0-255
+var my = mouse_y()       # 1351 mouse Y: SID POT Y ($D41A), 0-255
+var mb = mouse_btn()     # mouse buttons: bit0=left (fire), bit1=right
 ```
 
 ### Exit

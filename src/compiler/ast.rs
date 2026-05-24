@@ -9,6 +9,9 @@ pub enum Expr {
     Inkey,    // inkey() — non-blocking $FFE4; 0 = no key, else PETSCII code
     ReuPresent,  // reu_present() — 1 if REU detected, 0 otherwise
     Joy(u8),  // joy(1) or joy(2) — read joystick port, returns inverted bits 0-4
+    MouseX,   // mouse_x()  — SID $D419 POT X register (0-255)
+    MouseY,   // mouse_y()  — SID $D41A POT Y register (0-255)
+    MouseBtn, // mouse_btn() — CIA1 $DC00 bits: bit0=left(fire), bit1=right(up direction)
     Sin(Box<Expr>),   // sin(angle) — 8-bit angle 0-255, returns 0-255 (center=128)
     Cos(Box<Expr>),   // cos(angle) — same as sin with +64 offset
     HexFmt(Box<Expr>), // hex(n) — in print: shows value as 2-digit uppercase hex
@@ -97,6 +100,7 @@ pub enum Stmt {
     RepeatLoop(Vec<Stmt>, Expr),                   // repeat ... until cond — do-while loop
     PlotErase(Expr, Expr),                         // plot erase x, y — clear pixel in bitmap
     PlotXor(Expr, Expr),                           // plot xor x, y — XOR pixel in bitmap
+    Paint(Expr, Expr),                             // paint x, y — 4-connected flood fill from (x,y)
     SpriteExpandX { id: Expr, on: bool },          // sprite expand x id, on/off — $D01D
     SpriteExpandY { id: Expr, on: bool },          // sprite expand y id, on/off — $D017
     SpritePriority { id: Expr, on: bool },         // sprite priority id, on/off — $D01B

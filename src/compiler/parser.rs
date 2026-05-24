@@ -559,6 +559,14 @@ impl Parser {
                 self.advance();
                 self.reject_stmt("Unsupported feature: plot4")
             }
+            Token::Paint => {
+                self.advance();
+                let x = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let y = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::Paint(x, y))
+            }
             Token::Circle => {
                 self.advance();
                 let x = self.parse_expr();
@@ -1075,6 +1083,21 @@ impl Parser {
                 };
                 if self.peek() == &Token::RParen { self.advance(); } // skip )
                 Expr::Joy(port)
+            }
+            Token::MouseX => {
+                if self.peek() == &Token::LParen { self.advance(); }
+                if self.peek() == &Token::RParen { self.advance(); }
+                Expr::MouseX
+            }
+            Token::MouseY => {
+                if self.peek() == &Token::LParen { self.advance(); }
+                if self.peek() == &Token::RParen { self.advance(); }
+                Expr::MouseY
+            }
+            Token::MouseBtn => {
+                if self.peek() == &Token::LParen { self.advance(); }
+                if self.peek() == &Token::RParen { self.advance(); }
+                Expr::MouseBtn
             }
             Token::Peek => {
                 if self.peek() == &Token::LParen { self.advance(); }

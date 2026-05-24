@@ -298,13 +298,13 @@ impl TestCpu {
 #[test]
 fn stub_is_correct_length() {
     let prg = compile_stub("");
-    assert_eq!(prg.len(), 15, "Empty program: 14 stub + 1 RTS = 15");
+    assert_eq!(prg.len(), 16, "Empty program: 14 stub + CLD(1) + RTS(1) = 16");
 }
 
 #[test]
 fn no_stub_is_correct_length() {
     let prg = compile_raw("");
-    assert_eq!(prg.len(), 3, "Empty program: 2 header + 1 RTS = 3");
+    assert_eq!(prg.len(), 4, "Empty program: 2 header + CLD(1) + RTS(1) = 4");
 }
 
 #[test]
@@ -324,22 +324,24 @@ fn stub_has_sys_2061() {
 #[test]
 fn var_decl_generates_code() {
     let prg = compile_raw("var x = 42");
-    // Should have: LDA #42, STA $02, RTS (+ header)
-    assert!(prg.len() > 6); // header(2) + LDA #42(2) + STA $02(2) + RTS(1)
-    assert_eq!(prg[2], 0xA9); // LDA immediate
-    assert_eq!(prg[3], 42);   // #42
-    assert_eq!(prg[4], 0x85); // STA zp
-    assert_eq!(prg[5], 0x02); // $02
-    assert_eq!(prg[6], 0x60); // RTS
+    // Should have: CLD, LDA #42, STA $02, RTS (+ header)
+    assert!(prg.len() > 7); // header(2) + CLD(1) + LDA #42(2) + STA $02(2) + RTS(1)
+    assert_eq!(prg[2], 0xD8); // CLD
+    assert_eq!(prg[3], 0xA9); // LDA immediate
+    assert_eq!(prg[4], 42);   // #42
+    assert_eq!(prg[5], 0x85); // STA zp
+    assert_eq!(prg[6], 0x02); // $02
+    assert_eq!(prg[7], 0x60); // RTS
 }
 
 #[test]
 fn var_assign_generates_code() {
     let prg = compile_raw("x = 99");
-    assert_eq!(prg[2], 0xA9); // LDA immediate
-    assert_eq!(prg[3], 99);
-    assert_eq!(prg[4], 0x85); // STA
-    assert_eq!(prg[5], 0x02); // first ZP var
+    assert_eq!(prg[2], 0xD8); // CLD
+    assert_eq!(prg[3], 0xA9); // LDA immediate
+    assert_eq!(prg[4], 99);
+    assert_eq!(prg[5], 0x85); // STA
+    assert_eq!(prg[6], 0x02); // first ZP var
 }
 
 #[test]
@@ -354,13 +356,14 @@ fn type_annotation_parses() {
 #[test]
 fn print_string_literal() {
     let prg = compile_raw("print \"A\"");
-    // print_str_inline: LDA #'A', JSR CHROUT, print_newline (LDA #$0D, JSR CHROUT), RTS
+    // print_str_inline: CLD, LDA #'A', JSR CHROUT, ..., RTS
     assert!(prg.len() > 10);
-    assert_eq!(prg[2], 0xA9); // LDA #'A'
-    assert_eq!(prg[3], 0x41); // 'A' = 65 in PETSCII? Actually uppercase A is same
-    assert_eq!(prg[4], 0x20); // JSR
-    assert_eq!(prg[5], 0xD2); // CHROUT lo
-    assert_eq!(prg[6], 0xFF); // CHROUT hi
+    assert_eq!(prg[2], 0xD8); // CLD
+    assert_eq!(prg[3], 0xA9); // LDA #'A'
+    assert_eq!(prg[4], 0x41); // 'A' = 65 in PETSCII
+    assert_eq!(prg[5], 0x20); // JSR
+    assert_eq!(prg[6], 0xD2); // CHROUT lo
+    assert_eq!(prg[7], 0xFF); // CHROUT hi
 }
 
 #[test]
@@ -842,18 +845,20 @@ fn sys_emits_jsr() {
 #[test]
 fn asm_bytes_inline() {
     let prg = compile_raw("asm $EA, $EA, $EA");
-    // Should have 3 NOPs
-    assert_eq!(prg[2], 0xEA);
+    // Should have 3 NOPs after CLD
+    assert_eq!(prg[2], 0xD8); // CLD
     assert_eq!(prg[3], 0xEA);
     assert_eq!(prg[4], 0xEA);
-    assert_eq!(prg[5], 0x60); // RTS follows
+    assert_eq!(prg[5], 0xEA);
+    assert_eq!(prg[6], 0x60); // RTS follows
 }
 
 #[test]
 fn asm_block_braces() {
     let prg = compile_raw("asm { $A9 $01 }");
-    assert_eq!(prg[2], 0xA9);
-    assert_eq!(prg[3], 0x01);
+    assert_eq!(prg[2], 0xD8); // CLD
+    assert_eq!(prg[3], 0xA9);
+    assert_eq!(prg[4], 0x01);
 }
 
 #[test]
@@ -892,8 +897,9 @@ fn blank_lines_ignored() {
 #[test]
 fn empty_program_compiles() {
     let prg = compile_raw("");
-    assert_eq!(prg.len(), 3); // header(2) + RTS(1)
-    assert_eq!(prg[2], 0x60); // RTS
+    assert_eq!(prg.len(), 4); // header(2) + CLD(1) + RTS(1)
+    assert_eq!(prg[2], 0xD8); // CLD
+    assert_eq!(prg[3], 0x60); // RTS
 }
 
 // ── Complex programs ────────────────────────────────────────────────────────
@@ -1261,11 +1267,12 @@ fn word_copy_copies_both_bytes() {
 fn print_empty_is_just_newline() {
     let prg = compile_raw("print");
     let bytes = &prg[2..];
-    // header(2) + LDA #$0D(2) + JSR $FFD2(3) + RTS(1) = 8 bytes total
-    assert_eq!(prg.len(), 8, "bare print = header + LDA #CR + JSR CHROUT + RTS");
-    assert_eq!(bytes[0], 0xA9);  // LDA immediate
-    assert_eq!(bytes[1], 0x0D);  // #$0D = carriage return
-    assert_eq!(bytes[2], 0x20);  // JSR
+    // header(2) + CLD(1) + LDA #$0D(2) + JSR $FFD2(3) + RTS(1) = 9 bytes total
+    assert_eq!(prg.len(), 9, "bare print = header + CLD + LDA #CR + JSR CHROUT + RTS");
+    assert_eq!(bytes[0], 0xD8);  // CLD
+    assert_eq!(bytes[1], 0xA9);  // LDA immediate
+    assert_eq!(bytes[2], 0x0D);  // #$0D = carriage return
+    assert_eq!(bytes[3], 0x20);  // JSR
 }
 
 #[test]
@@ -2076,8 +2083,8 @@ fn sprite_word_x_uses_lo_byte_and_runtime_msb() {
 
 #[test]
 fn sprite_def_aligns_to_64_byte_boundary() {
-    // sprdef 0, <63 bytes>  at $080D → JMP over data, data at $0840 (page $21)
-    // JMP = 4C lo hi = 3 bytes; $080D+3 = $0810; next 64-boundary = $0840
+    // sprdef 0, <63 bytes>  at $080D → CLD (1 byte), then JMP over data, data at $0840 (page $21)
+    // CLD = 1 byte, JMP = 3 bytes; $080D+4 = $0811; next 64-boundary = $0840
     let mut bytes63 = vec![0u8; 63];
     bytes63[1] = 0x7E; // row 1 byte 1, easily spotted
     let src = format!(
@@ -2087,8 +2094,10 @@ fn sprite_def_aligns_to_64_byte_boundary() {
     let prg = compile_raw(&src);
     let bytes = &prg[2..]; // skip load address
 
-    // JMP $?? $?? should be first instruction = 4C
-    assert_eq!(bytes[0], 0x4C, "sprite_def should start with JMP");
+    // CLD first
+    assert_eq!(bytes[0], 0xD8, "code should start with CLD");
+    // JMP $?? $?? should be next = 4C
+    assert_eq!(bytes[1], 0x4C, "sprite_def should start with JMP after CLD");
 
     // data_addr = $0840, page = $21; expect LDA #$21 somewhere
     let has_lda_page = bytes.windows(2).any(|w| w == &[0xA9, 0x21]);
@@ -2098,7 +2107,8 @@ fn sprite_def_aligns_to_64_byte_boundary() {
     let has_sta_ptr = bytes.windows(3).any(|w| w == &[0x8D, 0xF8, 0x07]);
     assert!(has_sta_ptr, "sprite_def should emit STA $07F8");
 
-    // $7E marker byte should be at $0841 = bytes[64] (prg[2..] starts at $0801; $0841-$0801=64)
+    // $7E marker byte: data starts at $0840, prg[2..] = $0801 base, offset = $0840-$0801 = $3F = 63
+    // byte[1] of sprite data = offset 64 from $080D base = bytes[$3F+1] = bytes[64]
     assert_eq!(bytes[64], 0x7E, "sprite data byte 1 should be at expected offset");
 }
 
@@ -2755,17 +2765,19 @@ fn asm_block_raw_bytes_backward_compat() {
     // Old raw-byte syntax inside asm { } still works
     let prg = compile_raw("asm { $EA $EA }");
     let bytes = &prg[2..];
-    // Two NOPs ($EA) then RTS ($60) from compile_raw's implicit end
-    assert_eq!(&bytes[0..2], &[0xEA, 0xEA], "raw bytes in asm block");
+    // CLD, then Two NOPs ($EA)
+    assert_eq!(bytes[0], 0xD8, "CLD");
+    assert_eq!(&bytes[1..3], &[0xEA, 0xEA], "raw bytes in asm block");
 }
 
 #[test]
 fn asm_block_nop_rts_mnemonics() {
     let prg = compile_raw("asm {\n  NOP\n  NOP\n  RTS\n}");
     let bytes = &prg[2..];
-    assert_eq!(bytes[0], 0xEA, "NOP = $EA");
+    assert_eq!(bytes[0], 0xD8, "CLD = $D8");
     assert_eq!(bytes[1], 0xEA, "NOP = $EA");
-    assert_eq!(bytes[2], 0x60, "RTS = $60");
+    assert_eq!(bytes[2], 0xEA, "NOP = $EA");
+    assert_eq!(bytes[3], 0x60, "RTS = $60");
 }
 
 #[test]
@@ -2858,11 +2870,12 @@ fn asm_block_branch_forward() {
     // BNE +1 ($01), NOP, NOP  — BNE offset = 1 (skip the first NOP, land on second)
     let prg = compile_raw("asm {\n  BNE skip\n  NOP\nskip:\n  NOP\n}");
     let bytes = &prg[2..];
-    // D0 01  EA  EA
-    assert_eq!(bytes[0], 0xD0, "BNE opcode");
-    assert_eq!(bytes[1], 0x01, "BNE forward offset = 1");
-    assert_eq!(bytes[2], 0xEA, "NOP at skip-1");
-    assert_eq!(bytes[3], 0xEA, "NOP at skip");
+    // D8  D0 01  EA  EA
+    assert_eq!(bytes[0], 0xD8, "CLD");
+    assert_eq!(bytes[1], 0xD0, "BNE opcode");
+    assert_eq!(bytes[2], 0x01, "BNE forward offset = 1");
+    assert_eq!(bytes[3], 0xEA, "NOP at skip-1");
+    assert_eq!(bytes[4], 0xEA, "NOP at skip");
 }
 
 #[test]
@@ -2870,20 +2883,22 @@ fn asm_block_branch_backward() {
     // loop: NOP / BNE loop  — backward branch: offset = -3 ($FD)
     let prg = compile_raw("asm {\nloop:\n  NOP\n  BNE loop\n}");
     let bytes = &prg[2..];
-    // EA  D0 FD
-    assert_eq!(bytes[0], 0xEA, "NOP");
-    assert_eq!(bytes[1], 0xD0, "BNE opcode");
-    assert_eq!(bytes[2], 0xFD_u8, "BNE backward offset = -3");
+    // D8  EA  D0 FD
+    assert_eq!(bytes[0], 0xD8, "CLD");
+    assert_eq!(bytes[1], 0xEA, "NOP");
+    assert_eq!(bytes[2], 0xD0, "BNE opcode");
+    assert_eq!(bytes[3], 0xFD_u8, "BNE backward offset = -3");
 }
 
 #[test]
 fn asm_block_transfers_implied() {
     let prg = compile_raw("asm { TAX\nTAY\nTXA\nTYA }");
     let bytes = &prg[2..];
-    assert_eq!(bytes[0], 0xAA, "TAX");
-    assert_eq!(bytes[1], 0xA8, "TAY");
-    assert_eq!(bytes[2], 0x8A, "TXA");
-    assert_eq!(bytes[3], 0x98, "TYA");
+    assert_eq!(bytes[0], 0xD8, "CLD");
+    assert_eq!(bytes[1], 0xAA, "TAX");
+    assert_eq!(bytes[2], 0xA8, "TAY");
+    assert_eq!(bytes[3], 0x8A, "TXA");
+    assert_eq!(bytes[4], 0x98, "TYA");
 }
 
 #[test]
@@ -2900,8 +2915,9 @@ fn asm_block_comment_semicolon() {
     // Comments with ; should be stripped
     let prg = compile_raw("asm {\n  NOP  ; this is a comment\n  NOP\n}");
     let bytes = &prg[2..];
-    assert_eq!(bytes[0], 0xEA, "NOP");
-    assert_eq!(bytes[1], 0xEA, "NOP after comment line");
+    assert_eq!(bytes[0], 0xD8, "CLD");
+    assert_eq!(bytes[1], 0xEA, "NOP");
+    assert_eq!(bytes[2], 0xEA, "NOP after comment line");
 }
 
 #[test]
@@ -2909,7 +2925,8 @@ fn asm_block_mixed_mnemonics_and_raw_bytes() {
     // Mixing mnemonic instructions with raw byte lines
     let prg = compile_raw("asm {\n  NOP\n  $EA\n  NOP\n}");
     let bytes = &prg[2..];
-    assert_eq!(&bytes[0..3], &[0xEA, 0xEA, 0xEA], "three NOPs");
+    assert_eq!(bytes[0], 0xD8, "CLD");
+    assert_eq!(&bytes[1..4], &[0xEA, 0xEA, 0xEA], "three NOPs");
 }
 
 // ── 16-bit word AND/OR/XOR ───────────────────────────────────────────────────
@@ -3167,9 +3184,12 @@ fn word_array_set_var_index_emits_iny() {
     assert!(bytes.contains(&0xC8), "word_array set var index: INY ($C8) missing");
 }
 
-// ── 4×4 block pixel mode ─────────────────────────────────────────────────────
+// ── Backward compat: plot4/block removed — tests below kept as compile-only ─
+// (These tests were removed because plot4 and graphics-on-block are no longer
+//  supported. The rejection tests above verify the error path still works.)
 
 #[test]
+#[ignore = "plot4 / graphics on block removed"]
 fn graphics_on_block_emits_correct_d018() {
     // Direct write $1A to $D018 to set screen@$0400 and charset@$2800.
     let prg = compile_raw("graphics on block");
@@ -3179,6 +3199,7 @@ fn graphics_on_block_emits_correct_d018() {
 }
 
 #[test]
+#[ignore = "plot4 / graphics on block removed"]
 fn graphics_on_block_sets_vic_bank_0() {
     let prg = compile_raw("graphics on block");
     let bytes = &prg[2..];
@@ -3187,6 +3208,7 @@ fn graphics_on_block_sets_vic_bank_0() {
 }
 
 #[test]
+#[ignore = "plot4 / graphics on block removed"]
 fn graphics_on_block_copies_charset_to_2800() {
     // STA $2800,X = 9D 00 28
     let prg = compile_raw("graphics on block");
@@ -3196,6 +3218,7 @@ fn graphics_on_block_copies_charset_to_2800() {
 }
 
 #[test]
+#[ignore = "plot4 / graphics on block removed"]
 fn graphics_on_block_emits_canonical_blanked_d011() {
     let prg = compile_raw("graphics on block");
     let bytes = &prg[2..];
@@ -3204,6 +3227,7 @@ fn graphics_on_block_emits_canonical_blanked_d011() {
 }
 
 #[test]
+#[ignore = "plot4 / graphics on block removed"]
 fn graphics_on_block_canonicalizes_d011_before_display_on() {
     let prg = compile_raw("graphics on block\ndisplay on");
     let bytes = &prg[2..];
@@ -3212,6 +3236,7 @@ fn graphics_on_block_canonicalizes_d011_before_display_on() {
 }
 
 #[test]
+#[ignore = "plot4 removed"]
 fn plot4_emits_ora_pnt() {
     // ORA zero-page (opcode $05) for the set-pixel operation
     let prg = compile_raw("graphics on block\nplot4 10, 5");
@@ -3221,6 +3246,7 @@ fn plot4_emits_ora_pnt() {
 }
 
 #[test]
+#[ignore = "plot4 removed"]
 fn plot4_emits_lda_indirect_y() {
     // LDA (ptr),Y = $B1
     let prg = compile_raw("graphics on block\nplot4 10, 5");
@@ -3230,6 +3256,7 @@ fn plot4_emits_lda_indirect_y() {
 }
 
 #[test]
+#[ignore = "plot4 removed"]
 fn plot4_emits_sta_indirect_y() {
     // STA (ptr),Y = $91
     let prg = compile_raw("graphics on block\nplot4 10, 5");
@@ -3239,6 +3266,7 @@ fn plot4_emits_sta_indirect_y() {
 }
 
 #[test]
+#[ignore = "plot4 removed"]
 fn plot4_erase_emits_eor_ff() {
     // De Morgan erase uses EOR #$FF (opcode $49, value $FF) twice
     let prg = compile_raw("graphics on block\nplot4 erase 10, 5");
@@ -3249,6 +3277,7 @@ fn plot4_erase_emits_eor_ff() {
 }
 
 #[test]
+#[ignore = "plot4 / graphics on block removed"]
 fn gcls_in_block_mode_fills_screen_ram() {
     // In block mode, gcls fills $0400-$07E7 with 0 → STA $0400,X = 9D 00 04
     let prg = compile_raw("graphics on block\ngcls");
@@ -3258,6 +3287,7 @@ fn gcls_in_block_mode_fills_screen_ram() {
 }
 
 #[test]
+#[ignore = "plot4 / graphics on block removed"]
 fn gcls_in_block_mode_fills_color_ram() {
     // Also fills color RAM $D800-$DBE7 → STA $D800,X = 9D 00 D8
     let prg = compile_raw("graphics on block\ngcls");
@@ -3267,6 +3297,7 @@ fn gcls_in_block_mode_fills_color_ram() {
 }
 
 #[test]
+#[ignore = "plot4 removed"]
 fn plot4_fullscreen_fill_reaches_bottom_rows_in_emulation() {
     let src = "graphics on block\ngcls\nvar y = 0\nvar x = 0\nwhile y < 50\n  x = 0\n  while x < 80\n    plot4 x, y\n    x = x + 1\n  end\n  y = y + 1\nend";
     let prg = compile_raw(src);
@@ -3280,6 +3311,7 @@ fn plot4_fullscreen_fill_reaches_bottom_rows_in_emulation() {
 }
 
     #[test]
+    #[ignore = "graphics on block removed"]
     fn direct_block_fill_reaches_full_screen_in_emulation() {
         let src = "graphics on block\ngcls\ndisplay on\nfill $0C00, 1000, 15";
         let prg = compile_raw(src);
@@ -3293,6 +3325,7 @@ fn plot4_fullscreen_fill_reaches_bottom_rows_in_emulation() {
     }
 
 #[test]
+#[ignore = "graphics on block removed"]
 fn graphics_on_block_parser_sets_block_flag() {
     // Parser test: `graphics on block` should parse to Graphics { on: true, block: true, multi: false }
     use ultimate_basic::compiler::parser::Parser;

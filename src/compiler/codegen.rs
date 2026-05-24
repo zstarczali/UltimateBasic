@@ -447,6 +447,9 @@ pub struct Codegen {
     plot4_patches: Vec<usize>,          // JSR targets for plot4 set-pixel helper
     plot4_erase_patches: Vec<usize>,    // JSR targets for plot4 clear-pixel helper
     fourxfour_mode: bool,               // compile-time flag: true when block pixel mode is active
+    paint_zp: Option<u8>,              // base of 2-byte ZP pair: stk_head_lo, stk_head_hi
+    paint_stack_addr: Option<u16>,     // 512-byte stack for paint flood-fill ($C000 area)
+    paint_patches: Vec<usize>,         // JSR targets to patch to paint_helper
 }
 
 impl Codegen {
@@ -490,6 +493,9 @@ impl Codegen {
             plot4_patches: vec![],
             plot4_erase_patches: vec![],
             fourxfour_mode: false,
+            paint_zp: None,
+            paint_stack_addr: None,
+            paint_patches: vec![],
         }
     }
 
@@ -497,7 +503,7 @@ impl Codegen {
     fn has_plot_stmt(stmts: &[Stmt]) -> bool {
         for stmt in stmts {
             match stmt {
-                Stmt::Plot(..) | Stmt::Circle { .. } | Stmt::PlotErase(..) | Stmt::PlotXor(..) => return true,
+                Stmt::Plot(..) | Stmt::Circle { .. } | Stmt::PlotErase(..) | Stmt::PlotXor(..) | Stmt::Paint(..) => return true,
                 Stmt::SubDef(_, _, body) => if Self::has_plot_stmt(body) { return true; }
                 Stmt::If(_, then_b, else_b) => {
                     if Self::has_plot_stmt(then_b) { return true; }
@@ -574,6 +580,28 @@ impl Codegen {
                 }
                 Stmt::RepeatLoop(body, _) => {
                     if Self::has_plot4_stmt(body) { return true; }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// Recursively check whether any Paint statement exists anywhere in the AST.
+    fn has_paint_stmt(stmts: &[Stmt]) -> bool {
+        for stmt in stmts {
+            match stmt {
+                Stmt::Paint(..) => return true,
+                Stmt::SubDef(_, _, body) => if Self::has_paint_stmt(body) { return true; }
+                Stmt::If(_, then_b, else_b) => {
+                    if Self::has_paint_stmt(then_b) { return true; }
+                    if let Some(eb) = else_b { if Self::has_paint_stmt(eb) { return true; } }
+                }
+                Stmt::ForLoop { body, .. } | Stmt::Loop(_, body) | Stmt::WhileLoop(_, body) => {
+                    if Self::has_paint_stmt(body) { return true; }
+                }
+                Stmt::RepeatLoop(body, _) => {
+                    if Self::has_paint_stmt(body) { return true; }
                 }
                 _ => {}
             }
@@ -666,6 +694,16 @@ impl Codegen {
         // the documented user-safe area on the C64.
         if Self::has_plot4_stmt(stmts) {
             self.plot4_zp = Some(PLOT4_MASK_ZP);
+        }
+
+        // Reserve 2 ZP bytes (stk_head_lo, stk_head_hi) and a 512-byte stack in
+        // $C000 area for the paint flood-fill helper.
+        if Self::has_paint_stmt(stmts) {
+            let zp = self.perm_zp;
+            self.perm_zp += 2;
+            self.paint_zp = Some(zp);
+            self.paint_stack_addr = Some(self.array_ptr);
+            self.array_ptr += 512;
         }
 
         for stmt in stmts {
@@ -903,6 +941,32 @@ impl Codegen {
                 self.emit(0xAD); self.emit(addr as u8); self.emit((addr >> 8) as u8); // LDA $DCxx
                 self.emit(0x29); self.emit(0x1F);     // AND #$1F  (keep bits 0-4)
                 self.emit(0x49); self.emit(0x1F);     // EOR #$1F  (invert: 1 = pressed)
+            }
+            Expr::MouseX => {
+                // 1351 mouse POT X — SID register $D419
+                self.emit(0xAD); self.emit(0x19); self.emit(0xD4); // LDA $D419
+            }
+            Expr::MouseY => {
+                // 1351 mouse POT Y — SID register $D41A
+                self.emit(0xAD); self.emit(0x1A); self.emit(0xD4); // LDA $D41A
+            }
+            Expr::MouseBtn => {
+                // CIA1 $DC00: bit4=fire (left button, active-low), bit0=up direction (right button, active-low).
+                // Result: bit0 = left pressed, bit1 = right pressed (both active-high).
+                let tmp = self.tmp_zp; self.tmp_zp += 1;
+                self.emit(0xAD); self.emit(0x00); self.emit(0xDC); // LDA $DC00
+                self.emit(0x49); self.emit(0xFF);                   // EOR #$FF  (invert: active-high)
+                self.emit(0x29); self.emit(0x10);                   // AND #$10  (isolate bit4 = fire/left)
+                self.emit(0x4A);                                    // LSR
+                self.emit(0x4A);                                    // LSR
+                self.emit(0x4A);                                    // LSR
+                self.emit(0x4A);                                    // LSR  → bit0
+                self.emit(0x85); self.emit(tmp);                    // STA tmp  (left button in bit0)
+                self.emit(0xAD); self.emit(0x00); self.emit(0xDC); // LDA $DC00
+                self.emit(0x49); self.emit(0xFF);                   // EOR #$FF  (invert)
+                self.emit(0x29); self.emit(0x01);                   // AND #$01  (isolate bit0 = up/right)
+                self.emit(0x0A);                                    // ASL       → bit1
+                self.emit(0x05); self.emit(tmp);                    // ORA tmp   → bit0=left, bit1=right
             }
             Expr::Peek(addr) => {
                 match addr.as_ref() {
@@ -1994,6 +2058,303 @@ impl Codegen {
         self.emit(0x45); self.emit(zp + 3);   // EOR mask → flip pixel
         self.emit(0x91); self.emit(zp + 4);   // STA (ptr_lo),Y
         self.emit(0x60);                       // RTS
+    }
+
+    /// Emit the paint flood-fill helper and all its internal subroutines.
+    ///
+    /// Layout (all emitted consecutively at the current code position):
+    ///   paint_main   — init stack, check initial pixel, iterative 4-connected fill loop
+    ///   check_pixel  — compute bitmap byte address + mask, return non-zero if pixel set
+    ///   push_if_clear — test pixel; push (x,y) onto stack only if pixel is clear
+    ///   push_triplet — push ZP(x_lo, x_hi, y) to the stack, advance stack pointer
+    ///   pop_triplet  — decrement stack pointer, load ZP(x_lo, x_hi, y) from stack
+    ///
+    /// Entry conditions (set by gen_stmt for Stmt::Paint):
+    ///   plot_zp+0 = x_lo, plot_zp+1 = x_hi, plot_zp+2 = y
+    ///
+    /// ZP usage:
+    ///   plot_zp+0..+5  — x_lo, x_hi, y, scratch(b/mask), ptr_lo, ptr_hi (shared with plot helper)
+    ///   paint_zp+0..+1 — stk_head_lo, stk_head_hi (16-bit stack pointer)
+    ///
+    /// Stack: 512 bytes at paint_stack_addr; each entry = 3 bytes (x_lo, x_hi, y)
+    ///        = up to 170 pending pixels. Overflows silently wrap (known limitation).
+    fn emit_paint_helper(&mut self, plot_addr: u16) {
+        let zp       = match self.plot_zp        { Some(z) => z, None => return };
+        let paint_zp = match self.paint_zp       { Some(z) => z, None => return };
+        let stack_base = match self.paint_stack_addr { Some(a) => a, None => return };
+
+        // ── paint_main ───────────────────────────────────────────────────────
+
+        // 1. Initialise stack pointer
+        self.emit(0xA9); self.emit(stack_base as u8);        // LDA #<stack_base
+        self.emit(0x85); self.emit(paint_zp);                // STA stk_head_lo
+        self.emit(0xA9); self.emit((stack_base >> 8) as u8); // LDA #>stack_base
+        self.emit(0x85); self.emit(paint_zp + 1);            // STA stk_head_hi
+
+        // 2. If initial pixel is already set, return immediately.
+        let check_pixel_jsr_1 = self.code.len();
+        self.emit(0x20); self.emit(0x00); self.emit(0x00);   // JSR check_pixel (patched later)
+        self.emit(0xD0);                                      // BNE → done
+        let bne_to_done_1 = self.code.len(); self.emit(0x00);
+
+        // 3. Push initial point
+        let push_triplet_jsr_1 = self.code.len();
+        self.emit(0x20); self.emit(0x00); self.emit(0x00);   // JSR push_triplet (patched later)
+
+        // ── fill_loop ────────────────────────────────────────────────────────
+        let fill_loop_addr = self.current_addr();
+
+        // 4. Empty check: stk_head == stack_base?
+        self.emit(0xA5); self.emit(paint_zp);                // LDA stk_head_lo
+        self.emit(0xC9); self.emit(stack_base as u8);        // CMP #<stack_base
+        self.emit(0xD0);                                      // BNE → not_empty
+        let bne_not_empty = self.code.len(); self.emit(0x00);
+        self.emit(0xA5); self.emit(paint_zp + 1);            // LDA stk_head_hi
+        self.emit(0xC9); self.emit((stack_base >> 8) as u8); // CMP #>stack_base
+        self.emit(0xF0);                                      // BEQ → done (stack empty)
+        let beq_done = self.code.len(); self.emit(0x00);
+        self.patch_bxx(bne_not_empty, self.current_addr());  // not_empty:
+
+        // 5. Pop (x_lo, x_hi, y) → plot_zp+0,+1,+2
+        let pop_triplet_jsr = self.code.len();
+        self.emit(0x20); self.emit(0x00); self.emit(0x00);   // JSR pop_triplet (patched later)
+
+        // 6. Test pixel: if already set, skip fill and loop
+        let check_pixel_jsr_2 = self.code.len();
+        self.emit(0x20); self.emit(0x00); self.emit(0x00);   // JSR check_pixel (patched later)
+        self.emit(0xD0);                                      // BNE → skip_fill (pixel set)
+        let bne_skip_fill = self.code.len(); self.emit(0x00);
+
+        // 7. Set the pixel
+        self.emit(0x20); self.emit(plot_addr as u8); self.emit((plot_addr >> 8) as u8); // JSR plot_helper
+
+        // 8. Push up: y-1  (if y > 0)
+        self.emit(0xA5); self.emit(zp + 2);  // LDA y
+        self.emit(0xF0);                      // BEQ → skip_up
+        let beq_skip_up = self.code.len(); self.emit(0x00);
+        self.emit(0xC6); self.emit(zp + 2);  // DEC y
+        let pic_up_jsr = self.code.len();
+        self.emit(0x20); self.emit(0x00); self.emit(0x00);   // JSR push_if_clear (patched later)
+        self.emit(0xE6); self.emit(zp + 2);  // INC y  (restore)
+        self.patch_bxx(beq_skip_up, self.current_addr());    // skip_up:
+
+        // 9. Push down: y+1  (if y < 199)
+        self.emit(0xA5); self.emit(zp + 2);  // LDA y
+        self.emit(0xC9); self.emit(199u8);    // CMP #199
+        self.emit(0xB0);                      // BCS → skip_down
+        let bcs_skip_down = self.code.len(); self.emit(0x00);
+        self.emit(0xE6); self.emit(zp + 2);  // INC y
+        let pic_down_jsr = self.code.len();
+        self.emit(0x20); self.emit(0x00); self.emit(0x00);   // JSR push_if_clear (patched later)
+        self.emit(0xC6); self.emit(zp + 2);  // DEC y  (restore)
+        self.patch_bxx(bcs_skip_down, self.current_addr());  // skip_down:
+
+        // 10. Push left: x-1  (if x > 0)
+        self.emit(0xA5); self.emit(zp + 0);  // LDA x_lo
+        self.emit(0x05); self.emit(zp + 1);  // ORA x_hi  → non-zero means x != 0
+        self.emit(0xF0);                      // BEQ → skip_left
+        let beq_skip_left = self.code.len(); self.emit(0x00);
+        // Decrement 16-bit x
+        self.emit(0xA5); self.emit(zp + 0);  // LDA x_lo
+        self.emit(0xD0);                      // BNE → dec_lo_left
+        let bne_dec_lo = self.code.len(); self.emit(0x00);
+        self.emit(0xC6); self.emit(zp + 1);  // DEC x_hi  (borrow)
+        self.patch_bxx(bne_dec_lo, self.current_addr());     // dec_lo_left:
+        self.emit(0xC6); self.emit(zp + 0);  // DEC x_lo
+        let pic_left_jsr = self.code.len();
+        self.emit(0x20); self.emit(0x00); self.emit(0x00);   // JSR push_if_clear (patched later)
+        // Restore: increment 16-bit x
+        self.emit(0xE6); self.emit(zp + 0);  // INC x_lo
+        self.emit(0xD0);                      // BNE → no_inc_hi
+        let bne_no_inc_hi = self.code.len(); self.emit(0x00);
+        self.emit(0xE6); self.emit(zp + 1);  // INC x_hi  (carry)
+        self.patch_bxx(bne_no_inc_hi, self.current_addr());  // no_inc_hi:
+        self.patch_bxx(beq_skip_left, self.current_addr());  // skip_left:
+
+        // 11. Push right: x+1  (if x <= 318, i.e., incremented x <= 319)
+        self.emit(0xE6); self.emit(zp + 0);  // INC x_lo
+        self.emit(0xD0);                      // BNE → no_carry_right
+        let bne_no_carry_right = self.code.len(); self.emit(0x00);
+        self.emit(0xE6); self.emit(zp + 1);  // INC x_hi  (carry)
+        self.patch_bxx(bne_no_carry_right, self.current_addr()); // no_carry_right:
+        // Check x <= 319: x_hi==0 → always ok; x_hi==1 and x_lo < 64 → ok; else skip
+        self.emit(0xA5); self.emit(zp + 1);  // LDA x_hi
+        self.emit(0xF0);                      // BEQ → in_range_right (x_hi==0, x<256)
+        let beq_in_range_right = self.code.len(); self.emit(0x00);
+        self.emit(0xC9); self.emit(0x01);     // CMP #1
+        self.emit(0xD0);                      // BNE → skip_right (x_hi >= 2)
+        let bne_skip_right = self.code.len(); self.emit(0x00);
+        self.emit(0xA5); self.emit(zp + 0);  // LDA x_lo
+        self.emit(0xC9); self.emit(0x40);     // CMP #$40 (64)  x >= 320 if hi==1 && lo>=64
+        self.emit(0xB0);                      // BCS → skip_right
+        let bcs_skip_right = self.code.len(); self.emit(0x00);
+        self.patch_bxx(beq_in_range_right, self.current_addr()); // in_range_right:
+        let pic_right_jsr = self.code.len();
+        self.emit(0x20); self.emit(0x00); self.emit(0x00);   // JSR push_if_clear (patched later)
+        self.patch_bxx(bne_skip_right, self.current_addr());  // skip_right:
+        self.patch_bxx(bcs_skip_right, self.current_addr());
+        // Restore: decrement 16-bit x
+        self.emit(0xA5); self.emit(zp + 0);  // LDA x_lo
+        self.emit(0xD0);                      // BNE → no_dec_hi_right
+        let bne_no_dec_hi_right = self.code.len(); self.emit(0x00);
+        self.emit(0xC6); self.emit(zp + 1);  // DEC x_hi
+        self.patch_bxx(bne_no_dec_hi_right, self.current_addr()); // no_dec_hi_right:
+        self.emit(0xC6); self.emit(zp + 0);  // DEC x_lo
+
+        // skip_fill / end of fill body: JMP fill_loop  (both the normal path and skip-pixel path converge here)
+        self.patch_bxx(bne_skip_fill, self.current_addr());  // BNE skip_fill lands here
+        self.emit(0x4C);
+        self.emit(fill_loop_addr as u8); self.emit((fill_loop_addr >> 8) as u8); // JMP fill_loop
+
+        // done:
+        let done_addr = self.current_addr();
+        self.patch_bxx(bne_to_done_1, done_addr); // initial pixel-set branch
+        self.patch_bxx(beq_done, done_addr);       // empty-stack branch
+        self.emit(0x60);                           // RTS
+
+        // ── check_pixel ──────────────────────────────────────────────────────
+        // Same address computation as emit_plot_helper, but final step is
+        //   LDA (ptr),Y / AND mask  →  returns A non-zero if pixel set, zero if clear.
+        let check_pixel_addr = self.current_addr();
+
+        self.emit(0xA5); self.emit(zp + 2);              // LDA Y
+        self.emit(0x4A); self.emit(0x4A); self.emit(0x4A); // LSR×3 → b = Y>>3
+        self.emit(0x85); self.emit(zp + 3);              // STA b
+
+        self.emit(0x0A); self.emit(0x0A); self.emit(0x0A); // ASL×6 → b*64 (lo byte)
+        self.emit(0x0A); self.emit(0x0A); self.emit(0x0A);
+        self.emit(0x85); self.emit(zp + 4);              // STA ptr_lo
+
+        self.emit(0xA5); self.emit(zp + 3);              // LDA b
+        self.emit(0x4A); self.emit(0x4A);                // LSR×2 → b>>2
+        self.emit(0x18);                                  // CLC
+        self.emit(0x65); self.emit(zp + 3);              // ADC b
+        self.emit(0x69); self.emit(0x20);                // ADC #$20
+        self.emit(0x85); self.emit(zp + 5);              // STA ptr_hi
+
+        self.emit(0xA5); self.emit(zp + 0);              // LDA x_lo
+        self.emit(0x29); self.emit(0xF8);                // AND #$F8
+        self.emit(0x18);                                  // CLC
+        self.emit(0x65); self.emit(zp + 4);              // ADC ptr_lo
+        self.emit(0x85); self.emit(zp + 4);              // STA ptr_lo
+        self.emit(0x90);                                  // BCC skip_inc1
+        let bcc1 = self.code.len(); self.emit(0x00);
+        self.emit(0xE6); self.emit(zp + 5);              // INC ptr_hi
+        self.patch_bxx(bcc1, self.current_addr());        // skip_inc1:
+
+        self.emit(0xA5); self.emit(zp + 1);              // LDA x_hi
+        self.emit(0xF0);                                  // BEQ skip_xhi
+        let beq_xhi = self.code.len(); self.emit(0x00);
+        self.emit(0xE6); self.emit(zp + 5);              // INC ptr_hi
+        self.patch_bxx(beq_xhi, self.current_addr());    // skip_xhi:
+
+        self.emit(0xA5); self.emit(zp + 2);              // LDA Y
+        self.emit(0x29); self.emit(0x07);                // AND #$07
+        self.emit(0x18);                                  // CLC
+        self.emit(0x65); self.emit(zp + 4);              // ADC ptr_lo
+        self.emit(0x85); self.emit(zp + 4);              // STA ptr_lo
+        self.emit(0x90);                                  // BCC skip_inc2
+        let bcc2 = self.code.len(); self.emit(0x00);
+        self.emit(0xE6); self.emit(zp + 5);              // INC ptr_hi
+        self.patch_bxx(bcc2, self.current_addr());        // skip_inc2:
+
+        // bit mask = $80 >> (x_lo & 7)
+        self.emit(0xA5); self.emit(zp + 0);              // LDA x_lo
+        self.emit(0x29); self.emit(0x07);                // AND #$07
+        self.emit(0xAA);                                  // TAX  (shift count)
+        self.emit(0xA9); self.emit(0x80);                // LDA #$80
+        self.emit(0xE0); self.emit(0x00);                // CPX #0
+        self.emit(0xF0);                                  // BEQ done_mask
+        let beq_mask = self.code.len(); self.emit(0x00);
+        let shift_top = self.current_addr();
+        self.emit(0x4A);                                  // LSR
+        self.emit(0xCA);                                  // DEX
+        self.emit(0xD0);                                  // BNE shift_top
+        let bne_shift = self.code.len(); self.emit(0x00);
+        self.patch_bxx(bne_shift, shift_top);
+        self.patch_bxx(beq_mask, self.current_addr());   // done_mask:
+
+        self.emit(0x85); self.emit(zp + 3);              // STA mask  (reuse b slot)
+        self.emit(0xA0); self.emit(0x00);                // LDY #0
+        self.emit(0xB1); self.emit(zp + 4);              // LDA (ptr_lo),Y
+        self.emit(0x25); self.emit(zp + 3);              // AND mask  → non-zero if pixel set
+        self.emit(0x60);                                  // RTS
+
+        // ── push_if_clear ─────────────────────────────────────────────────────
+        let push_if_clear_addr = self.current_addr();
+        let check_pixel_jsr_3 = self.code.len();
+        self.emit(0x20); self.emit(0x00); self.emit(0x00);  // JSR check_pixel (patched later)
+        self.emit(0xD0);                                     // BNE → skip_push (pixel set)
+        let bne_skip_push = self.code.len(); self.emit(0x00);
+        let push_triplet_jsr_2 = self.code.len();
+        self.emit(0x20); self.emit(0x00); self.emit(0x00);  // JSR push_triplet (patched later)
+        self.patch_bxx(bne_skip_push, self.current_addr()); // skip_push:
+        self.emit(0x60);                                     // RTS
+
+        // ── push_triplet ──────────────────────────────────────────────────────
+        // Store (x_lo, x_hi, y) at (paint_zp),Y=0..2, then advance paint_zp by 3.
+        let push_triplet_addr = self.current_addr();
+        self.emit(0xA0); self.emit(0x00);                // LDY #0
+        self.emit(0xA5); self.emit(zp + 0);             // LDA x_lo
+        self.emit(0x91); self.emit(paint_zp);            // STA (stk_head),Y
+        self.emit(0xC8);                                  // INY
+        self.emit(0xA5); self.emit(zp + 1);             // LDA x_hi
+        self.emit(0x91); self.emit(paint_zp);            // STA (stk_head),Y
+        self.emit(0xC8);                                  // INY
+        self.emit(0xA5); self.emit(zp + 2);             // LDA y
+        self.emit(0x91); self.emit(paint_zp);            // STA (stk_head),Y
+        // stk_head += 3
+        self.emit(0x18);                                  // CLC
+        self.emit(0xA5); self.emit(paint_zp);            // LDA stk_head_lo
+        self.emit(0x69); self.emit(0x03);                // ADC #3
+        self.emit(0x85); self.emit(paint_zp);            // STA stk_head_lo
+        self.emit(0x90);                                  // BCC no_carry_push
+        let bcc_push = self.code.len(); self.emit(0x00);
+        self.emit(0xE6); self.emit(paint_zp + 1);        // INC stk_head_hi
+        self.patch_bxx(bcc_push, self.current_addr());   // no_carry_push:
+        self.emit(0x60);                                  // RTS
+
+        // ── pop_triplet ───────────────────────────────────────────────────────
+        // stk_head -= 3, then load (x_lo, x_hi, y) from (paint_zp),Y=0..2.
+        let pop_triplet_addr = self.current_addr();
+        self.emit(0x38);                                  // SEC
+        self.emit(0xA5); self.emit(paint_zp);            // LDA stk_head_lo
+        self.emit(0xE9); self.emit(0x03);                // SBC #3
+        self.emit(0x85); self.emit(paint_zp);            // STA stk_head_lo
+        self.emit(0xB0);                                  // BCS no_borrow_pop
+        let bcs_pop = self.code.len(); self.emit(0x00);
+        self.emit(0xC6); self.emit(paint_zp + 1);        // DEC stk_head_hi
+        self.patch_bxx(bcs_pop, self.current_addr());    // no_borrow_pop:
+        self.emit(0xA0); self.emit(0x00);                // LDY #0
+        self.emit(0xB1); self.emit(paint_zp);            // LDA (stk_head),Y
+        self.emit(0x85); self.emit(zp + 0);             // STA x_lo
+        self.emit(0xC8);                                  // INY
+        self.emit(0xB1); self.emit(paint_zp);            // LDA (stk_head),Y
+        self.emit(0x85); self.emit(zp + 1);             // STA x_hi
+        self.emit(0xC8);                                  // INY
+        self.emit(0xB1); self.emit(paint_zp);            // LDA (stk_head),Y
+        self.emit(0x85); self.emit(zp + 2);             // STA y
+        self.emit(0x60);                                  // RTS
+
+        // ── Patch all internal JSR addresses ──────────────────────────────────
+        // JSR check_pixel (occurrences 1, 2, 3)
+        for &pos in &[check_pixel_jsr_1, check_pixel_jsr_2, check_pixel_jsr_3] {
+            self.code[pos + 1] = check_pixel_addr as u8;
+            self.code[pos + 2] = (check_pixel_addr >> 8) as u8;
+        }
+        // JSR push_triplet (occurrences 1, 2)
+        for &pos in &[push_triplet_jsr_1, push_triplet_jsr_2] {
+            self.code[pos + 1] = push_triplet_addr as u8;
+            self.code[pos + 2] = (push_triplet_addr >> 8) as u8;
+        }
+        // JSR pop_triplet
+        self.code[pop_triplet_jsr + 1] = pop_triplet_addr as u8;
+        self.code[pop_triplet_jsr + 2] = (pop_triplet_addr >> 8) as u8;
+        // JSR push_if_clear (up, down, left, right)
+        for &pos in &[pic_up_jsr, pic_down_jsr, pic_left_jsr, pic_right_jsr] {
+            self.code[pos + 1] = push_if_clear_addr as u8;
+            self.code[pos + 2] = (push_if_clear_addr >> 8) as u8;
+        }
     }
 
     // Emit helper function for 4×4 block pixel SET.
@@ -4999,6 +5360,18 @@ impl Codegen {
                     self.plot_xor_patches.push(patch);
                 }
             }
+            Stmt::Paint(x_expr, y_expr) => {
+                // Flood fill from (x, y) — uses plot ZP block + separate paint ZP + stack
+                if let Some(zp) = self.plot_zp {
+                    let x = x_expr.clone(); let y = y_expr.clone();
+                    // ZP layout reuses plot_zp+0=X_lo, zp+1=X_hi, zp+2=Y
+                    self.emit_store_expr_u8(&y, zp + 2);
+                    self.emit_store_expr_u16(&x, zp);
+                    self.emit(0x20); // JSR paint_helper
+                    let patch = self.code.len(); self.emit16(0x0000);
+                    self.paint_patches.push(patch);
+                }
+            }
             Stmt::Plot4(x_expr, y_expr) => {
                 // Set a 4×4 block pixel — helper uses safe fixed high-ZP scratch.
                 if self.plot4_zp.is_some() {
@@ -5392,6 +5765,18 @@ impl Codegen {
             for &pos in &self.plot4_erase_patches.clone() {
                 self.code[pos]     = addr as u8;
                 self.code[pos + 1] = (addr >> 8) as u8;
+            }
+        }
+
+        // Emit paint flood-fill helper — depends on plot_helper already being emitted.
+        if !self.paint_patches.is_empty() {
+            if let Some(plot_addr) = plot_helper_addr {
+                let paint_addr = self.current_addr();
+                self.emit_paint_helper(plot_addr);
+                for &pos in &self.paint_patches.clone() {
+                    self.code[pos]     = paint_addr as u8;
+                    self.code[pos + 1] = (paint_addr >> 8) as u8;
+                }
             }
         }
 
