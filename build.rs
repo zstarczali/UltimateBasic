@@ -1,79 +1,105 @@
-// build.rs – generates assets/icon.ico
+// build.rs – combines assets/ultimate_basic_*.ico → assets/icon.ico + sets Windows file properties
 use std::fs;
 
 fn main() {
-    let _ = fs::create_dir_all("assets");
-    let ico = make_ico();
-    fs::write("assets/icon.ico", &ico).expect("Failed to write icon.ico");
+    let sizes = [16u32, 32, 48, 64, 128, 256, 512];
+    let paths: Vec<String> = sizes
+        .iter()
+        .map(|s| format!("assets/ultimate_basic_{s}.ico"))
+        .collect();
+    let path_refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
+
+    let combined = combine_icos(&path_refs);
+    assert!(!combined.is_empty(), "No icon files found in assets/");
+    fs::write("assets/icon.ico", &combined).expect("Failed to write combined icon.ico");
+
+    // Re-run if any source icon changes
+    for p in &paths {
+        println!("cargo:rerun-if-changed={p}");
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut res = winresource::WindowsResource::new();
+        res.set("FileDescription", "Ultimate Basic – C64/C64 Ultimate BASIC compiler");
+        res.set("ProductName",     "Ultimate Basic");
+        res.set("CompanyName",     "Zsolt Tarczali");
+        res.set("LegalCopyright",  "Copyright \u{00A9} 2026 Zsolt Tarczali");
+        res.set("FileVersion",     env!("CARGO_PKG_VERSION"));
+        res.set("ProductVersion",  env!("CARGO_PKG_VERSION"));
+        res.set_icon("assets/icon.ico");
+        res.compile().expect("Failed to compile Windows resources");
+    }
 }
 
-fn make_ico() -> Vec<u8> {
-    let w: u32 = 32;
-    let h: u32 = 32;
-    let bpp: u16 = 32;
-    // Image data: BITMAPINFOHEADER(40) + pixels(w*h*4)
-    let img_size: u32 = 40 + w * h * 4;
-    let total_size: u32 = 6 + 16 + img_size;
-
-    let mut b = Vec::with_capacity(total_size as usize);
-
-    // ICO header
-    b.extend_from_slice(&[0, 0, 1, 0, 1, 0]);
-
-    // Entry
-    b.push(w as u8);
-    b.push(h as u8);
-    b.push(0); b.push(0); // colors, reserved
-    b.extend_from_slice(&1u16.to_le_bytes());  // planes
-    b.extend_from_slice(&bpp.to_le_bytes());   // bpp
-    b.extend_from_slice(&img_size.to_le_bytes());
-    b.extend_from_slice(&22u32.to_le_bytes()); // offset
-
-    // BITMAPINFOHEADER
-    b.extend_from_slice(&40u32.to_le_bytes());    // hdr size
-    b.extend_from_slice(&(w as i32).to_le_bytes()); // width
-    b.extend_from_slice(&((h * 2) as i32).to_le_bytes()); // height (2x for ICO)
-    b.extend_from_slice(&1u16.to_le_bytes());     // planes
-    b.extend_from_slice(&bpp.to_le_bytes());      // bpp
-    b.extend_from_slice(&0u32.to_le_bytes());     // compression
-    b.extend_from_slice(&(w * h * 4).to_le_bytes()); // image size
-    b.extend_from_slice(&0i32.to_le_bytes());     // x ppm
-    b.extend_from_slice(&0i32.to_le_bytes());     // y ppm
-    b.extend_from_slice(&0u32.to_le_bytes());     // colors used
-    b.extend_from_slice(&0u32.to_le_bytes());     // colors important
-
-    // Pixels: dark bg (#1a1a2e) with cyan "UB" in top-left
-    let bg: [u8; 4] = [0x2e, 0x1a, 0x1a, 0xff]; // BGRA
-    let fg: [u8; 4] = [0xa0, 0xc8, 0x00, 0xff]; // BGRA cyan
-
-    // Simple "U" shape bitmap (32x32)
-    let letter = [
-        // U (columns 2-6, rows 3-12)
-        (2,3,2,12), (3,3,3,11), (4,3,4,11), (5,3,5,11), (6,3,6,12),
-        // B (columns 8-13, rows 3-12)
-        (8,3,8,12), (9,3,9,12), (10,3,10,12), (11,3,11,7), (12,3,12,7), (13,3,13,6),
-        (11,8,11,12), (12,8,12,12), (13,7,13,12),
-    ];
-
-    let mut pixels = vec![bg; (w * h) as usize];
-    for &(x1, y1, x2, y2) in &letter {
-        for x in x1..=x2 {
-            for y in y1..=y2 {
-                let idx = y as usize * w as usize + x as usize;
-                if idx < pixels.len() {
-                    pixels[idx] = fg;
-                }
-            }
-        }
+/// Reads multiple single-size .ico files and combines them into one multi-resolution .ico.
+fn combine_icos(paths: &[&str]) -> Vec<u8> {
+    struct Entry {
+        width: u8,
+        height: u8,
+        color_count: u8,
+        planes: u16,
+        bit_count: u16,
+        data: Vec<u8>,
     }
 
-    // Write top-down (ICO stores bottom-up for BMP DIB)
-    for y in (0..h).rev() {
-        for x in 0..w {
-            let px = pixels[(y * w + x) as usize];
-            b.extend_from_slice(&px);
+    let mut entries: Vec<Entry> = Vec::new();
+
+    for path in paths {
+        let raw = match fs::read(path) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        if raw.len() < 22 {
+            continue;
         }
+        // ICO directory entry starts at byte 6
+        let e = &raw[6..22];
+        let data_size   = u32::from_le_bytes([e[8],  e[9],  e[10], e[11]]) as usize;
+        let data_offset = u32::from_le_bytes([e[12], e[13], e[14], e[15]]) as usize;
+        if data_offset + data_size > raw.len() {
+            continue;
+        }
+        entries.push(Entry {
+            width:       e[0],
+            height:      e[1],
+            color_count: e[2],
+            planes:      u16::from_le_bytes([e[4], e[5]]),
+            bit_count:   u16::from_le_bytes([e[6], e[7]]),
+            data:        raw[data_offset..data_offset + data_size].to_vec(),
+        });
     }
 
-    b
+    if entries.is_empty() {
+        return vec![];
+    }
+
+    let n = entries.len();
+    let dir_offset = 6 + n * 16; // header(6) + n × dir_entry(16)
+    let mut ico: Vec<u8> = Vec::new();
+
+    // ICO file header
+    ico.extend_from_slice(&[0, 0, 1, 0]);          // reserved, type=1
+    ico.extend_from_slice(&(n as u16).to_le_bytes()); // image count
+
+    // Directory entries
+    let mut img_offset = dir_offset as u32;
+    for e in &entries {
+        ico.push(e.width);
+        ico.push(e.height);
+        ico.push(e.color_count);
+        ico.push(0); // reserved
+        ico.extend_from_slice(&e.planes.to_le_bytes());
+        ico.extend_from_slice(&e.bit_count.to_le_bytes());
+        ico.extend_from_slice(&(e.data.len() as u32).to_le_bytes());
+        ico.extend_from_slice(&img_offset.to_le_bytes());
+        img_offset += e.data.len() as u32;
+    }
+
+    // Image data blocks
+    for e in &entries {
+        ico.extend_from_slice(&e.data);
+    }
+
+    ico
 }

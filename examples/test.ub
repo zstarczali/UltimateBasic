@@ -41,4 +41,4 @@ print "viszlat, " + name
 print
 
 label tenprint
-print chr$(205.5+rnd(1)) : goto tenprint
+print chr$(205.5+rnd(2)); : goto tenprint
