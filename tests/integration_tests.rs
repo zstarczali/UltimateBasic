@@ -1,7 +1,7 @@
 // Integration tests for Ultimate Basic compiler.
 // Tests compile entire programs and verify PRG output.
 
-use ultimate_basic::compiler::{compile, CompileOptions};
+use ultimate_basic::compiler::{compile, compile_with_path, CompileOptions};
 
 fn compile_stub(src: &str) -> Vec<u8> {
     compile(src, &CompileOptions { basic_stub: true }).prg
@@ -377,10 +377,8 @@ fn print_variable() {
 
 #[test]
 fn addition_expr() {
-    let prg = compile_raw("var x = 3 + 4");
-    // LDA #3, STA tmp, LDA #4, CLC, ADC tmp, STA zp, RTS
-    assert!(prg.len() > 12);
-    // Check for CLC ($18) and ADC zp ($65)
+    // Use a variable so the addition isn't folded at compile time
+    let prg = compile_raw("var a = 3\nvar x = a + 4");
     let bytes = &prg[2..];
     assert!(bytes.contains(&0x18)); // CLC
     assert!(bytes.contains(&0x65)); // ADC zp
@@ -388,7 +386,7 @@ fn addition_expr() {
 
 #[test]
 fn subtraction_expr() {
-    let prg = compile_raw("var x = 10 - 3");
+    let prg = compile_raw("var a = 10\nvar x = a - 3");
     let bytes = &prg[2..];
     assert!(bytes.contains(&0x38)); // SEC
     assert!(bytes.contains(&0xE5)); // SBC zp
@@ -396,8 +394,7 @@ fn subtraction_expr() {
 
 #[test]
 fn multiplication_expr() {
-    let prg = compile_raw("var x = 3 * 4");
-    // Should contain multiply loop with DEC and BNE
+    let prg = compile_raw("var a = 3\nvar x = a * 4");
     let bytes = &prg[2..];
     assert!(bytes.contains(&0xC6)); // DEC zp
     assert!(bytes.contains(&0xD0)); // BNE
@@ -405,7 +402,7 @@ fn multiplication_expr() {
 
 #[test]
 fn division_expr() {
-    let prg = compile_raw("var x = 8 / 2");
+    let prg = compile_raw("var a = 8\nvar x = a / 2");
     let bytes = &prg[2..];
     assert!(bytes.contains(&0xE6)); // INC zp (quotient)
 }
@@ -460,16 +457,16 @@ fn noteq_comparison() {
 
 #[test]
 fn and_operator() {
-    // Bitwise AND: color and 15  → 6502 AND opcode ($25 for ZP, $29 for imm)
-    let prg = compile_raw("var r = 12 and 15");
+    // Bitwise AND: use a variable so it isn't folded
+    let prg = compile_raw("var a = 12\nvar r = a and 15");
     let bytes = &prg[2..];
     assert!(bytes.contains(&0x25) || bytes.contains(&0x29)); // AND zp / AND #imm
 }
 
 #[test]
 fn or_operator() {
-    // Bitwise OR: 6502 ORA opcode ($05 for ZP)
-    let prg = compile_raw("var r = 0 or 1");
+    // Bitwise OR: use a variable so it isn't folded
+    let prg = compile_raw("var a = 0\nvar r = a or 1");
     let bytes = &prg[2..];
     assert!(bytes.contains(&0x05) || bytes.contains(&0x09)); // ORA zp / ORA #imm
 }
@@ -1500,7 +1497,7 @@ fn poke_emits_sta_abs() {
 
 #[test]
 fn poke_with_expression_address() {
-    let prg = compile_raw("var off = 10\npoke $0400 + off, 42");
+    let prg = compile_raw("var idx = 10\npoke $0400 + idx, 42");
     let bytes = &prg[2..];
     // Should contain STA (ptr),Y = $91
     assert!(bytes.contains(&0x91), "Should emit STA (ptr),Y for expression address");
@@ -1640,9 +1637,9 @@ print \"X=\", x
 fn poke_expression_address_compiles() {
     let src = "
 const SCREEN = $0400
-var off = 0
+var idx = 0
 var c = 1
-poke SCREEN + off, c
+poke SCREEN + idx, c
 ";
     let res = compile(src, &CompileOptions { basic_stub: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
@@ -1763,11 +1760,13 @@ fn rem_comment_ignored() {
 }
 
 #[test]
-fn semicolon_comment_ignored() {
-    let src = "var x = 7 ; inline comment";
+fn semicolon_as_separator() {
+    // ';' is a statement separator, like ':'
+    let src = "var x = 1 ; var y = 2";
     let res = compile(src, &CompileOptions { basic_stub: false });
     assert!(res.errors.is_empty());
-    assert!(res.prg.windows(2).any(|w| w == [0xA9, 7u8]));
+    assert!(res.prg.windows(2).any(|w| w == [0xA9, 1u8]));
+    assert!(res.prg.windows(2).any(|w| w == [0xA9, 2u8]));
 }
 
 // ── incbin ───────────────────────────────────────────────────────────────────
@@ -1784,7 +1783,204 @@ fn incbin_embeds_bytes() {
         "incbin bytes should appear in output");
 }
 
-// ── data / read ───────────────────────────────────────────────────────────────
+// ── load sid ─────────────────────────────────────────────────────────────────
+
+/// Build a minimal PSID v1 file (118-byte header + music data).
+fn make_fake_psid(load_addr: u16, init_addr: u16, play_addr: u16, music: &[u8]) -> Vec<u8> {
+    let mut hdr = vec![0u8; 0x76]; // 118-byte header (PSID v1)
+    hdr[0x00] = b'P'; hdr[0x01] = b'S'; hdr[0x02] = b'I'; hdr[0x03] = b'D';
+    hdr[0x04] = 0x00; hdr[0x05] = 0x01; // version 1
+    hdr[0x06] = 0x00; hdr[0x07] = 0x76; // data_offset = $76
+    // Header addresses are big-endian
+    hdr[0x08] = (load_addr >> 8) as u8; hdr[0x09] = load_addr as u8;
+    hdr[0x0A] = (init_addr >> 8) as u8; hdr[0x0B] = init_addr as u8;
+    hdr[0x0C] = (play_addr >> 8) as u8; hdr[0x0D] = play_addr as u8;
+    hdr.extend_from_slice(music);
+    hdr
+}
+
+#[test]
+fn load_sid_embeds_music_at_load_addr() {
+    let sid_path = "test_load_sid_tmp.sid";
+    let music = vec![0xA9u8, 0x07, 0x8D, 0x20, 0xD0, 0x60]; // LDA #7; STA $D020; RTS
+    let sid_bytes = make_fake_psid(0x1000, 0x1000, 0x1006, &music);
+    std::fs::write(sid_path, &sid_bytes).unwrap();
+
+    let src = format!("load sid \"{}\"\n", sid_path);
+    let opts = CompileOptions { basic_stub: false };
+    let res = compile_with_path(&src, &opts, Some(std::path::Path::new(sid_path)));
+    std::fs::remove_file(sid_path).ok();
+
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    assert!(res.prg.windows(music.len()).any(|w| w == music.as_slice()),
+        "SID music bytes should be embedded in the output");
+}
+
+#[test]
+fn load_sid_injects_constants() {
+    // sid_init / sid_play are usable as compile-time constants after load sid.
+    let sid_path = "test_load_sid_const_tmp.sid";
+    let music = vec![0xEAu8]; // NOP
+    let sid_bytes = make_fake_psid(0x1000, 0x1000, 0x1006, &music);
+    std::fs::write(sid_path, &sid_bytes).unwrap();
+
+    // sys sid_init should compile (resolves to JSR $1000)
+    let src = format!("load sid \"{}\"\nsys sid_init\n", sid_path);
+    let opts = CompileOptions { basic_stub: false };
+    let res = compile_with_path(&src, &opts, Some(std::path::Path::new(sid_path)));
+    std::fs::remove_file(sid_path).ok();
+
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    // JSR $1000 = $20, $00, $10
+    assert!(res.prg.windows(3).any(|w| w == [0x20, 0x00, 0x10]),
+        "sys sid_init should emit JSR $1000");
+}
+
+#[test]
+fn load_sid_invalid_file_reports_error() {
+    let sid_path = "test_load_sid_bad_tmp.bin";
+    std::fs::write(sid_path, b"NOT A SID FILE AT ALL").unwrap();
+    let src = format!("load sid \"{}\"", sid_path);
+    let opts = CompileOptions { basic_stub: false };
+    let res = compile_with_path(&src, &opts, Some(std::path::Path::new(sid_path)));
+    std::fs::remove_file(sid_path).ok();
+    assert!(!res.errors.is_empty(), "Should report an error for an invalid SID file");
+}
+
+#[test]
+fn load_sid_missing_file_reports_error() {
+    let src = "load sid \"nonexistent_totally_fake.sid\"";
+    let res = compile(src, &CompileOptions { basic_stub: false });
+    assert!(!res.errors.is_empty(), "Should report an error for a missing SID file");
+}
+
+#[test]
+fn load_sid_override_addr_places_data_at_specified_address() {
+    let sid_path = "test_load_sid_override_tmp.sid";
+    let music = vec![0xA9u8, 0x0F, 0x8D, 0x18, 0xD4, 0x60]; // LDA #$0F; STA $D418; RTS
+    let sid_bytes = make_fake_psid(0x1000, 0x1000, 0x1006, &music);
+    std::fs::write(sid_path, &sid_bytes).unwrap();
+
+    // Override: put music at $2000 instead of $1000
+    let src = format!("load sid \"{}\", $2000\n", sid_path);
+    let opts = CompileOptions { basic_stub: false };
+    let res = compile_with_path(&src, &opts, Some(std::path::Path::new(sid_path)));
+    std::fs::remove_file(sid_path).ok();
+
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    // Music bytes must appear somewhere in the output
+    assert!(res.prg.windows(music.len()).any(|w| w == music.as_slice()),
+        "SID music bytes should be embedded in the output");
+    // The load address override means the PRG must be large enough to reach $2000
+    // (PRG starts at $0801, so offset to $2000 is $1800 - 2 = $17FE bytes minimum incl. header)
+    assert!(res.prg.len() >= 0x17FF, "PRG must extend to $2000");
+}
+
+#[test]
+fn print_at_positions_cursor_then_prints() {
+    let src = "print at 10, 5, \"HI\"";
+    let res = compile(src, &CompileOptions { basic_stub: false });
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    // Must call KERNAL PLOT: JSR $FFF0 = $20 $F0 $FF
+    assert!(res.prg.windows(3).any(|w| w == [0x20, 0xF0, 0xFF]),
+        "print at should emit JSR $FFF0 (KERNAL PLOT)");
+    // SEC = $38 must appear before the JSR $FFF0
+    let plot_pos = res.prg.windows(3).position(|w| w == [0x20, 0xF0, 0xFF]).unwrap();
+    assert!(res.prg[..plot_pos].contains(&0x38), "print at should set carry (SEC) before PLOT");
+    // Must also call CHROUT: JSR $FFD2 = $20 $D2 $FF (for the string)
+    assert!(res.prg.windows(3).any(|w| w == [0x20, 0xD2, 0xFF]),
+        "print at should emit JSR $FFD2 (KERNAL CHROUT) for string output");
+}
+
+#[test]
+fn print_at_no_args_still_positions() {
+    let src = "print at 0, 0";
+    let res = compile(src, &CompileOptions { basic_stub: false });
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    assert!(res.prg.windows(3).any(|w| w == [0x20, 0xF0, 0xFF]),
+        "print at with no print args should still emit JSR $FFF0");
+}
+
+#[test]
+fn sid_volume_emits_sta_d418() {
+    let src = "sid volume 15";
+    let res = compile(src, &CompileOptions { basic_stub: false });
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    // LDA #15 = $A9 $0F; STA $D418 = $8D $18 $D4
+    assert!(res.prg.windows(2).any(|w| w == [0xA9, 0x0F]),
+        "sid volume 15 should emit LDA #$0F");
+    assert!(res.prg.windows(3).any(|w| w == [0x8D, 0x18, 0xD4]),
+        "sid volume should emit STA $D418");
+}
+
+#[test]
+fn sid_stop_zeros_all_registers() {
+    let src = "sid stop";
+    let res = compile(src, &CompileOptions { basic_stub: false });
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    // LDX #$18 = $A2 $18; LDA #$00 = $A9 $00; STA $D400,X = $9D $00 $D4; DEX=$CA; BPL=-6=$10 $FA
+    assert!(res.prg.windows(10).any(|w| w == [0xA2, 0x18, 0xA9, 0x00, 0x9D, 0x00, 0xD4, 0xCA, 0x10, 0xFA]),
+        "sid stop should emit zero-fill loop for $D400-$D418");
+}
+
+#[test]
+fn waitkey_polls_cia1_matrix() {
+    let src = "var k = waitkey()";
+    let res = compile(src, &CompileOptions { basic_stub: false });
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    // LDA #$00 = $A9 $00 — select all CIA1 rows
+    assert!(res.prg.windows(2).any(|w| w == [0xA9, 0x00]),
+        "waitkey should emit LDA #$00 to select CIA1 rows");
+    // STA $DC00 = $8D $00 $DC
+    assert!(res.prg.windows(3).any(|w| w == [0x8D, 0x00, 0xDC]),
+        "waitkey should emit STA $DC00");
+    // LDA $DC01 = $AD $01 $DC
+    assert!(res.prg.windows(3).any(|w| w == [0xAD, 0x01, 0xDC]),
+        "waitkey should emit LDA $DC01 in polling loop");
+    // CMP #$FF = $C9 $FF
+    assert!(res.prg.windows(2).any(|w| w == [0xC9, 0xFF]),
+        "waitkey should emit CMP #$FF");
+}
+
+#[test]
+fn irq_exit_emits_jmp_ea81() {
+    let src = "irq_exit";
+    let res = compile(src, &CompileOptions { basic_stub: false });
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    // irq_exit must emit JMP $EA81 = $4C $81 $EA
+    assert!(res.prg.windows(3).any(|w| w == [0x4C, 0x81, 0xEA]),
+        "irq_exit should emit JMP $EA81 ($4C $81 $EA)");
+    // Must NOT contain a JSR $EA81 ($20 $81 $EA) — that would corrupt the IRQ stack
+    assert!(!res.prg.windows(3).any(|w| w == [0x20, 0x81, 0xEA]),
+        "irq_exit must not emit JSR $EA81");
+}
+
+#[test]
+fn sys_with_arg_emits_lda_imm_then_jsr() {
+    let src = "sys $FFD2, 7";
+    let res = compile(src, &CompileOptions { basic_stub: false });
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    // LDA #7 = $A9 $07
+    assert!(res.prg.windows(2).any(|w| w == [0xA9, 0x07]),
+        "sys addr, val should emit LDA #val ($A9 $07)");
+    // JSR $FFD2 = $20 $D2 $FF
+    assert!(res.prg.windows(3).any(|w| w == [0x20, 0xD2, 0xFF]),
+        "sys addr, val should emit JSR addr ($20 $D2 $FF)");
+}
+
+#[test]
+fn sys_without_arg_emits_only_jsr() {
+    let src = "sys $FFD2";
+    let res = compile(src, &CompileOptions { basic_stub: false });
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    // JSR $FFD2 = $20 $D2 $FF
+    assert!(res.prg.windows(3).any(|w| w == [0x20, 0xD2, 0xFF]),
+        "sys addr should emit JSR addr");
+    // No LDA immediate before the JSR (no spurious LDA #n)
+    let pos = res.prg.windows(3).position(|w| w == [0x20, 0xD2, 0xFF]).unwrap();
+    assert!(pos == 0 || res.prg[pos - 2] != 0xA9,
+        "sys addr (no arg) should not emit LDA #n before JSR");
+}
 
 #[test]
 fn data_read_emits_indirect_lda() {
@@ -3341,4 +3537,290 @@ fn graphics_on_block_parser_sets_block_flag() {
 fn generated_program_starts_with_cld() {
     let prg = compile_raw("var x = 1\nx = x + 1");
     assert_eq!(prg[2], 0xD8, "generated machine code should begin with CLD");
+}
+
+// ── 16-bit / word auto-promotion ─────────────────────────────────────────────
+
+#[test]
+fn var_auto_promotes_to_word_when_gt255() {
+    // var b = 12345 should store as word (lo=$39, hi=$30)
+    let prg = compile_raw("var b = 12345");
+    let bytes = &prg[2..];
+    // LDA #0x39 (lo of 12345)
+    assert!(bytes.windows(2).any(|w| w == [0xA9, 0x39]), "should store lo byte 0x39 (12345 & 0xFF)");
+    // LDA #0x30 (hi of 12345 = 12345 >> 8 = 0x30)
+    assert!(bytes.windows(2).any(|w| w == [0xA9, 0x30]), "should store hi byte 0x30 (12345 >> 8)");
+}
+
+#[test]
+fn print_word_var_large_constant() {
+    // var b = 12345: should compile without error and emit print_decimal_word path
+    let prg = compile_raw("var b = 12345\nprint b");
+    let bytes = &prg[2..];
+    // Should contain the 16-bit digit-loop pattern (CMP #0x27 = hi of 10000)
+    assert!(bytes.windows(2).any(|w| w == [0xC9, 0x27]), "should emit 16-bit digit compare for 10000");
+}
+
+#[test]
+fn print_word_sum_with_int_var() {
+    // var a=122; var b=12345; print a+b  => 16-bit path
+    let prg = compile_raw("var a = 122\nvar b = 12345\nprint a+b");
+    let bytes = &prg[2..];
+    // 16-bit digit loop: CMP #0x27 (hi of 10000)
+    assert!(bytes.windows(2).any(|w| w == [0xC9, 0x27]), "should emit 16-bit digit compare for 10000");
+}
+
+// ── inc / dec statements ─────────────────────────────────────────────────────
+
+#[test]
+fn inc_emits_inc_zp() {
+    let prg = compile_raw("var x = 0\ninc x");
+    let bytes = &prg[2..];
+    // INC zp opcode is 0xE6
+    assert!(bytes.windows(1).any(|w| w == [0xE6]), "inc should emit INC zp (0xE6)");
+}
+
+#[test]
+fn dec_emits_dec_zp() {
+    let prg = compile_raw("var x = 5\ndec x");
+    let bytes = &prg[2..];
+    // DEC zp opcode is 0xC6
+    assert!(bytes.windows(1).any(|w| w == [0xC6]), "dec should emit DEC zp (0xC6)");
+}
+
+#[test]
+fn inc_word_emits_inc_bne_inc() {
+    // 16-bit inc: INC lo; BNE +2; INC hi  (bytes: 0xE6,zp, 0xD0,0x02, 0xE6,zp+1)
+    let prg = compile_raw("var x: word = 0\ninc x");
+    let bytes = &prg[2..];
+    // Look for 6-byte window: INC(0xE6), <zp_lo>, BNE(0xD0), 0x02, INC(0xE6), <zp_hi=zp_lo+1>
+    assert!(
+        bytes.windows(6).any(|w| w[0] == 0xE6 && w[2] == 0xD0 && w[3] == 0x02 && w[4] == 0xE6 && w[5] == w[1].wrapping_add(1)),
+        "16-bit inc: INC lo; BNE +2; INC hi — not found"
+    );
+}
+
+#[test]
+fn dec_word_emits_lda_bne_dec_dec() {
+    // 16-bit dec: LDA lo; BNE skip; DEC hi; DEC lo
+    let prg = compile_raw("var x: word = 5\ndec x");
+    let bytes = &prg[2..];
+    // Pattern: 0xA5 (LDA zp), <zp>, 0xD0 (BNE), 0x02, 0xC6 (DEC hi), <zp+1>
+    assert!(
+        bytes.windows(4).any(|w| w[0] == 0xD0 && w[1] == 0x02 && w[2] == 0xC6),
+        "16-bit dec: BNE +2; DEC hi — not found"
+    );
+}
+
+// ── compound assignments ─────────────────────────────────────────────────────
+
+#[test]
+fn plus_eq_assigns_sum() {
+    let prg = compile_raw("var x = 10\nx += 5");
+    let bytes = &prg[2..];
+    // x += 5 evaluates rhs (5) into A: LDA #5 = [0xA9, 0x05], then ADC zp
+    assert!(bytes.windows(2).any(|w| w == [0xA9, 0x05]), "+= 5 should load #5 into A");
+}
+
+#[test]
+fn minus_eq_assigns_diff() {
+    let prg = compile_raw("var x = 10\nx -= 3");
+    let bytes = &prg[2..];
+    // x -= 3 evaluates rhs (3) into A: LDA #3 = [0xA9, 0x03], then SBC tmp
+    assert!(bytes.windows(2).any(|w| w == [0xA9, 0x03]), "-= 3 should load #3 into A");
+}
+
+#[test]
+fn and_eq_assigns_masked() {
+    let prg = compile_raw("var x = 255\nx and= 15");
+    let bytes = &prg[2..];
+    // x and= 15: eval(x)→tmp, eval(15)→LDA #$0F, AND tmp (0x25)
+    assert!(bytes.windows(2).any(|w| w == [0xA9, 0x0F]), "and= 15 should load #$0F into A");
+    assert!(bytes.windows(1).any(|w| w == [0x25]), "and= should emit AND zp (0x25)");
+}
+
+#[test]
+fn or_eq_assigns_combined() {
+    let prg = compile_raw("var x = 0\nx or= 64");
+    let bytes = &prg[2..];
+    // x or= 64: eval(x)→tmp, eval(64)→LDA #$40, ORA tmp (0x05)
+    assert!(bytes.windows(2).any(|w| w == [0xA9, 0x40]), "or= 64 should load #$40 into A");
+    assert!(bytes.windows(1).any(|w| w == [0x05]), "or= should emit ORA zp (0x05)");
+}
+
+#[test]
+fn xor_eq_assigns_toggled() {
+    let prg = compile_raw("var x = 255\nx xor= 85");
+    let bytes = &prg[2..];
+    // x xor= 85: eval(x)→tmp, eval(85)→LDA #$55, EOR tmp (0x45)
+    assert!(bytes.windows(2).any(|w| w == [0xA9, 0x55]), "xor= 85 should load #$55 into A");
+    assert!(bytes.windows(1).any(|w| w == [0x45]), "xor= should emit EOR zp (0x45)");
+}
+
+// ── screen col, row, char ─────────────────────────────────────────────────────
+
+#[test]
+fn screen_constant_emits_sta_abs_screen_ram() {
+    // screen 0, 0, 65  → STA $0400 with A=65
+    let prg = compile_raw("screen 0, 0, 65");
+    let bytes = &prg[2..];
+    // STA $0400 = 0x8D 0x00 0x04; LDA #65 = 0xA9 0x41
+    assert!(bytes.windows(2).any(|w| w == [0xA9, 0x41]), "char 65 should emit LDA #$41");
+    assert!(bytes.windows(3).any(|w| w == [0x8D, 0x00, 0x04]), "should STA to $0400");
+}
+
+#[test]
+fn screen_with_color_emits_color_ram_store() {
+    // screen 0, 0, 65, 7  → STA $0400, STA $D800
+    let prg = compile_raw("screen 0, 0, 65, 7");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(3).any(|w| w == [0x8D, 0x00, 0x04]), "should STA char to $0400");
+    assert!(bytes.windows(3).any(|w| w == [0x8D, 0x00, 0xD8]), "should STA color to $D800");
+}
+
+#[test]
+fn screen_offset_row1_col2_correct_address() {
+    // screen 2, 1, 65  → offset = 1*40+2 = 42 → addr = $0400+42 = $042A
+    let prg = compile_raw("screen 2, 1, 65");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(3).any(|w| w == [0x8D, 0x2A, 0x04]), "row1 col2 should STA to $042A");
+}
+
+// ── spc(n) in print ──────────────────────────────────────────────────────────
+
+#[test]
+fn spc_emits_chrout_loop() {
+    // print spc(3) should emit a loop calling CHROUT
+    let prg = compile_raw("print spc(3)");
+    let bytes = &prg[2..];
+    // Should contain LDA #$20 (space = 0xA9 0x20) and JSR CHROUT (0x20 0xD2 0xFF)
+    assert!(bytes.windows(2).any(|w| w == [0xA9, 0x20]), "spc should load space char $20");
+    assert!(bytes.windows(3).any(|w| w == [0x20, 0xD2, 0xFF]), "spc should JSR $FFD2 (CHROUT)");
+}
+
+// ── tab(n) in print ──────────────────────────────────────────────────────────
+
+#[test]
+fn tab_emits_plot_calls() {
+    // print tab(10) should call KERNAL PLOT ($FFF0) twice
+    let prg = compile_raw("print tab(10)");
+    let bytes = &prg[2..];
+    // Should contain JSR $FFF0 (0x20 0xF0 0xFF) at least twice (read + write cursor)
+    let count = bytes.windows(3).filter(|w| *w == [0x20, 0xF0, 0xFF]).count();
+    assert!(count >= 2, "tab should call PLOT ($FFF0) twice; found {} times", count);
+}
+
+// ── rnd(n) ───────────────────────────────────────────────────────────────────
+
+#[test]
+fn rnd_n_compiles_ok() {
+    // rnd(10) should compile without error
+    let prg = compile_raw("var x = rnd(10)");
+    assert!(prg.len() > 2, "rnd(n) should produce code");
+}
+
+#[test]
+fn rnd_n_emits_lcg_and_mod() {
+    let prg = compile_raw("var x = rnd(10)");
+    let bytes = &prg[2..];
+    // LCG: seed*4 via ASL; 0x0A = ASL A
+    assert!(bytes.contains(&0x0A), "rnd(n) should emit ASL for LCG");
+    // Mod loop: SEC (0x38) + SBC zp (0xE5) pattern
+    assert!(bytes.contains(&0x38), "rnd(n) mod should emit SEC");
+    assert!(bytes.contains(&0xE5), "rnd(n) mod should emit SBC zp");
+}
+
+#[test]
+fn rnd_n_different_from_rnd() {
+    // rnd() and rnd(10) should produce different byte sequences
+    let prg_rnd = compile_raw("var x = rnd()");
+    let prg_rndn = compile_raw("var x = rnd(10)");
+    assert_ne!(prg_rnd, prg_rndn, "rnd() and rnd(10) should produce different code");
+}
+
+// ── continue ─────────────────────────────────────────────────────────────────
+
+#[test]
+fn continue_in_for_compiles_ok() {
+    let src = "for i = 1 to 10\n  if i == 5 then continue end\n  print i\nnext";
+    let prg = compile_raw(src);
+    assert!(prg.len() > 2, "continue in for loop should compile");
+}
+
+#[test]
+fn continue_in_while_compiles_ok() {
+    let src = "var i = 0\nwhile i < 10\n  inc i\n  if i == 5 then continue end\n  print i\nend";
+    let prg = compile_raw(src);
+    assert!(prg.len() > 2, "continue in while loop should compile");
+}
+
+#[test]
+fn continue_in_repeat_compiles_ok() {
+    let src = "var i = 0\nrepeat\n  inc i\n  if i == 5 then continue end\n  print i\nuntil i == 10";
+    let prg = compile_raw(src);
+    assert!(prg.len() > 2, "continue in repeat loop should compile");
+}
+
+#[test]
+fn continue_in_infinite_loop_compiles_ok() {
+    let src = "var i = 0\nloop\n  inc i\n  if i == 5 then continue end\n  print i\n  if i == 10 then break end\nend";
+    let prg = compile_raw(src);
+    assert!(prg.len() > 2, "continue in infinite loop should compile");
+}
+
+#[test]
+fn continue_in_counted_loop_compiles_ok() {
+    let src = "var i = 0\nloop 10\n  inc i\n  if i == 5 then continue end\n  print i\nend";
+    let prg = compile_raw(src);
+    assert!(prg.len() > 2, "continue in counted loop should compile");
+}
+
+#[test]
+fn continue_emits_jmp_forward() {
+    // A continue in a simple for loop should emit a JMP (0x4C) for the continue branch
+    let src = "for i = 1 to 10\n  if i == 5 then continue end\nnext";
+    let prg = compile_raw(src);
+    let bytes = &prg[2..];
+    // At least two JMP instructions: one for continue, one for loop back
+    let jmp_count = bytes.iter().filter(|&&b| b == 0x4C).count();
+    assert!(jmp_count >= 2, "continue should emit extra JMP; got {}", jmp_count);
+}
+
+// ── select/case/else/end ─────────────────────────────────────────────────────
+
+#[test]
+fn select_basic_compiles_ok() {
+    let src = "var x = 2\nselect x\n  case 1:\n    print \"ONE\"\n  case 2:\n    print \"TWO\"\nend";
+    let prg = compile_raw(src);
+    assert!(prg.len() > 2, "select/case should compile");
+}
+
+#[test]
+fn select_with_else_compiles_ok() {
+    let src = "var x = 5\nselect x\n  case 1:\n    print \"ONE\"\n  else:\n    print \"OTHER\"\nend";
+    let prg = compile_raw(src);
+    assert!(prg.len() > 2, "select/else should compile");
+}
+
+#[test]
+fn select_empty_compiles_ok() {
+    let prg = compile_raw("var x = 0\nselect x\nend");
+    assert!(prg.len() > 2, "empty select should compile");
+}
+
+#[test]
+fn select_emits_cmp_for_each_case() {
+    let src = "var x = 1\nselect x\n  case 1:\n    print \"A\"\n  case 2:\n    print \"B\"\nend";
+    let prg = compile_raw(src);
+    let bytes = &prg[2..];
+    // CMP zp = 0xC5; should appear at least 2 times (once per case)
+    let cmp_count = bytes.iter().filter(|&&b| b == 0xC5).count();
+    assert!(cmp_count >= 2, "select should emit CMP for each case; got {}", cmp_count);
+}
+
+#[test]
+fn select_else_only_compiles_ok() {
+    let src = "var x = 3\nselect x\n  else:\n    print \"ELSE\"\nend";
+    let prg = compile_raw(src);
+    assert!(prg.len() > 2, "select with only else should compile");
 }

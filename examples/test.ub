@@ -1,0 +1,44 @@
+rem test.ub — test various statements and expressions; not meant to be a cohesive program
+
+cls fast
+
+for a = 0 to 60
+    print "hello world " + a
+end
+print
+
+print 12345+122
+
+var a=122
+var b=12345
+print a+b
+
+var c=12345+122
+print c
+print
+print "press a key"
+var key = getch()
+
+for a = 0 to 200
+    color border 1
+    wait 10
+    color border 2
+    wait 10
+    color border 3
+    wait 10
+    color border 4
+    wait 10
+end
+var oo=22.3
+
+var name=""
+
+print "hello"
+print "world"
+
+input "Mi a neved? ", name: print
+print "viszlat, " + name
+print
+
+label tenprint
+print chr$(205.5+rnd(1)) : goto tenprint

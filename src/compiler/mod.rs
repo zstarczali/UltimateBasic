@@ -79,6 +79,7 @@ pub fn compile_with_path(source: &str, opts: &CompileOptions, source_path: Optio
 
     let mut lexer = Lexer::new(source);
     let tokens = lexer.tokenize();
+    let lex_errors = lexer.errors().to_vec();
     let base_dir = source_path.and_then(|p| p.parent()).map(|p| p.to_path_buf());
     let mut parser = if let Some(dir) = base_dir {
         Parser::new_with_base(tokens, dir)
@@ -86,7 +87,8 @@ pub fn compile_with_path(source: &str, opts: &CompileOptions, source_path: Optio
         Parser::new(tokens)
     };
     let ast = parser.parse();
-    let mut errors = parser.errors().to_vec();
+    let mut errors = lex_errors;
+    errors.extend(parser.errors().iter().cloned());
     let mut cg = Codegen::new(load_addr);
     let raw = cg.compile(&ast);
     errors.extend(cg.errors());

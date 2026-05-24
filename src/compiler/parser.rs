@@ -2,9 +2,73 @@ use super::lexer::Token;
 use super::ast::{Expr, BinOp, Stmt, ColorTarget, VarType};
 use super::lexer::Token::{LBracket, RBracket};
 
+fn token_label(t: &Token) -> String {
+    match t {
+        Token::StringLit(s)  => format!("\"{}\"", s),
+        Token::Number(n)     => n.to_string(),
+        Token::Addr(n)       => format!("${:04X}", n),
+        Token::Ident(s)      => s.clone(),
+        Token::Eof           => "<end of file>".into(),
+        Token::Newline       => "<newline>".into(),
+        Token::Assign        => "'='".into(),
+        Token::Plus          => "'+'".into(),
+        Token::Minus         => "'-'".into(),
+        Token::Star          => "'*'".into(),
+        Token::Slash         => "'/'".into(),
+        Token::LParen        => "'('".into(),
+        Token::RParen        => "')'".into(),
+        Token::LBracket      => "'['".into(),
+        Token::RBracket      => "']'".into(),
+        Token::Comma         => "','".into(),
+        Token::Colon         => "':'".into(),
+        Token::Eq            => "'=='".into(),
+        Token::NotEq         => "'!='".into(),
+        Token::Lt            => "'<'".into(),
+        Token::Gt            => "'>'".into(),
+        Token::LtEq          => "'<='".into(),
+        Token::GtEq          => "'>='".into(),
+        // Keywords: show as lowercase source text
+        other => format!("'{}'", format!("{:?}", other).to_lowercase()),
+    }
+}
+
+/// Recursively fold constant arithmetic/bitwise expressions at parse time.
+/// `Number(a) op Number(b)` → `Number(result)` using i16 wrapping arithmetic.
+/// Comparison ops are NOT folded (they return 0/1 but context differs).
+fn fold_const_expr(e: Expr) -> Expr {
+    match e {
+        Expr::BinOp(l, op, r) => {
+            let l = fold_const_expr(*l);
+            let r = fold_const_expr(*r);
+            if let (Expr::Number(a), Expr::Number(b)) = (&l, &r) {
+                let a = *a; let b = *b;
+                let result: Option<i16> = match op {
+                    BinOp::Add => Some(a.wrapping_add(b)),
+                    BinOp::Sub => Some(a.wrapping_sub(b)),
+                    BinOp::Mul => Some(a.wrapping_mul(b)),
+                    BinOp::Div => if b != 0 { Some(a.wrapping_div(b)) } else { None },
+                    BinOp::Mod => if b != 0 { Some(a.wrapping_rem(b)) } else { None },
+                    BinOp::And => Some(a & b),
+                    BinOp::Or  => Some(a | b),
+                    BinOp::Xor => Some(a ^ b),
+                    BinOp::Shl => Some(a.wrapping_shl(b as u32)),
+                    BinOp::Shr => Some(((a as u16).wrapping_shr(b as u32)) as i16),
+                    _ => None, // comparisons: don't fold
+                };
+                if let Some(n) = result {
+                    return Expr::Number(n);
+                }
+            }
+            Expr::BinOp(Box::new(l), op, Box::new(r))
+        }
+        other => other,
+    }
+}
+
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    line: usize,
     consts: std::collections::HashMap<String, i16>,
     base_dir: Option<std::path::PathBuf>,
     errors: Vec<String>,
@@ -12,50 +76,128 @@ pub struct Parser {
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0, consts: std::collections::HashMap::new(), base_dir: None, errors: vec![] }
+        Self { tokens, pos: 0, line: 1, consts: std::collections::HashMap::new(), base_dir: None, errors: vec![] }
     }
 
     pub fn new_with_base(tokens: Vec<Token>, base_dir: std::path::PathBuf) -> Self {
-        Self { tokens, pos: 0, consts: std::collections::HashMap::new(), base_dir: Some(base_dir), errors: vec![] }
+        Self { tokens, pos: 0, line: 1, consts: std::collections::HashMap::new(), base_dir: Some(base_dir), errors: vec![] }
     }
 
     pub fn new_with_consts(tokens: Vec<Token>, consts: std::collections::HashMap<String, i16>) -> Self {
-        Self { tokens, pos: 0, consts, base_dir: None, errors: vec![] }
+        Self { tokens, pos: 0, line: 1, consts, base_dir: None, errors: vec![] }
     }
 
     pub fn new_with_consts_and_base(tokens: Vec<Token>, consts: std::collections::HashMap<String, i16>, base_dir: Option<std::path::PathBuf>) -> Self {
-        Self { tokens, pos: 0, consts, base_dir, errors: vec![] }
+        Self { tokens, pos: 0, line: 1, consts, base_dir, errors: vec![] }
     }
 
     pub fn errors(&self) -> &[String] {
         &self.errors
     }
 
+    /// Parse a SID file at compile time and build a LoadSid statement.
+    ///
+    /// PSID/RSID header layout (big-endian):
+    ///   $00-$03  magic "PSID" or "RSID"
+    ///   $04-$05  version (1 or 2)
+    ///   $06-$07  data offset into file (= $76 for v1, $7C for v2)
+    ///   $08-$09  load address (0 = first 2 bytes of data are the address)
+    ///   $0A-$0B  init address
+    ///   $0C-$0D  play address
+    ///   ... more header fields ...
+    ///   At data_offset: music data
+    fn parse_load_sid(&mut self, filename: &str, override_addr: Option<u16>) -> Option<Stmt> {
+        // Resolve the path relative to the source file's directory.
+        let path: std::path::PathBuf = if let Some(base) = &self.base_dir {
+            base.join(filename)
+        } else {
+            std::path::PathBuf::from(filename)
+        };
+
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                self.errors.push(format!("load sid: cannot read '{}': {}", path.display(), e));
+                return None;
+            }
+        };
+
+        // Validate magic and minimum header size (need at least 14 bytes for the address fields)
+        if bytes.len() < 14 || (&bytes[0..4] != b"PSID" && &bytes[0..4] != b"RSID") {
+            self.errors.push(format!("load sid: '{}' is not a valid PSID/RSID file", filename));
+            return None;
+        }
+
+        let data_offset = u16::from_be_bytes([bytes[0x06], bytes[0x07]]) as usize;
+        let load_addr_hdr = u16::from_be_bytes([bytes[0x08], bytes[0x09]]);
+        let init_addr     = u16::from_be_bytes([bytes[0x0A], bytes[0x0B]]);
+        let play_addr     = u16::from_be_bytes([bytes[0x0C], bytes[0x0D]]);
+
+        if data_offset >= bytes.len() {
+            self.errors.push(format!("load sid: '{}' data offset beyond file end", filename));
+            return None;
+        }
+
+        let music_raw = &bytes[data_offset..];
+
+        // If load address in header is 0, the first two bytes of the data are the load address (PRG-style).
+        let (load_addr_from_file, music_data) = if load_addr_hdr == 0 {
+            if music_raw.len() < 2 {
+                self.errors.push(format!("load sid: '{}' truncated data section", filename));
+                return None;
+            }
+            let a = u16::from_le_bytes([music_raw[0], music_raw[1]]);
+            (a, music_raw[2..].to_vec())
+        } else {
+            (load_addr_hdr, music_raw.to_vec())
+        };
+
+        // An explicit address in source overrides whatever the SID header says.
+        let load_addr = override_addr.unwrap_or(load_addr_from_file);
+
+        // Inject sid_init and sid_play as compile-time constants so the source
+        // code can reference them in expressions, sys calls, irq statements, etc.
+        self.consts.insert("sid_init".to_string(), init_addr as i16);
+        self.consts.insert("sid_play".to_string(), play_addr as i16);
+
+        Some(Stmt::LoadSid { load_addr, init_addr, play_addr, data: music_data })
+    }
+
     fn peek(&self) -> &Token {
         self.tokens.get(self.pos).unwrap_or(&Token::Eof)
+    }
+
+    fn peek2(&self) -> &Token {
+        self.tokens.get(self.pos + 1).unwrap_or(&Token::Eof)
     }
 
     fn advance(&mut self) -> Token {
         let t = self.tokens.get(self.pos).cloned().unwrap_or(Token::Eof);
         self.pos += 1;
+        if matches!(t, Token::Newline) { self.line += 1; }
         t
     }
 
     fn skip_newlines(&mut self) {
-        while matches!(self.peek(), Token::Newline | Token::Colon) {
-            self.advance();
+        loop {
+            match self.peek() {
+                Token::Newline | Token::Colon | Token::Semicolon => { self.advance(); }
+                _ => break,
+            }
         }
     }
 
     fn expect_newline(&mut self) {
-        while matches!(self.peek(), Token::Newline | Token::Eof) {
-            self.advance();
-            if self.tokens.get(self.pos.saturating_sub(1)) == Some(&Token::Eof) { break; }
+        loop {
+            match self.peek() {
+                Token::Newline => { self.advance(); }
+                _ => break,
+            }
         }
     }
 
     fn reject_stmt(&mut self, message: &str) -> Option<Stmt> {
-        self.errors.push(message.to_string());
+        self.errors.push(format!("line {}: {}", self.line, message));
         while !matches!(self.peek(), Token::Newline | Token::Eof) {
             self.advance();
         }
@@ -106,6 +248,14 @@ impl Parser {
         match self.peek().clone() {
             Token::Addr(a)   => { self.advance(); a }
             Token::Number(n) => { self.advance(); n as u16 }
+            Token::Ident(name) => {
+                if let Some(&val) = self.consts.get(&name) {
+                    self.advance();
+                    val as u16
+                } else {
+                    0
+                }
+            }
             _ => 0,
         }
     }
@@ -151,6 +301,17 @@ impl Parser {
         body
     }
 
+    /// Body of a `case` or `else` arm — stops at `case`, `else`, or `end` (does not consume the stopper).
+    fn parse_select_body(&mut self) -> Vec<Stmt> {
+        let mut body = vec![];
+        loop {
+            self.skip_newlines();
+            if matches!(self.peek(), Token::Case | Token::Else | Token::End | Token::Eof) { break; }
+            if let Some(s) = self.parse_stmt() { body.push(s); }
+        }
+        body
+    }
+
     /// For loop body: stops at `next` (or `end` for backward compat).
     /// Optionally consumes the loop variable name after `next` (e.g. `next i`).
     fn parse_for_body(&mut self) -> Vec<Stmt> {
@@ -170,6 +331,34 @@ impl Parser {
     fn parse_stmt(&mut self) -> Option<Stmt> {
         self.skip_newlines();
         match self.peek().clone() {
+            Token::Inc => {
+                self.advance();
+                let name = if let Token::Ident(n) = self.advance() { n }
+                    else { return self.reject_stmt("expected variable name after 'inc'"); };
+                self.expect_newline();
+                Some(Stmt::Inc(name))
+            }
+            Token::Dec => {
+                self.advance();
+                let name = if let Token::Ident(n) = self.advance() { n }
+                    else { return self.reject_stmt("expected variable name after 'dec'"); };
+                self.expect_newline();
+                Some(Stmt::Dec(name))
+            }
+            Token::Screen => {
+                self.advance();
+                let col = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let row = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let char_expr = self.parse_expr();
+                let color_expr = if self.peek() == &Token::Comma {
+                    self.advance();
+                    Some(self.parse_expr())
+                } else { None };
+                self.expect_newline();
+                Some(Stmt::Screen { col, row, char_expr, color_expr })
+            }
             Token::Var => {
                 self.advance();
                 let name = if let Token::Ident(n) = self.advance() { n } else { return None; };
@@ -217,6 +406,51 @@ impl Parser {
                     let val = self.parse_expr();
                     self.expect_newline();
                     Some(Stmt::ArraySet(name, idx, val))
+                } else if self.peek() == &Token::PlusEq {
+                    self.advance();
+                    let rhs = self.parse_expr();
+                    self.expect_newline();
+                    Some(Stmt::Assign(name.clone(), Expr::BinOp(Box::new(Expr::Var(name)), BinOp::Add, Box::new(rhs))))
+                } else if self.peek() == &Token::MinusEq {
+                    self.advance();
+                    let rhs = self.parse_expr();
+                    self.expect_newline();
+                    Some(Stmt::Assign(name.clone(), Expr::BinOp(Box::new(Expr::Var(name)), BinOp::Sub, Box::new(rhs))))
+                } else if self.peek() == &Token::MulEq {
+                    self.advance();
+                    let rhs = self.parse_expr();
+                    self.expect_newline();
+                    Some(Stmt::Assign(name.clone(), Expr::BinOp(Box::new(Expr::Var(name)), BinOp::Mul, Box::new(rhs))))
+                } else if self.peek() == &Token::DivEq {
+                    self.advance();
+                    let rhs = self.parse_expr();
+                    self.expect_newline();
+                    Some(Stmt::Assign(name.clone(), Expr::BinOp(Box::new(Expr::Var(name)), BinOp::Div, Box::new(rhs))))
+                } else if self.peek() == &Token::And && self.peek2() == &Token::Assign {
+                    self.advance(); self.advance(); // consume And, Assign
+                    let rhs = self.parse_expr();
+                    self.expect_newline();
+                    Some(Stmt::Assign(name.clone(), Expr::BinOp(Box::new(Expr::Var(name)), BinOp::And, Box::new(rhs))))
+                } else if self.peek() == &Token::Or && self.peek2() == &Token::Assign {
+                    self.advance(); self.advance();
+                    let rhs = self.parse_expr();
+                    self.expect_newline();
+                    Some(Stmt::Assign(name.clone(), Expr::BinOp(Box::new(Expr::Var(name)), BinOp::Or, Box::new(rhs))))
+                } else if self.peek() == &Token::Xor && self.peek2() == &Token::Assign {
+                    self.advance(); self.advance();
+                    let rhs = self.parse_expr();
+                    self.expect_newline();
+                    Some(Stmt::Assign(name.clone(), Expr::BinOp(Box::new(Expr::Var(name)), BinOp::Xor, Box::new(rhs))))
+                } else if self.peek() == &Token::Shl && self.peek2() == &Token::Assign {
+                    self.advance(); self.advance();
+                    let rhs = self.parse_expr();
+                    self.expect_newline();
+                    Some(Stmt::Assign(name.clone(), Expr::BinOp(Box::new(Expr::Var(name)), BinOp::Shl, Box::new(rhs))))
+                } else if self.peek() == &Token::Shr && self.peek2() == &Token::Assign {
+                    self.advance(); self.advance();
+                    let rhs = self.parse_expr();
+                    self.expect_newline();
+                    Some(Stmt::Assign(name.clone(), Expr::BinOp(Box::new(Expr::Var(name)), BinOp::Shr, Box::new(rhs))))
                 } else if self.peek() == &Token::Assign {
                     self.advance();
                     let expr = self.parse_expr();
@@ -232,27 +466,51 @@ impl Parser {
                     }
                     if self.peek() == &Token::RParen { self.advance(); } // )
                     self.expect_newline();
-                    Some(Stmt::Call(name, args))
+                    Some(Stmt::Call(name, args, self.line))
                 } else {
                     self.expect_newline();
-                    Some(Stmt::Call(name, vec![]))
+                    Some(Stmt::Call(name, vec![], self.line))
                 }
             }
             Token::Print => {
                 self.advance();
+                // `print at col, row, expr...` — position cursor then print
+                if self.peek() == &Token::At {
+                    self.advance(); // consume 'at'
+                    let col = self.parse_expr();
+                    if self.peek() == &Token::Comma { self.advance(); }
+                    let row = self.parse_expr();
+                    let mut args = vec![];
+                    if self.peek() == &Token::Comma {
+                        self.advance();
+                        if !matches!(self.peek(), Token::Newline | Token::Eof | Token::Colon) {
+                            args.push(self.parse_expr());
+                            while self.peek() == &Token::Comma {
+                                self.advance();
+                                if !matches!(self.peek(), Token::Newline | Token::Eof | Token::Colon) {
+                                    args.push(self.parse_expr());
+                                }
+                            }
+                        }
+                    }
+                    self.expect_newline();
+                    return Some(Stmt::PrintAt { col, row, args });
+                }
                 let mut args = vec![];
-                // Collect comma-separated exprs until end of line or colon separator
-                if !matches!(self.peek(), Token::Newline | Token::Eof | Token::Colon) {
+                // Collect comma-separated exprs until end of line, colon, or semicolon
+                if !matches!(self.peek(), Token::Newline | Token::Eof | Token::Colon | Token::Semicolon) {
                     args.push(self.parse_expr());
                     while self.peek() == &Token::Comma {
                         self.advance();
-                        if !matches!(self.peek(), Token::Newline | Token::Eof | Token::Colon) {
+                        if !matches!(self.peek(), Token::Newline | Token::Eof | Token::Colon | Token::Semicolon) {
                             args.push(self.parse_expr());
                         }
                     }
                 }
+                // Consume optional trailing ';' (C64 BASIC print-modifier: suppress newline)
+                let no_newline = if self.peek() == &Token::Semicolon { self.advance(); true } else { false };
                 self.expect_newline();
-                Some(Stmt::Print(args))
+                Some(Stmt::Print { args, no_newline })
             }
             Token::If => {
                 self.advance();
@@ -343,6 +601,42 @@ impl Parser {
                 self.expect_newline();
                 Some(Stmt::Break)
             }
+            Token::Continue => {
+                self.advance();
+                self.expect_newline();
+                Some(Stmt::Continue)
+            }
+            Token::Select => {
+                self.advance();
+                let expr = self.parse_expr();
+                self.expect_newline();
+                let mut cases = vec![];
+                let mut else_body = None;
+                loop {
+                    self.skip_newlines();
+                    match self.peek().clone() {
+                        Token::Case => {
+                            self.advance();
+                            let val = self.parse_expr();
+                            if self.peek() == &Token::Colon { self.advance(); }
+                            self.skip_newlines();
+                            let body = self.parse_select_body();
+                            cases.push((val, body));
+                        }
+                        Token::Else => {
+                            self.advance();
+                            if self.peek() == &Token::Colon { self.advance(); }
+                            self.skip_newlines();
+                            else_body = Some(self.parse_select_body());
+                        }
+                        Token::End | Token::Eof => break,
+                        _ => break,
+                    }
+                }
+                if self.peek() == &Token::End { self.advance(); }
+                self.expect_newline();
+                Some(Stmt::Select { expr, cases, else_body })
+            }
             Token::Cls => {
                 self.advance();
                 let fast = self.peek() == &Token::Fast;
@@ -382,8 +676,19 @@ impl Parser {
             Token::Sys => {
                 self.advance();
                 let addr = self.parse_addr();
+                let arg = if self.peek() == &Token::Comma {
+                    self.advance(); // consume ','
+                    Some(self.parse_expr())
+                } else {
+                    None
+                };
                 self.expect_newline();
-                Some(Stmt::Sys(addr))
+                Some(Stmt::Sys { addr, arg })
+            }
+            Token::IrqExit => {
+                self.advance();
+                self.expect_newline();
+                Some(Stmt::IrqExit)
             }
             Token::Asm => {
                 self.advance();
@@ -473,8 +778,9 @@ impl Parser {
             Token::Goto => {
                 self.advance();
                 let name = if let Token::Ident(n) = self.advance() { n } else { return None; };
+                let line = self.line;
                 self.expect_newline();
-                Some(Stmt::Goto(name))
+                Some(Stmt::Goto(name, line))
             }
             Token::Poke => {
                 self.advance();
@@ -610,8 +916,49 @@ impl Parser {
                     None
                 }
             }
+            Token::Sid => {
+                self.advance();
+                match self.peek().clone() {
+                    Token::Volume => {
+                        self.advance();
+                        let expr = self.parse_expr();
+                        self.expect_newline();
+                        Some(Stmt::SidVolume(expr))
+                    }
+                    Token::Ident(ref s) if s == "stop" => {
+                        self.advance();
+                        self.expect_newline();
+                        Some(Stmt::SidStop)
+                    }
+                    _ => {
+                        self.errors.push("sid: expected 'volume N' or 'stop'".to_string());
+                        self.expect_newline();
+                        None
+                    }
+                }
+            }
             Token::Load => {
                 self.advance();
+                // `load sid "filename.sid"` — embed SID music at native load address
+                if self.peek() == &Token::Sid {
+                    self.advance(); // consume 'sid'
+                    let filename = if let Token::StringLit(s) = self.peek().clone() {
+                        self.advance(); s
+                    } else {
+                        self.errors.push("load sid: expected a filename string".to_string());
+                        self.expect_newline();
+                        return None;
+                    };
+                    // Optional: load sid "file.sid", $2000  — override the SID header's load address
+                    let override_addr: Option<u16> = if self.peek() == &Token::Comma {
+                        self.advance();
+                        Some(self.parse_addr())
+                    } else {
+                        None
+                    };
+                    self.expect_newline();
+                    return self.parse_load_sid(&filename, override_addr);
+                }
                 let filename = if let Token::StringLit(s) = self.peek().clone() {
                     self.advance(); s
                 } else { String::new() };
@@ -875,6 +1222,13 @@ impl Parser {
                 self.expect_newline();
                 Some(Stmt::Reu { op, c64_addr, reu_bank, reu_addr, length })
             }
+            Token::Waitkey => {
+                self.advance();
+                if self.peek() == &Token::LParen { self.advance(); } // skip (
+                if self.peek() == &Token::RParen { self.advance(); } // skip )
+                self.expect_newline();
+                Some(Stmt::WaitKey)
+            }
             Token::Call => {
                 self.advance();
                 let name = if let Token::Ident(n) = self.advance() { n } else { return None; };
@@ -888,14 +1242,21 @@ impl Parser {
                     if self.peek() == &Token::RParen { self.advance(); } // )
                 }
                 self.expect_newline();
-                Some(Stmt::Call(name, args))
+                Some(Stmt::Call(name, args, self.line))
             }
-            _ => { self.advance(); None }
+            _ => {
+                let tok = self.advance();
+                self.errors.push(format!("line {}: unexpected {}", self.line, token_label(&tok)));
+                while !matches!(self.peek(), Token::Newline | Token::Eof) { self.advance(); }
+                self.expect_newline();
+                None
+            }
         }
     }
 
     fn parse_expr(&mut self) -> Expr {
-        self.parse_or()
+        let e = self.parse_or();
+        fold_const_expr(e)
     }
 
     fn parse_or(&mut self) -> Expr {
@@ -946,6 +1307,15 @@ impl Parser {
         if matches!(self.peek(), Token::Not) {
             self.advance();
             return Expr::Not(Box::new(self.parse_unary()));
+        }
+        if matches!(self.peek(), Token::Minus) {
+            self.advance();
+            let inner = self.parse_unary();
+            // Fold constant negative literals at parse time
+            if let Expr::Number(n) = inner {
+                return Expr::Number(n.wrapping_neg());
+            }
+            return Expr::BinOp(Box::new(Expr::Number(0)), BinOp::Sub, Box::new(inner));
         }
         self.parse_comparison()
     }
@@ -1047,6 +1417,11 @@ impl Parser {
                 if self.peek() == &Token::RParen { self.advance(); } // skip )
                 Expr::Inkey
             }
+            Token::Waitkey => {
+                if self.peek() == &Token::LParen { self.advance(); } // skip (
+                if self.peek() == &Token::RParen { self.advance(); } // skip )
+                Expr::Waitkey
+            }
             Token::StrLen => {
                 if self.peek() == &Token::LParen { self.advance(); }
                 let arg = self.parse_expr();
@@ -1112,8 +1487,19 @@ impl Parser {
                 Expr::Peek16(Box::new(arg))
             }
             Token::Rnd => {
-                if self.peek() == &Token::LParen { self.advance(); self.advance(); } // skip ()
-                Expr::Rnd
+                if self.peek() == &Token::LParen {
+                    self.advance(); // consume '('
+                    if self.peek() == &Token::RParen {
+                        self.advance(); // consume ')' — empty rnd()
+                        Expr::Rnd
+                    } else {
+                        let n = self.parse_expr();
+                        if self.peek() == &Token::RParen { self.advance(); }
+                        Expr::RndN(Box::new(n))
+                    }
+                } else {
+                    Expr::Rnd
+                }
             }
             Token::Abs => {
                 if self.peek() == &Token::LParen { self.advance(); }
@@ -1172,6 +1558,18 @@ impl Parser {
                 let arg = self.parse_expr();
                 if self.peek() == &Token::RParen { self.advance(); }
                 Expr::BinFmt(Box::new(arg))
+            }
+            Token::Spc => {
+                if self.peek() == &Token::LParen { self.advance(); }
+                let n = self.parse_expr();
+                if self.peek() == &Token::RParen { self.advance(); }
+                Expr::Spc(Box::new(n))
+            }
+            Token::Tab => {
+                if self.peek() == &Token::LParen { self.advance(); }
+                let n = self.parse_expr();
+                if self.peek() == &Token::RParen { self.advance(); }
+                Expr::Tab(Box::new(n))
             }
             _ => Expr::Number(0),
         }
@@ -1256,8 +1654,9 @@ mod tests {
 
     #[test]
     fn expr_add() {
+        // 1 + 2 is folded at parse time to Number(3)
         let e = first_expr("1 + 2");
-        assert!(matches!(e, Expr::BinOp(_, BinOp::Add, _)));
+        assert!(matches!(e, Expr::Number(3)));
     }
 
     #[test]
@@ -1275,19 +1674,16 @@ mod tests {
 
     #[test]
     fn expr_mul() {
+        // 3 * 4 is folded at parse time to Number(12)
         let e = first_expr("3 * 4");
-        assert!(matches!(e, Expr::BinOp(_, BinOp::Mul, _)));
+        assert!(matches!(e, Expr::Number(12)));
     }
 
     #[test]
     fn expr_precedence() {
-        // 1 + 2 * 3 should parse as 1 + (2 * 3)
+        // 1 + 2 * 3 = 1 + 6 = 7 (all constants, folded)
         let e = first_expr("1 + 2 * 3");
-        assert!(matches!(e, Expr::BinOp(_, BinOp::Add, _)));
-        if let Expr::BinOp(left, BinOp::Add, right) = e {
-            assert!(matches!(*left, Expr::Number(1)));
-            assert!(matches!(*right, Expr::BinOp(_, BinOp::Mul, _)));
-        }
+        assert!(matches!(e, Expr::Number(7)));
     }
 
     #[test]
@@ -1310,8 +1706,9 @@ mod tests {
 
     #[test]
     fn expr_parens() {
+        // (1 + 2) folded to Number(3)
         let e = first_expr("(1 + 2)");
-        assert!(matches!(e, Expr::BinOp(_, BinOp::Add, _)));
+        assert!(matches!(e, Expr::Number(3)));
     }
 
     #[test]
@@ -1324,33 +1721,33 @@ mod tests {
     #[test]
     fn print_string() {
         let stmts = parse("print \"hello\"");
-        assert!(matches!(&stmts[0], Stmt::Print(args) if args.len() == 1));
+        assert!(matches!(&stmts[0], Stmt::Print { args, no_newline: false } if args.len() == 1));
     }
 
     #[test]
     fn print_multiple_args() {
         let stmts = parse("print \"X=\", x");
-        assert!(matches!(&stmts[0], Stmt::Print(args) if args.len() == 2));
+        assert!(matches!(&stmts[0], Stmt::Print { args, no_newline: false } if args.len() == 2));
     }
 
     #[test]
     fn print_empty() {
         // bare `print` = just newline
         let stmts = parse("print");
-        assert!(matches!(&stmts[0], Stmt::Print(args) if args.is_empty()));
+        assert!(matches!(&stmts[0], Stmt::Print { args, no_newline: false } if args.is_empty()));
     }
 
     #[test]
     fn print_var_var_string() {
         // print x, y, "text"  – all orders work
         let stmts = parse("print x, y, \"hello\"");
-        assert!(matches!(&stmts[0], Stmt::Print(args) if args.len() == 3));
+        assert!(matches!(&stmts[0], Stmt::Print { args, no_newline: false } if args.len() == 3));
     }
 
     #[test]
     fn print_string_var_string() {
         let stmts = parse("print \"A=\", a, \" B=\", b");
-        assert!(matches!(&stmts[0], Stmt::Print(args) if args.len() == 4));
+        assert!(matches!(&stmts[0], Stmt::Print { args, no_newline: false } if args.len() == 4));
     }
 
     // ── Control flow ─────────────────────────────────────────────────────
@@ -1452,13 +1849,13 @@ mod tests {
     #[test]
     fn call_stmt() {
         let stmts = parse("test()");
-        assert!(matches!(&stmts[0], Stmt::Call(name, _) if name == "test"));
+        assert!(matches!(&stmts[0], Stmt::Call(name, _, _) if name == "test"));
     }
 
     #[test]
     fn call_with_args() {
         let stmts = parse("draw(10, 20)");
-        if let Stmt::Call(name, args) = &stmts[0] {
+        if let Stmt::Call(name, args, _) = &stmts[0] {
             assert_eq!(name, "draw");
             assert_eq!(args.len(), 2);
         } else { panic!("Expected Call"); }
@@ -1517,7 +1914,15 @@ mod tests {
 
     #[test] fn sys_stmt() {
         let stmts = parse("sys $FFD2");
-        assert!(matches!(&stmts[0], Stmt::Sys(0xFFD2)));
+        assert!(matches!(&stmts[0], Stmt::Sys { addr: 0xFFD2, arg: None }));
+    }
+    #[test] fn sys_stmt_with_arg() {
+        let stmts = parse("sys $1000, 0");
+        assert!(matches!(&stmts[0], Stmt::Sys { addr: 0x1000, arg: Some(_) }));
+    }
+    #[test] fn irq_exit_stmt() {
+        let stmts = parse("irq_exit");
+        assert!(matches!(&stmts[0], Stmt::IrqExit));
     }
     #[test] fn asm_inline() {
         let stmts = parse("asm $EA, $EA");
@@ -1555,7 +1960,7 @@ mod tests {
 
     #[test] fn goto_stmt() {
         let stmts = parse("goto main_loop");
-        assert!(matches!(&stmts[0], Stmt::Goto(name) if name == "main_loop"));
+        assert!(matches!(&stmts[0], Stmt::Goto(name, _) if name == "main_loop"));
     }
 
     #[test] fn poke_stmt() {
@@ -1653,10 +2058,10 @@ mod tests {
     }
 
     #[test] fn const_substitution() {
-        // const should substitute in expressions
+        // const X = 10; var y = X + 5 → X substituted to 10, then 10+5 folded to 15
         let stmts = parse("const X = 10\nvar y = X + 5");
-        assert!(matches!(&stmts[1], Stmt::VarDecl { name, expr: Expr::BinOp(a, BinOp::Add, b), .. }
-            if name == "y" && matches!(**a, Expr::Number(10)) && matches!(**b, Expr::Number(5))));
+        assert!(matches!(&stmts[1], Stmt::VarDecl { name, expr: Expr::Number(15), .. }
+            if name == "y"));
     }
 
     #[test] fn chr_str_expr() {
@@ -1692,6 +2097,6 @@ mod tests {
         assert_eq!(stmts.len(), 3);
         assert!(matches!(&stmts[0], Stmt::Label(_)));
         assert!(matches!(&stmts[1], Stmt::Assign(_, _)));
-        assert!(matches!(&stmts[2], Stmt::Goto(_)));
+        assert!(matches!(&stmts[2], Stmt::Goto(_, _)));
     }
 }

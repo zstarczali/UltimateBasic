@@ -7,6 +7,7 @@ pub enum Expr {
     Not(Box<Expr>),
     Getch,
     Inkey,    // inkey() — non-blocking $FFE4; 0 = no key, else PETSCII code
+    Waitkey,  // waitkey() — CIA1 matrix direct scan; blocks until any key; works without CIA1 timer IRQ
     ReuPresent,  // reu_present() — 1 if REU detected, 0 otherwise
     Joy(u8),  // joy(1) or joy(2) — read joystick port, returns inverted bits 0-4
     MouseX,   // mouse_x()  — SID $D419 POT X register (0-255)
@@ -18,6 +19,7 @@ pub enum Expr {
     BinFmt(Box<Expr>), // bin(n) — in print: shows value as 8-bit binary string
     Peek(Box<Expr>),
     Rnd,
+    RndN(Box<Expr>),         // rnd(n) — random 0..n-1 (rnd() mod n)
     Abs(Box<Expr>),
     Min(Box<Expr>, Box<Expr>),
     Max(Box<Expr>, Box<Expr>),
@@ -29,6 +31,8 @@ pub enum Expr {
     StrLen(Box<Expr>),           // len(s)  — length of null-terminated string var, 0–255
     Asc(Box<Expr>),              // asc(s)  — PETSCII code of first character (0 if empty)
     Peek16(Box<Expr>),           // peek16(addr) — read 16-bit word: lo at addr, hi at addr+1
+    Spc(Box<Expr>),              // spc(n) — in print: print n spaces
+    Tab(Box<Expr>),              // tab(n) — in print: move cursor to column n
 }
 
 #[derive(Debug, Clone)]
@@ -59,25 +63,40 @@ pub enum Stmt {
     VarDecl { name: String, vtype: Option<VarType>, expr: Expr },
     Assign(String, Expr),
     ArraySet(String, Expr, Expr),  // arr[idx] = val
-    Print(Vec<Expr>),
+    Print { args: Vec<Expr>, no_newline: bool },
+    /// `print at col, row, expr...` — cursor position then print (shorthand for cursor+print).
+    PrintAt { col: Expr, row: Expr, args: Vec<Expr> },
     If(Expr, Vec<Stmt>, Option<Vec<Stmt>>),
     Loop(u8, Vec<Stmt>),
     ForLoop { var: String, from: Expr, to: Expr, step: Option<Expr>, body: Vec<Stmt> },
     WhileLoop(Expr, Vec<Stmt>),
     Break,
+    Continue,
+    /// `select expr / case val: / ... / else: / end`
+    Select {
+        expr: Expr,
+        cases: Vec<(Expr, Vec<Stmt>)>,
+        else_body: Option<Vec<Stmt>>,
+    },
     Cls { fast: bool },
     Graphics { on: bool, multi: bool, block: bool }, // multi=true → multicolor bitmap; block=true → 4×4 text block mode
     Display { on: bool },  // display on/off — controls VIC DEN bit ($D011 bit4)
-    Sys(u16),
+    Sys { addr: u16, arg: Option<Expr> },  // sys addr [, val] — optional LDA #val before JSR
+    WaitKey,                                 // waitkey() standalone statement — CIA1 matrix scan until any key
+    IrqExit,                                 // irq_exit — JMP $EA81 (proper IRQ handler exit)
+    /// `sid volume N` — write N to $D418 (master volume + filter mode, bits 0-3 = vol 0-15).
+    SidVolume(Expr),
+    /// `sid stop` — zero all 25 SID registers ($D400–$D418), silencing all voices.
+    SidStop,
     AsmBytes(Vec<u8>),
     IntToStr { var: String, addr: u16 },
     Color { target: ColorTarget, expr: Expr },
     SubDef(String, Vec<String>, Vec<Stmt>), // name, params, body
-    Call(String, Vec<Expr>),                // name, args
+    Call(String, Vec<Expr>, usize),          // name, args, line
     Return,
     Const(String, Expr),
     Label(String),
-    Goto(String),
+    Goto(String, usize),                     // label name, line
     Poke(Expr, Expr),
     Plot(Expr, Expr), // plot x, y — set pixel in bitmap mode
     Plot4(Expr, Expr),      // plot4 x, y — set 4×4 block pixel
@@ -87,6 +106,14 @@ pub enum Stmt {
     Gcls,             // gcls — clear bitmap screen
     Bye,              // bye/exit — cls then RTS back to BASIC
     Incbin(String),   // incbin "file" — embed raw binary file bytes inline
+    /// `load sid "file.sid"` — embed SID music data at its native load address.
+    /// Header is parsed at compile time; `sid_init` and `sid_play` become constants.
+    LoadSid {
+        load_addr: u16,   // where the music data loads in C64 RAM
+        init_addr: u16,   // JSR to initialise (A = song number 0-based)
+        play_addr: u16,   // JSR each frame to advance playback
+        data: Vec<u8>,    // raw music bytes (SID header stripped)
+    },
     Data(Vec<Expr>),  // data 1,2,3 — constant byte table (read with 'read')
     Read(String),     // read varname — load next data byte into variable
     Load { filename: String, addr: Option<Expr> }, // load "file" [, addr] — KERNAL LOAD from device 8
@@ -119,6 +146,12 @@ pub enum Stmt {
     SpriteDef { id: u8, bytes: Vec<u8> },
     /// poke16 addr, val — write 16-bit little-endian value to two consecutive bytes.
     Poke16(Expr, Expr),
+    /// inc var — INC zp (or 16-bit for word vars)
+    Inc(String),
+    /// dec var — DEC zp (or 16-bit for word vars)
+    Dec(String),
+    /// screen col, row, char [, color] — direct POKE to screen and optional color RAM
+    Screen { col: Expr, row: Expr, char_expr: Expr, color_expr: Option<Expr> },
     /// open channel, device, secondary [, "filename"] — KERNAL OPEN (SETNAM+SETLFS+OPEN)
     Open { channel: Expr, device: Expr, secondary: Expr, filename: Option<String> },
     /// close channel — KERNAL CLOSE ($FFC3) with A = channel number
