@@ -330,10 +330,58 @@ save "DATA", $C000, 4096 # KERNAL SAVE from $C000, 4096 bytes → device 8
 save "PROG", start, len  # addr and len from word/int variables
 ```
 
+```basic
+load "PROGRAM"           # KERNAL LOAD: loads file from device 8 to its native address
+load "DATA", $C000       # loads file to a specific address
+load "DATA", ptr         # addr from word variable
+
+save "DATA", $C000, 4096 # KERNAL SAVE from $C000, 4096 bytes → device 8
+save "PROG", start, len  # addr and len from word/int variables
+```
+
 `load` calls KERNAL `SETNAM`+`SETLFS`+`LOAD` (`$FFBD`/`$FFBA`/`$FFD5`).
 Without address: secondary address 0 (file's own 2-byte header used as load address).
 With address: secondary address 1 (file loaded to specified location).
 `save` calls `SETNAM`+`SETLFS`+`SAVE` (`$FFBD`/`$FFBA`/`$FFD8`). Requires both `addr` and `len`.
+
+### SID Music
+
+```basic
+load sid "tune.sid"            # embed SID music at its native load address
+load sid "tune.sid", $2000     # override: embed at $2000 regardless of SID header
+```
+
+`load sid` reads a PSID or RSID file at **compile time**, strips the header, and appends the raw music bytes to the output `.prg`. After `load sid`, two compile-time constants become available:
+
+| Constant   | Description |
+|---|---|
+| `sid_init` | Init routine address — call once with A = song number (0-based) |
+| `sid_play` | Play routine address — call every frame (50 Hz PAL) from an IRQ handler |
+
+Both constants work anywhere a constant address is accepted: `sys`, `irq`, `poke`, expressions.
+
+**Typical usage:**
+
+```basic
+load sid "music.sid"
+
+sub music_irq()
+  poke $D019, $FF       # ACK VIC raster IRQ
+  sys sid_play          # advance one frame of music
+  asm { JMP $EA81 }     # JMP (NOT JSR!) to KERNAL end-of-IRQ
+end
+
+asm { LDA #0 }          # A = song number (0 = first sub-tune)
+sys sid_init            # initialise SID chip
+irq music_irq, $C0      # raster IRQ at line $C0 → 50 Hz on PAL
+
+poke $D418, $0F         # master volume on
+```
+
+**Notes:**
+- SID data is placed **after** all generated code, padded with zeros up to the load address. The compiler warns if the SID load address would overlap generated code.
+- PSID v1 and v2 are supported. If the SID header's load address is 0, the first two data bytes are used as the address (PRG-style, little-endian).
+- Only one `load sid` per program is meaningful (the last one wins).
 
 ### Serial channel file I/O
 

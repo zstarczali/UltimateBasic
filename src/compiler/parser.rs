@@ -31,6 +31,74 @@ impl Parser {
         &self.errors
     }
 
+    /// Parse a SID file at compile time and build a LoadSid statement.
+    ///
+    /// PSID/RSID header layout (big-endian):
+    ///   $00-$03  magic "PSID" or "RSID"
+    ///   $04-$05  version (1 or 2)
+    ///   $06-$07  data offset into file (= $76 for v1, $7C for v2)
+    ///   $08-$09  load address (0 = first 2 bytes of data are the address)
+    ///   $0A-$0B  init address
+    ///   $0C-$0D  play address
+    ///   ... more header fields ...
+    ///   At data_offset: music data
+    fn parse_load_sid(&mut self, filename: &str, override_addr: Option<u16>) -> Option<Stmt> {
+        // Resolve the path relative to the source file's directory.
+        let path: std::path::PathBuf = if let Some(base) = &self.base_dir {
+            base.join(filename)
+        } else {
+            std::path::PathBuf::from(filename)
+        };
+
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                self.errors.push(format!("load sid: cannot read '{}': {}", path.display(), e));
+                return None;
+            }
+        };
+
+        // Validate magic and minimum header size (need at least 14 bytes for the address fields)
+        if bytes.len() < 14 || (&bytes[0..4] != b"PSID" && &bytes[0..4] != b"RSID") {
+            self.errors.push(format!("load sid: '{}' is not a valid PSID/RSID file", filename));
+            return None;
+        }
+
+        let data_offset = u16::from_be_bytes([bytes[0x06], bytes[0x07]]) as usize;
+        let load_addr_hdr = u16::from_be_bytes([bytes[0x08], bytes[0x09]]);
+        let init_addr     = u16::from_be_bytes([bytes[0x0A], bytes[0x0B]]);
+        let play_addr     = u16::from_be_bytes([bytes[0x0C], bytes[0x0D]]);
+
+        if data_offset >= bytes.len() {
+            self.errors.push(format!("load sid: '{}' data offset beyond file end", filename));
+            return None;
+        }
+
+        let music_raw = &bytes[data_offset..];
+
+        // If load address in header is 0, the first two bytes of the data are the load address (PRG-style).
+        let (load_addr_from_file, music_data) = if load_addr_hdr == 0 {
+            if music_raw.len() < 2 {
+                self.errors.push(format!("load sid: '{}' truncated data section", filename));
+                return None;
+            }
+            let a = u16::from_le_bytes([music_raw[0], music_raw[1]]);
+            (a, music_raw[2..].to_vec())
+        } else {
+            (load_addr_hdr, music_raw.to_vec())
+        };
+
+        // An explicit address in source overrides whatever the SID header says.
+        let load_addr = override_addr.unwrap_or(load_addr_from_file);
+
+        // Inject sid_init and sid_play as compile-time constants so the source
+        // code can reference them in expressions, sys calls, irq statements, etc.
+        self.consts.insert("sid_init".to_string(), init_addr as i16);
+        self.consts.insert("sid_play".to_string(), play_addr as i16);
+
+        Some(Stmt::LoadSid { load_addr, init_addr, play_addr, data: music_data })
+    }
+
     fn peek(&self) -> &Token {
         self.tokens.get(self.pos).unwrap_or(&Token::Eof)
     }
@@ -106,6 +174,14 @@ impl Parser {
         match self.peek().clone() {
             Token::Addr(a)   => { self.advance(); a }
             Token::Number(n) => { self.advance(); n as u16 }
+            Token::Ident(name) => {
+                if let Some(&val) = self.consts.get(&name) {
+                    self.advance();
+                    val as u16
+                } else {
+                    0
+                }
+            }
             _ => 0,
         }
     }
@@ -612,6 +688,26 @@ impl Parser {
             }
             Token::Load => {
                 self.advance();
+                // `load sid "filename.sid"` — embed SID music at native load address
+                if self.peek() == &Token::Sid {
+                    self.advance(); // consume 'sid'
+                    let filename = if let Token::StringLit(s) = self.peek().clone() {
+                        self.advance(); s
+                    } else {
+                        self.errors.push("load sid: expected a filename string".to_string());
+                        self.expect_newline();
+                        return None;
+                    };
+                    // Optional: load sid "file.sid", $2000  — override the SID header's load address
+                    let override_addr: Option<u16> = if self.peek() == &Token::Comma {
+                        self.advance();
+                        Some(self.parse_addr())
+                    } else {
+                        None
+                    };
+                    self.expect_newline();
+                    return self.parse_load_sid(&filename, override_addr);
+                }
                 let filename = if let Token::StringLit(s) = self.peek().clone() {
                     self.advance(); s
                 } else { String::new() };

@@ -533,7 +533,48 @@ save "PROG", start, len  # addr and len from word/int variables
 Calls `SETNAM` ($FFBD) + `SETLFS` ($FFBA, device 8) + `LOAD` ($FFD5) or `SAVE` ($FFD8).
 `save` requires both `addr` and `len`. The `addr` is stored in a scratch ZP pair; KERNAL SAVE receives that ZP address in A, end address (addr+len) in X/Y.
 
-### Serial Channel File I/O
+### SID Music
+
+```basic
+load sid "tune.sid"            # embed SID music at its native load address
+load sid "tune.sid", $2000     # override: embed at $2000 regardless of SID header
+```
+
+`load sid` reads a PSID or RSID file at **compile time**, strips the header, and appends the raw music bytes to the output `.prg` at the specified load address (padded with zeros if necessary). After `load sid`, two compile-time constants are automatically defined:
+
+| Constant   | Value | Description |
+|---|---|---|
+| `sid_init` | init address from SID header | Call once to initialise the tune (A = song number, 0-based) |
+| `sid_play` | play address from SID header | Call every frame (50 Hz PAL) to advance playback |
+
+Both constants can be used anywhere a constant address is accepted: `sys`, `irq`, `poke`, expressions, etc.
+
+**Typical usage with a raster IRQ:**
+
+```basic
+load sid "music.sid"          # embeds tune, defines sid_init / sid_play
+
+sub music_irq()
+  poke $D019, $FF             # ACK VIC raster IRQ
+  sys sid_play                # advance one frame of playback
+  asm { JMP $EA81 }           # JMP (NOT JSR!) to KERNAL end-of-IRQ
+end
+
+asm { LDA #0 }                # A = song number (0 = first sub-tune)
+sys sid_init                  # initialise the SID chip
+irq music_irq, $C0            # fire the IRQ at raster line $C0 (50 Hz)
+
+poke $D418, $0F               # master volume on
+```
+
+**Notes:**
+- The load address from the SID header is used by default; the optional `, addr` overrides it.
+- `sid_init` / `sid_play` are substituted at parse time, so they work in `sys`, `irq`, `asm { LDA #<sid_play }`, etc.
+- The SID data is placed **after** all generated code, padded with zeros from the code end to the SID load address. The compiler aborts (with a warning) if the SID load address would overlap generated code.
+- PSID v1 (`data_offset = $76`) and PSID v2 (`data_offset = $7C`) are both supported. If the SID header's load address field is 0, the load address is taken from the first two bytes of the data section (PRG-style, little-endian).
+- Only one `load sid` per program is meaningful (the last one wins if multiple are present).
+
+
 
 ```basic
 open 1, 8, 2, "MYFILE"  # open logical file 1, device 8, secondary 2, name "MYFILE"
@@ -632,7 +673,7 @@ the `$0314` vector. The handler should also ACK the VIC IRQ before any other wor
 sub my_handler()
   poke $D019, $FF      # ACK VIC IRQ (write 1s to clear flags)
   # ... your IRQ work here ...
-  sys $EA81            # JMP to KERNAL end-of-IRQ (restores regs, RTI)
+  asm { JMP $EA81 }    # JMP (NOT JSR!) to KERNAL end-of-IRQ (restores regs, RTI)
 end
 ```
 

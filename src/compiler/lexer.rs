@@ -91,6 +91,7 @@ pub enum Token {
     Multi,
     Block,    // block pixel mode keyword
     Plot4,    // plot4 — 4×4 block pixel set/erase
+    Sid,      // load sid "file.sid" — embed SID music
     Incbin,
     Include,
     Data,
@@ -381,6 +382,7 @@ impl Lexer {
             "data"       => Token::Data,
             "read"       => Token::Read,
             "load"       => Token::Load,
+            "sid"        => Token::Sid,
             "input"      => Token::Input,
             "fill"       => Token::Fill,
             "memcopy"    => Token::Memcopy,

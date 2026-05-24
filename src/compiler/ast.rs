@@ -87,6 +87,14 @@ pub enum Stmt {
     Gcls,             // gcls — clear bitmap screen
     Bye,              // bye/exit — cls then RTS back to BASIC
     Incbin(String),   // incbin "file" — embed raw binary file bytes inline
+    /// `load sid "file.sid"` — embed SID music data at its native load address.
+    /// Header is parsed at compile time; `sid_init` and `sid_play` become constants.
+    LoadSid {
+        load_addr: u16,   // where the music data loads in C64 RAM
+        init_addr: u16,   // JSR to initialise (A = song number 0-based)
+        play_addr: u16,   // JSR each frame to advance playback
+        data: Vec<u8>,    // raw music bytes (SID header stripped)
+    },
     Data(Vec<Expr>),  // data 1,2,3 — constant byte table (read with 'read')
     Read(String),     // read varname — load next data byte into variable
     Load { filename: String, addr: Option<Expr> }, // load "file" [, addr] — KERNAL LOAD from device 8

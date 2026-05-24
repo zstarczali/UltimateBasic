@@ -1,7 +1,7 @@
 // Integration tests for Ultimate Basic compiler.
 // Tests compile entire programs and verify PRG output.
 
-use ultimate_basic::compiler::{compile, CompileOptions};
+use ultimate_basic::compiler::{compile, compile_with_path, CompileOptions};
 
 fn compile_stub(src: &str) -> Vec<u8> {
     compile(src, &CompileOptions { basic_stub: true }).prg
@@ -1784,7 +1784,98 @@ fn incbin_embeds_bytes() {
         "incbin bytes should appear in output");
 }
 
-// ── data / read ───────────────────────────────────────────────────────────────
+// ── load sid ─────────────────────────────────────────────────────────────────
+
+/// Build a minimal PSID v1 file (118-byte header + music data).
+fn make_fake_psid(load_addr: u16, init_addr: u16, play_addr: u16, music: &[u8]) -> Vec<u8> {
+    let mut hdr = vec![0u8; 0x76]; // 118-byte header (PSID v1)
+    hdr[0x00] = b'P'; hdr[0x01] = b'S'; hdr[0x02] = b'I'; hdr[0x03] = b'D';
+    hdr[0x04] = 0x00; hdr[0x05] = 0x01; // version 1
+    hdr[0x06] = 0x00; hdr[0x07] = 0x76; // data_offset = $76
+    // Header addresses are big-endian
+    hdr[0x08] = (load_addr >> 8) as u8; hdr[0x09] = load_addr as u8;
+    hdr[0x0A] = (init_addr >> 8) as u8; hdr[0x0B] = init_addr as u8;
+    hdr[0x0C] = (play_addr >> 8) as u8; hdr[0x0D] = play_addr as u8;
+    hdr.extend_from_slice(music);
+    hdr
+}
+
+#[test]
+fn load_sid_embeds_music_at_load_addr() {
+    let sid_path = "test_load_sid_tmp.sid";
+    let music = vec![0xA9u8, 0x07, 0x8D, 0x20, 0xD0, 0x60]; // LDA #7; STA $D020; RTS
+    let sid_bytes = make_fake_psid(0x1000, 0x1000, 0x1006, &music);
+    std::fs::write(sid_path, &sid_bytes).unwrap();
+
+    let src = format!("load sid \"{}\"\n", sid_path);
+    let opts = CompileOptions { basic_stub: false };
+    let res = compile_with_path(&src, &opts, Some(std::path::Path::new(sid_path)));
+    std::fs::remove_file(sid_path).ok();
+
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    assert!(res.prg.windows(music.len()).any(|w| w == music.as_slice()),
+        "SID music bytes should be embedded in the output");
+}
+
+#[test]
+fn load_sid_injects_constants() {
+    // sid_init / sid_play are usable as compile-time constants after load sid.
+    let sid_path = "test_load_sid_const_tmp.sid";
+    let music = vec![0xEAu8]; // NOP
+    let sid_bytes = make_fake_psid(0x1000, 0x1000, 0x1006, &music);
+    std::fs::write(sid_path, &sid_bytes).unwrap();
+
+    // sys sid_init should compile (resolves to JSR $1000)
+    let src = format!("load sid \"{}\"\nsys sid_init\n", sid_path);
+    let opts = CompileOptions { basic_stub: false };
+    let res = compile_with_path(&src, &opts, Some(std::path::Path::new(sid_path)));
+    std::fs::remove_file(sid_path).ok();
+
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    // JSR $1000 = $20, $00, $10
+    assert!(res.prg.windows(3).any(|w| w == [0x20, 0x00, 0x10]),
+        "sys sid_init should emit JSR $1000");
+}
+
+#[test]
+fn load_sid_invalid_file_reports_error() {
+    let sid_path = "test_load_sid_bad_tmp.bin";
+    std::fs::write(sid_path, b"NOT A SID FILE AT ALL").unwrap();
+    let src = format!("load sid \"{}\"", sid_path);
+    let opts = CompileOptions { basic_stub: false };
+    let res = compile_with_path(&src, &opts, Some(std::path::Path::new(sid_path)));
+    std::fs::remove_file(sid_path).ok();
+    assert!(!res.errors.is_empty(), "Should report an error for an invalid SID file");
+}
+
+#[test]
+fn load_sid_missing_file_reports_error() {
+    let src = "load sid \"nonexistent_totally_fake.sid\"";
+    let res = compile(src, &CompileOptions { basic_stub: false });
+    assert!(!res.errors.is_empty(), "Should report an error for a missing SID file");
+}
+
+#[test]
+fn load_sid_override_addr_places_data_at_specified_address() {
+    let sid_path = "test_load_sid_override_tmp.sid";
+    let music = vec![0xA9u8, 0x0F, 0x8D, 0x18, 0xD4, 0x60]; // LDA #$0F; STA $D418; RTS
+    let sid_bytes = make_fake_psid(0x1000, 0x1000, 0x1006, &music);
+    std::fs::write(sid_path, &sid_bytes).unwrap();
+
+    // Override: put music at $2000 instead of $1000
+    let src = format!("load sid \"{}\", $2000\n", sid_path);
+    let opts = CompileOptions { basic_stub: false };
+    let res = compile_with_path(&src, &opts, Some(std::path::Path::new(sid_path)));
+    std::fs::remove_file(sid_path).ok();
+
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    // Music bytes must appear somewhere in the output
+    assert!(res.prg.windows(music.len()).any(|w| w == music.as_slice()),
+        "SID music bytes should be embedded in the output");
+    // The load address override means the PRG must be large enough to reach $2000
+    // (PRG starts at $0801, so offset to $2000 is $1800 - 2 = $17FE bytes minimum incl. header)
+    assert!(res.prg.len() >= 0x17FF, "PRG must extend to $2000");
+}
 
 #[test]
 fn data_read_emits_indirect_lda() {

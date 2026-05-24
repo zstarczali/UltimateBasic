@@ -1,0 +1,51 @@
+# sid_music_demo.ub
+#
+# Demonstrates the `load sid` command:
+#   - Embeds the SID music file at its native load address ($1000 for Ikari Intro)
+#   - sid_init and sid_play become compile-time constants automatically
+#   - A raster IRQ calls sid_play every frame (50 Hz on PAL)
+#
+# Controls:  any key = exit
+#
+# Build:
+#   ultimate-basic build examples/sid_music_demo.ub -o examples/sid_music_demo.prg
+
+# ── Embed the SID file ────────────────────────────────────────────────────────
+# sid_init = init routine address (JSR with A = song number 0-based)
+# sid_play = play routine address (JSR once per frame from IRQ handler)
+load sid "Ikari_Intro.sid"
+
+# ── IRQ handler — called at every raster line $C0 ─────────────────────────────
+sub music_irq()
+  poke $D019, $FF       # ACK VIC raster IRQ (must be first)
+  sys sid_play          # advance one frame of music
+  asm { JMP $EA81 }     # JMP (not JSR!) to KERNAL end-of-IRQ: restore A/X/Y + RTI
+end
+
+# ── Main program ──────────────────────────────────────────────────────────────
+cls
+color border 0
+color bg 0
+color text 14           # light blue text
+
+cursor 12, 10
+print "SID MUSIC DEMO"
+cursor 8, 12
+print "IKARI WARRIORS INTRO"
+cursor 7, 14
+print "PRESS ANY KEY TO EXIT"
+
+# Initialise the SID tune: A=0 → first (and only) sub-tune
+asm { LDA #0 }
+sys sid_init
+
+# Set up a raster IRQ so music_irq() is called every frame
+irq music_irq, $C0
+
+# Wait for a keypress, then clean up and return to BASIC
+var k = getch()
+
+# Silence the SID before leaving
+poke $D418, 0           # master volume = 0
+
+bye

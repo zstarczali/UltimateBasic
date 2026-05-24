@@ -450,6 +450,13 @@ pub struct Codegen {
     paint_zp: Option<u8>,              // base of 2-byte ZP pair: stk_head_lo, stk_head_hi
     paint_stack_addr: Option<u16>,     // 512-byte stack for paint flood-fill ($C000 area)
     paint_patches: Vec<usize>,         // JSR targets to patch to paint_helper
+    sid: Option<SidData>,              // pending SID music to embed at end of output
+}
+
+/// Carry SID metadata through pre_scan → compile().
+struct SidData {
+    load_addr: u16,
+    data: Vec<u8>,
 }
 
 impl Codegen {
@@ -496,6 +503,7 @@ impl Codegen {
             paint_zp: None,
             paint_stack_addr: None,
             paint_patches: vec![],
+            sid: None,
         }
     }
 
@@ -729,6 +737,14 @@ impl Codegen {
                     self.array_sizes.insert(name.clone(), size * 2); // 2 bytes per word element
                     self.word_arrays.insert(name.clone());
                     self.array_ptr += size * 2;
+                }
+                Stmt::LoadSid { load_addr, data, .. } => {
+                    // Store SID info; the actual bytes are embedded at the very end of compile().
+                    // If multiple `load sid` statements exist, the last one wins.
+                    self.sid = Some(SidData {
+                        load_addr: *load_addr,
+                        data: data.clone(),
+                    });
                 }
                 _ => {}
             }
@@ -4310,6 +4326,9 @@ impl Codegen {
                     Err(e) => eprintln!("incbin: cannot read '{}': {}", path, e),
                 }
             }
+            Stmt::LoadSid { .. } => {
+                // SID data is embedded at the end of compile(), not inline here.
+            }
             Stmt::Load { filename, addr } => {
                 // JMP over inline filename bytes (no null terminator; SETNAM takes length)
                 self.emit(0x4C);
@@ -5826,6 +5845,25 @@ impl Codegen {
         }
 
         self.patch_forward_refs();
+
+        // Embed SID music data at its native C64 load address.
+        // Pad the code segment with zeros to reach the target address, then
+        // append the raw music bytes.  This must happen AFTER all helpers and
+        // data blocks so we don't accidentally overwrite generated code.
+        if let Some(sid) = self.sid.take() {
+            let code_end = self.load_addr + self.code.len() as u16;
+            if sid.load_addr < code_end {
+                eprintln!(
+                    "load sid: SID load address ${:04X} overlaps generated code ending at ${:04X}; SID data NOT embedded",
+                    sid.load_addr, code_end
+                );
+            } else {
+                let pad = (sid.load_addr - code_end) as usize;
+                for _ in 0..pad { self.emit(0x00); }
+                for &b in &sid.data { self.emit(b); }
+            }
+        }
+
         self.code.clone()
     }
 
