@@ -1,0 +1,64 @@
+# raster_irq_demo.ub
+# Classic two-raster-IRQ display blanking technique.
+#
+# IRQ1 fires first; blanks the display and sets the next trigger at line 0.
+# IRQ2 fires at line 0; restores the display and sets the next trigger at
+# line 250 ($FA).  Outcome: display visible on lines 0-250, blanked from
+# line 250 to the end of the frame.
+#
+# Both handlers must live in a single asm { } block so that the irq1/irq2
+# labels are in the same scope and can cross-reference each other.
+
+asm {
+    SEI
+    LDA #$02
+    STA $D020        ; border = red
+    LDA #$00
+    STA $D021        ; background = black
+    LDA #<irq1
+    STA $0314        ; install irq1 as initial handler
+    LDA #>irq1
+    STA $0315
+    LDA #$7F
+    STA $DC0D        ; disable CIA1 timer IRQ
+    LDA #$1B
+    STA $D011        ; display on, text mode, raster bit-8 = 0
+    LDA #$01
+    STA $D01A        ; enable VIC raster IRQ
+    CLI
+
+    JMP *         ; spin forever — IRQs do all the work
+
+    ; ------------------------------------------------------------------
+    ; IRQ handler 1
+    ; Blanks the display and hands control to irq2 at raster line 0.
+    ; ------------------------------------------------------------------
+irq1:
+    INC $D019        ; ACK VIC IRQ
+    LDA #$00
+    STA $D012        ; next trigger: raster line 0
+    LDA #$00
+    STA $D011        ; blank display (DEN = 0)
+    LDA #<irq2
+    STA $0314
+    LDA #>irq2
+    STA $0315
+    JMP $EA7E        ; KERNAL IRQ exit
+
+    ; ------------------------------------------------------------------
+    ; IRQ handler 2
+    ; Restores the display and hands control back to irq1 at line 250.
+    ; ------------------------------------------------------------------
+irq2:
+    INC $D019        ; ACK VIC IRQ
+    LDA #$FA
+    STA $D012        ; next trigger: raster line 250 ($FA)
+    LDA #$1B
+    STA $D011        ; restore display (text mode, DEN = 1)
+                     ; use #$3B here instead for bitmap mode
+    LDA #<irq1
+    STA $0314
+    LDA #>irq1
+    STA $0315
+    JMP $EA7E        ; KERNAL IRQ exit
+}

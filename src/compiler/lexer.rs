@@ -67,6 +67,7 @@ pub enum Token {
     Sgn,
     Word,
     Array,
+    ArrayWord,
     For,
     Next,
     Chr,
@@ -75,6 +76,10 @@ pub enum Token {
     Gcls,
     Bye,
     Joy,
+    MouseX,      // mouse_x()  — SID $D419 POT X
+    MouseY,      // mouse_y()  — SID $D41A POT Y
+    MouseBtn,    // mouse_btn() — CIA1 $DC00 fire+up bits, bit0=left, bit1=right
+    Paint,       // paint x, y — 4-connected flood fill
     Line,
     Sin,
     Cos,
@@ -84,6 +89,8 @@ pub enum Token {
     Stash,
     Fetch,
     Multi,
+    Block,    // block pixel mode keyword
+    Plot4,    // plot4 — 4×4 block pixel set/erase
     Incbin,
     Include,
     Data,
@@ -92,6 +99,7 @@ pub enum Token {
     Input,
     Fill,
     Memcopy,
+    DrawMem,
     Irq,
     Save,
     Cursor,
@@ -101,6 +109,12 @@ pub enum Token {
     Expand,
     Priority,
     Mod,
+    Peek16,      // peek16(addr) — 16-bit memory read (lo at addr, hi at addr+1)
+    Poke16,      // poke16 addr, val — 16-bit memory write
+    Open,        // open channel, device, secondary [, "filename"]
+    Close,       // close channel — CLOSE ($FFC3)
+    PrintHash,   // print# channel, ... — CHKOUT + CHROUT + CLRCHN
+    AsmSource(String), // asm { ... } — raw assembly source captured verbatim
 
     // Operators
     Plus,
@@ -256,6 +270,14 @@ impl Lexer {
             return Token::Chr;
         }
         match s.as_str() {
+            "print" => {
+                // print# (file print) — consume '#' immediately following with no space
+                if self.peek() == Some('#') {
+                    self.advance();
+                    return Token::PrintHash;
+                }
+                Token::Print
+            }
             "var"      => Token::Var,
             "sub"      => Token::Sub,
             "end"      => Token::End,
@@ -267,7 +289,7 @@ impl Lexer {
             "to"       => Token::To,
             "step"     => Token::Step,
             "break"    => Token::Break,
-            "print"    => Token::Print,
+            // "print" is handled above in the match (before the string match block)
             "return"   => Token::Return,
             "call"     => Token::Call,
             "cls"        => Token::Cls,
@@ -277,7 +299,24 @@ impl Lexer {
             "off"        => Token::Off,
             "fast"       => Token::Fast,
             "sys"        => Token::Sys,
-            "asm"        => Token::Asm,
+            "asm" => {
+                // asm { ... } — capture block source verbatim for the inline assembler
+                while matches!(self.peek(), Some(' ') | Some('\t')) { self.advance(); }
+                if self.peek() == Some('{') {
+                    self.advance(); // consume '{'
+                    let mut src = String::new();
+                    loop {
+                        match self.peek() {
+                            None        => break,
+                            Some('}'  ) => { self.advance(); break; }
+                            Some(c)     => { src.push(c); self.advance(); }
+                        }
+                    }
+                    Token::AsmSource(src)
+                } else {
+                    Token::Asm // fall through: asm $EA, $EA raw-byte form
+                }
+            }
             "str_to_int" => Token::StrToInt,
             "numstr"     => Token::NumStr,
             "color"      => Token::Color,
@@ -313,6 +352,7 @@ impl Lexer {
             "sgn"        => Token::Sgn,
             "word"       => Token::Word,
             "array"      => Token::Array,
+            "array_word" => Token::ArrayWord,
             "for"        => Token::For,
             "next"       => Token::Next,
             "plot"       => Token::Plot,
@@ -320,6 +360,10 @@ impl Lexer {
             "gcls"       => Token::Gcls,
             "bye"        => Token::Bye,
             "joy"        => Token::Joy,
+            "mouse_x"   => Token::MouseX,
+            "mouse_y"   => Token::MouseY,
+            "mouse_btn" => Token::MouseBtn,
+            "paint"     => Token::Paint,
             "line"       => Token::Line,
             "sin"        => Token::Sin,
             "cos"        => Token::Cos,
@@ -329,6 +373,8 @@ impl Lexer {
             "stash"      => Token::Stash,
             "fetch"      => Token::Fetch,
             "multi"      => Token::Multi,
+            "block"      => Token::Block,
+            "plot4"      => Token::Plot4,
             "exit"       => Token::Bye,
             "incbin"     => Token::Incbin,
             "include"    => Token::Include,
@@ -338,6 +384,7 @@ impl Lexer {
             "input"      => Token::Input,
             "fill"       => Token::Fill,
             "memcopy"    => Token::Memcopy,
+            "drawmem"    => Token::DrawMem,
             "irq"        => Token::Irq,
             "save"       => Token::Save,
             "cursor"     => Token::Cursor,
@@ -347,6 +394,10 @@ impl Lexer {
             "expand"     => Token::Expand,
             "priority"   => Token::Priority,
             "mod"        => Token::Mod,
+            "peek16"     => Token::Peek16,
+            "poke16"     => Token::Poke16,
+            "open"       => Token::Open,
+            "close"      => Token::Close,
             "sprite"     => Token::Sprite,
             "sprhit"     => Token::SpriteHit,
             "sprbghit"   => Token::SpriteBgHit,
@@ -604,15 +655,11 @@ mod tests {
     }
 
     #[test] fn asm_block_tokens() {
+        // asm { ... } is now captured as a single AsmSource token
         let tokens = tokenize("asm { $A9 $07 }");
-        assert_eq!(tokens, vec![
-            Token::Asm,
-            Token::LBrace,
-            Token::Number(0xA9),
-            Token::Number(0x07),
-            Token::RBrace,
-            Token::Eof,
-        ]);
+        assert!(matches!(&tokens[0], Token::AsmSource(s) if s.contains("$A9")),
+            "asm block should produce AsmSource token, got {:?}", tokens);
+        assert_eq!(tokens[1], Token::Eof);
     }
 
     #[test] fn newline_separates() {

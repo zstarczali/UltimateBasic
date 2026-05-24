@@ -9,6 +9,9 @@ pub enum Expr {
     Inkey,    // inkey() — non-blocking $FFE4; 0 = no key, else PETSCII code
     ReuPresent,  // reu_present() — 1 if REU detected, 0 otherwise
     Joy(u8),  // joy(1) or joy(2) — read joystick port, returns inverted bits 0-4
+    MouseX,   // mouse_x()  — SID $D419 POT X register (0-255)
+    MouseY,   // mouse_y()  — SID $D41A POT Y register (0-255)
+    MouseBtn, // mouse_btn() — CIA1 $DC00 bits: bit0=left(fire), bit1=right(up direction)
     Sin(Box<Expr>),   // sin(angle) — 8-bit angle 0-255, returns 0-255 (center=128)
     Cos(Box<Expr>),   // cos(angle) — same as sin with +64 offset
     HexFmt(Box<Expr>), // hex(n) — in print: shows value as 2-digit uppercase hex
@@ -25,6 +28,7 @@ pub enum Expr {
     SpriteBgHit,                 // sprbghit() — read $D01F (sprite–background collision, cleared on read)
     StrLen(Box<Expr>),           // len(s)  — length of null-terminated string var, 0–255
     Asc(Box<Expr>),              // asc(s)  — PETSCII code of first character (0 if empty)
+    Peek16(Box<Expr>),           // peek16(addr) — read 16-bit word: lo at addr, hi at addr+1
 }
 
 #[derive(Debug, Clone)]
@@ -44,7 +48,7 @@ pub enum ColorTarget { Text, Border, Bg }
 /// `Array` = byte array       (`var arr = array(10)`)
 /// `Int`   = 8-bit (default)
 #[derive(Debug, Clone, PartialEq)]
-pub enum VarType { Int, Str, Float, Word, Array }
+pub enum VarType { Int, Str, Float, Word, Array, WordArray }
 
 /// REU (RAM Expansion Unit) transfer type.
 #[derive(Debug, Clone)]
@@ -62,7 +66,7 @@ pub enum Stmt {
     WhileLoop(Expr, Vec<Stmt>),
     Break,
     Cls { fast: bool },
-    Graphics { on: bool, multi: bool },  // multi=true → multicolor bitmap mode ($D016.b4 set)
+    Graphics { on: bool, multi: bool, block: bool }, // multi=true → multicolor bitmap; block=true → 4×4 text block mode
     Display { on: bool },  // display on/off — controls VIC DEN bit ($D011 bit4)
     Sys(u16),
     AsmBytes(Vec<u8>),
@@ -76,6 +80,8 @@ pub enum Stmt {
     Goto(String),
     Poke(Expr, Expr),
     Plot(Expr, Expr), // plot x, y — set pixel in bitmap mode
+    Plot4(Expr, Expr),      // plot4 x, y — set 4×4 block pixel
+    Plot4Erase(Expr, Expr), // plot4 erase x, y — clear 4×4 block pixel
     Circle { x: Expr, y: Expr, radius: Expr }, // circle x,y,r — midpoint circle using bitmap plot helper
     Line { x1: Expr, y1: Expr, x2: Expr, y2: Expr }, // line x1,y1,x2,y2 — Bresenham line
     Gcls,             // gcls — clear bitmap screen
@@ -87,12 +93,14 @@ pub enum Stmt {
     Input { prompt: Option<String>, var: String }, // input ["prompt",] var — BASIN line input
     Fill { addr: Expr, len: Expr, val: Expr },     // fill addr, len, val — memory block fill
     Memcopy { src: Expr, dst: Expr, len: Expr },   // memcopy src, dst, len — memory block copy
+    DrawMem { src: Expr, dst: Expr, width: Expr, height: Expr, stride: Expr }, // drawmem src, dst, width, height, stride — 2-D rectangular blit
     Irq { handler: Expr, line: Option<Expr> },     // irq handler [, raster_line] — raster IRQ setup
     Save { filename: String, addr: Option<Expr>, len: Option<Expr> }, // save "file" [, addr, len] — KERNAL SAVE
     Cursor { x: Expr, y: Expr },                   // cursor x, y — KERNAL PLOT set cursor position
     RepeatLoop(Vec<Stmt>, Expr),                   // repeat ... until cond — do-while loop
     PlotErase(Expr, Expr),                         // plot erase x, y — clear pixel in bitmap
     PlotXor(Expr, Expr),                           // plot xor x, y — XOR pixel in bitmap
+    Paint(Expr, Expr),                             // paint x, y — 4-connected flood fill from (x,y)
     SpriteExpandX { id: Expr, on: bool },          // sprite expand x id, on/off — $D01D
     SpriteExpandY { id: Expr, on: bool },          // sprite expand y id, on/off — $D017
     SpritePriority { id: Expr, on: bool },         // sprite priority id, on/off — $D01B
@@ -109,4 +117,14 @@ pub enum Stmt {
     SpriteMulticolor { id: Expr, on: bool },       // sprite_multicolor id, on/off — bit in $D01C
     /// Align to 64-byte boundary, embed 63 sprite bytes, emit `LDA #page; STA $07F8+id`.
     SpriteDef { id: u8, bytes: Vec<u8> },
+    /// poke16 addr, val — write 16-bit little-endian value to two consecutive bytes.
+    Poke16(Expr, Expr),
+    /// open channel, device, secondary [, "filename"] — KERNAL OPEN (SETNAM+SETLFS+OPEN)
+    Open { channel: Expr, device: Expr, secondary: Expr, filename: Option<String> },
+    /// close channel — KERNAL CLOSE ($FFC3) with A = channel number
+    Close(Expr),
+    /// print# channel, ... — CHKOUT ($FFC9) then CHROUT per char then CLRCHN ($FFCC)
+    PrintHash { channel: Expr, args: Vec<Expr> },
+    /// asm { ... } — raw 6502 assembly source assembled inline at the current code position
+    AsmSource(String),
 }

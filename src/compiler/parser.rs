@@ -7,23 +7,28 @@ pub struct Parser {
     pos: usize,
     consts: std::collections::HashMap<String, i16>,
     base_dir: Option<std::path::PathBuf>,
+    errors: Vec<String>,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0, consts: std::collections::HashMap::new(), base_dir: None }
+        Self { tokens, pos: 0, consts: std::collections::HashMap::new(), base_dir: None, errors: vec![] }
     }
 
     pub fn new_with_base(tokens: Vec<Token>, base_dir: std::path::PathBuf) -> Self {
-        Self { tokens, pos: 0, consts: std::collections::HashMap::new(), base_dir: Some(base_dir) }
+        Self { tokens, pos: 0, consts: std::collections::HashMap::new(), base_dir: Some(base_dir), errors: vec![] }
     }
 
     pub fn new_with_consts(tokens: Vec<Token>, consts: std::collections::HashMap<String, i16>) -> Self {
-        Self { tokens, pos: 0, consts, base_dir: None }
+        Self { tokens, pos: 0, consts, base_dir: None, errors: vec![] }
     }
 
     pub fn new_with_consts_and_base(tokens: Vec<Token>, consts: std::collections::HashMap<String, i16>, base_dir: Option<std::path::PathBuf>) -> Self {
-        Self { tokens, pos: 0, consts, base_dir }
+        Self { tokens, pos: 0, consts, base_dir, errors: vec![] }
+    }
+
+    pub fn errors(&self) -> &[String] {
+        &self.errors
     }
 
     fn peek(&self) -> &Token {
@@ -47,6 +52,15 @@ impl Parser {
             self.advance();
             if self.tokens.get(self.pos.saturating_sub(1)) == Some(&Token::Eof) { break; }
         }
+    }
+
+    fn reject_stmt(&mut self, message: &str) -> Option<Stmt> {
+        self.errors.push(message.to_string());
+        while !matches!(self.peek(), Token::Newline | Token::Eof) {
+            self.advance();
+        }
+        self.expect_newline();
+        None
     }
 
     pub fn parse(&mut self) -> Vec<Stmt> {
@@ -178,6 +192,15 @@ impl Parser {
                     if self.peek() == &Token::RParen { self.advance(); }
                     self.expect_newline();
                     return Some(Stmt::VarDecl { name, vtype: Some(VarType::Array), expr: size });
+                }
+                // array_word(N) initializer — word (16-bit) element array
+                if matches!(self.peek(), Token::ArrayWord) {
+                    self.advance(); // consume 'array_word'
+                    if self.peek() == &Token::LParen { self.advance(); }
+                    let size = self.parse_expr();
+                    if self.peek() == &Token::RParen { self.advance(); }
+                    self.expect_newline();
+                    return Some(Stmt::VarDecl { name, vtype: Some(VarType::WordArray), expr: size });
                 }
                 let expr = self.parse_expr();
                 self.expect_newline();
@@ -337,8 +360,14 @@ impl Parser {
                 let multi = if on && self.peek() == &Token::Multi {
                     self.advance(); true
                 } else { false };
+                let block = if on && !multi && self.peek() == &Token::Block {
+                    self.advance(); true
+                } else { false };
+                if block {
+                    return self.reject_stmt("Unsupported feature: graphics on block");
+                }
                 self.expect_newline();
-                Some(Stmt::Graphics { on, multi })
+                Some(Stmt::Graphics { on, multi, block })
             }
             Token::Display => {
                 self.advance();
@@ -365,6 +394,12 @@ impl Parser {
                     self.parse_asm_line()
                 };
                 Some(Stmt::AsmBytes(bytes))
+            }
+            Token::AsmSource(src) => {
+                // asm { ... } block: raw source captured by the lexer, assembled at codegen time
+                let src = src.clone();
+                self.advance();
+                Some(Stmt::AsmSource(src))
             }
             Token::NumStr => {
                 self.advance();
@@ -449,6 +484,53 @@ impl Parser {
                 self.expect_newline();
                 Some(Stmt::Poke(addr, val))
             }
+            Token::Poke16 => {
+                self.advance();
+                let addr = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let val = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::Poke16(addr, val))
+            }
+            Token::Open => {
+                self.advance();
+                let channel = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let device = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let secondary = self.parse_expr();
+                let filename = if self.peek() == &Token::Comma {
+                    self.advance();
+                    if let Token::StringLit(s) = self.peek().clone() {
+                        self.advance(); Some(s)
+                    } else { None }
+                } else { None };
+                self.expect_newline();
+                Some(Stmt::Open { channel, device, secondary, filename })
+            }
+            Token::Close => {
+                self.advance();
+                let channel = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::Close(channel))
+            }
+            Token::PrintHash => {
+                self.advance();
+                let channel = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let mut args = vec![];
+                if !matches!(self.peek(), Token::Newline | Token::Eof | Token::Colon) {
+                    args.push(self.parse_expr());
+                    while self.peek() == &Token::Comma {
+                        self.advance();
+                        if !matches!(self.peek(), Token::Newline | Token::Eof | Token::Colon) {
+                            args.push(self.parse_expr());
+                        }
+                    }
+                }
+                self.expect_newline();
+                Some(Stmt::PrintHash { channel, args })
+            }
             Token::Plot => {
                 self.advance();
                 if matches!(self.peek(), Token::Erase) {
@@ -472,6 +554,18 @@ impl Parser {
                     self.expect_newline();
                     Some(Stmt::Plot(x, y))
                 }
+            }
+            Token::Plot4 => {
+                self.advance();
+                self.reject_stmt("Unsupported feature: plot4")
+            }
+            Token::Paint => {
+                self.advance();
+                let x = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let y = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::Paint(x, y))
             }
             Token::Circle => {
                 self.advance();
@@ -600,6 +694,20 @@ impl Parser {
                 let len = self.parse_expr();
                 self.expect_newline();
                 Some(Stmt::Memcopy { src, dst, len })
+            }
+            Token::DrawMem => {
+                self.advance();
+                let src = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let dst = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let width = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let height = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let stride = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::DrawMem { src, dst, width, height, stride })
             }
             Token::Irq => {
                 self.advance();
@@ -976,11 +1084,32 @@ impl Parser {
                 if self.peek() == &Token::RParen { self.advance(); } // skip )
                 Expr::Joy(port)
             }
+            Token::MouseX => {
+                if self.peek() == &Token::LParen { self.advance(); }
+                if self.peek() == &Token::RParen { self.advance(); }
+                Expr::MouseX
+            }
+            Token::MouseY => {
+                if self.peek() == &Token::LParen { self.advance(); }
+                if self.peek() == &Token::RParen { self.advance(); }
+                Expr::MouseY
+            }
+            Token::MouseBtn => {
+                if self.peek() == &Token::LParen { self.advance(); }
+                if self.peek() == &Token::RParen { self.advance(); }
+                Expr::MouseBtn
+            }
             Token::Peek => {
                 if self.peek() == &Token::LParen { self.advance(); }
                 let arg = self.parse_expr();
                 if self.peek() == &Token::RParen { self.advance(); }
                 Expr::Peek(Box::new(arg))
+            }
+            Token::Peek16 => {
+                if self.peek() == &Token::LParen { self.advance(); }
+                let arg = self.parse_expr();
+                if self.peek() == &Token::RParen { self.advance(); }
+                Expr::Peek16(Box::new(arg))
             }
             Token::Rnd => {
                 if self.peek() == &Token::LParen { self.advance(); self.advance(); } // skip ()
@@ -1354,15 +1483,15 @@ mod tests {
     }
     #[test] fn graphics_on() {
         let stmts = parse("graphics on");
-        assert!(matches!(&stmts[0], Stmt::Graphics { on: true, multi: false }));
+        assert!(matches!(&stmts[0], Stmt::Graphics { on: true, multi: false, block: false }));
     }
     #[test] fn graphics_off() {
         let stmts = parse("graphics off");
-        assert!(matches!(&stmts[0], Stmt::Graphics { on: false, multi: false }));
+        assert!(matches!(&stmts[0], Stmt::Graphics { on: false, multi: false, block: false }));
     }
     #[test] fn graphics_on_multi() {
         let stmts = parse("graphics on multi");
-        assert!(matches!(&stmts[0], Stmt::Graphics { on: true, multi: true }));
+        assert!(matches!(&stmts[0], Stmt::Graphics { on: true, multi: true, block: false }));
     }
 
     // ── Colors ───────────────────────────────────────────────────────────
@@ -1395,8 +1524,9 @@ mod tests {
         assert!(matches!(&stmts[0], Stmt::AsmBytes(b) if b.len() == 2));
     }
     #[test] fn asm_block() {
+        // asm { ... } now produces AsmSource; raw bytes are assembled at codegen time
         let stmts = parse("asm { $A9 $07 }");
-        assert!(matches!(&stmts[0], Stmt::AsmBytes(b) if b.len() == 2));
+        assert!(matches!(&stmts[0], Stmt::AsmSource(_)));
     }
 
     // ── IntToStr (numstr) ────────────────────────────────────────────────

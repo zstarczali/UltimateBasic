@@ -27,6 +27,15 @@ src/
 examples/
   features.ub          – original feature demo
   new_features.ub      – arrays, word vars, sub params, string vars demo
+  bitmap_demo.ub       – 320×200 bitmap, plot, circle, line
+  joystick_demo.ub     – joystick reading, sprite movement
+  mux_demo.ub          – raster sprite multiplexer (3 windows × 8 sprites)
+  orbit_demo.ub        – 24-sprite orbit with pulsating radius
+  plasma_demo.ub       – plasma-effect bitmap with raster bar animation
+  sprite_data.ub       – sprdef shape data (included by other demos)
+  sprite_mux_orbit.ub  – 24-sprite orbit with sprdef + precomputed positions
+  sprite_orbit_demo.ub – 8 hardware sprites in circular orbit via sin/cos
+  reu_bitmap_demo.ub   – REU stash/fetch with bitmap graphics
 ```
 
 ## Architecture
@@ -97,6 +106,7 @@ var ptr: word = $0400    # 16-bit (two ZP bytes, lo/hi)
 var msg = "HELLO"        # string (inferred from literal)
 var s: string = "TEXT"   # string (explicit type)
 var scores = array(10)   # byte array, 10 elements at $C000+
+var times  = array_word(8) # word array, 8 word elements at $C000+
 const SCREEN = $0400     # compile-time constant (substituted inline)
 ```
 
@@ -107,7 +117,8 @@ const SCREEN = $0400     # compile-time constant (substituted inline)
 | `int` | 8-bit | default for numeric vars |
 | `word` | 16-bit | two ZP bytes; usable as address in `poke`/`peek` |
 | `string` | pointer | ZP pair → null-terminated PETSCII in code segment |
-| `array(N)` | N bytes | lives at `$C000+`, not ZP |
+| `array(N)` | N bytes | byte elements; lives at `$C000+`, not ZP |
+| `array_word(N)` | N×2 bytes | word (16-bit) elements; lives at `$C000+`, not ZP |
 
 ### Arithmetic & Bitwise
 
@@ -250,6 +261,14 @@ var v = scores[0]        # constant index → LDA $C000
 var v = scores[i]        # variable index → LDA (ptr),Y
 
 print scores[2]          # inline in print
+
+var times = array_word(8)  # allocates 16 bytes (8×2) at $C000+
+
+times[0] = $1234         # constant index → STA $C000 (lo), STA $C001 (hi)
+times[i] = $1234         # variable index → ASL A for stride; (ptr),Y × 2
+
+var t: word = times[0]   # constant index → LDA $C000, LDA $C001
+var t: word = times[i]   # variable index → ASL A; LDA (ptr),Y × 2
 ```
 
 ### 16-bit Variables (word)
@@ -290,8 +309,8 @@ display on               # re-enable VIC display ($D011 bit4 = DEN → 1)
 display off              # blank display  ($D011 bit4 = DEN → 0)
 ```
 
-`graphics on` leaves display **blanked** (DEN=0). Call `display on` after `gcls` and drawing
-to show the result without the initial bitmap-RAM flash.
+`graphics on` and `graphics on multi` leave the display **blanked** (DEN=0). Call `display on`
+after `gcls` and drawing to show the result without the initial bitmap-RAM flash.
 
 ### Keyboard
 
@@ -301,6 +320,9 @@ var k   = inkey()        # non-blocking $FFE4: returns PETSCII code, or 0 if no 
 var j = joy(2)           # read joystick port 2 (CIA1 $DC00); returns inverted bits 0-4
 var j = joy(1)           # read joystick port 1 (CIA1 $DC01)
                          # bit0=up(1), bit1=down(2), bit2=left(4), bit3=right(8), bit4=fire(16)
+var mx = mouse_x()       # 1351 mouse X position (SID POT X, $D419); 0-255
+var my = mouse_y()       # 1351 mouse Y position (SID POT Y, $D41A); 0-255
+var mb = mouse_btn()     # mouse buttons: bit0=left (fire, $DC00 bit4), bit1=right (up-pin, $DC00 bit0)
 ```
 
 `getch()` busy-loops until a key is pressed. `inkey()` returns immediately with 0 if no key is available — use it in game loops.
@@ -407,7 +429,14 @@ poke $D020, 2            # STA $D020 (absolute)
 poke addr_var, 6         # STA (addr_var),Y  if addr_var is word type
 var v = peek($D012)      # LDA $D012
 var v = peek(addr_var)   # LDA (addr_var),Y  if addr_var is word type
+
+var w: word = peek16($C000)   # read 16-bit little-endian: lo=$C000, hi=$C001
+poke16 $0314, $EA81           # write 16-bit little-endian: lo→$0314, hi→$0315
+poke16 ptr, w                 # word var as address; word var as value
 ```
+
+`peek16(addr)` reads two consecutive bytes (lo, hi) and returns them as a 16-bit `word`. In an 8-bit context (e.g. assigned to an `int` var) only the low byte is returned.
+`poke16 addr, val` writes two bytes: lo(val) → addr, hi(val) → addr+1. Both `addr` and `val` may be constants, `word` variables, or expressions.
 
 ### String Functions
 
@@ -426,7 +455,7 @@ var c = asc("A")         # compile-time: returns constant PETSCII code
 var a = abs(x - 20)      # two's-complement absolute value
 var b = min(x, 39)       # 8-bit minimum
 var c = max(x, 0)        # 8-bit maximum
-var s = sgn(score)       # 0 = zero, 1 = positive, $FF = negative
+var s = sgn(score)       # 0 = zero, 1 = positive (1–127), $FF = negative (128–255)
 var r = rnd()            # LCG pseudo-random 0–255; seed from raster line
 var s = sin(angle)       # sine lookup: angle 0-255 (full circle), returns 0-255 (center=128)
 var c = cos(angle)       # cosine = sin(angle+64); same scale
@@ -504,6 +533,33 @@ save "PROG", start, len  # addr and len from word/int variables
 Calls `SETNAM` ($FFBD) + `SETLFS` ($FFBA, device 8) + `LOAD` ($FFD5) or `SAVE` ($FFD8).
 `save` requires both `addr` and `len`. The `addr` is stored in a scratch ZP pair; KERNAL SAVE receives that ZP address in A, end address (addr+len) in X/Y.
 
+### Serial Channel File I/O
+
+```basic
+open 1, 8, 2, "MYFILE"  # open logical file 1, device 8, secondary 2, name "MYFILE"
+open 2, 4, 7             # open printer (device 4), no filename
+open ch, dev, sec        # channel, device, secondary from variables
+
+print# 1, "HELLO"        # send "HELLO"+CR to logical file 1
+print# ch, x, "text"     # any mix of vars, strings — same as print but to file
+
+close 1                  # close logical file 1
+close ch                 # channel from variable
+```
+
+`open` calls `SETNAM` ($FFBD) + `SETLFS` ($FFBA) + `OPEN` ($FFC0). Without a filename, SETNAM is called with length 0.
+`print#` routes output to the given logical file via `CHKOUT` ($FFC9), then calls `CHROUT` for each character (and a trailing CR), then restores output via `CLRCHN` ($FFCC).
+`close` puts the channel number in A and calls `CLOSE` ($FFC3).
+
+| KERNAL | Address | Description |
+|---|---|---|
+| `SETNAM` | `$FFBD` | Set filename (A=len, X/Y=ptr) |
+| `SETLFS` | `$FFBA` | Set logical/physical/secondary (A/X/Y) |
+| `OPEN`   | `$FFC0` | Open logical file |
+| `CLOSE`  | `$FFC3` | Close logical file (A=channel) |
+| `CHKOUT` | `$FFC9` | Direct output to channel (X=channel) |
+| `CLRCHN` | `$FFCC` | Restore default I/O channels |
+
 ### Cursor Positioning
 
 ```basic
@@ -535,11 +591,19 @@ fill ptr, len_word, val  # all operands can be expressions / word vars
 
 memcopy $C000, $0400, 256   # copy 256 bytes from $C000 → $0400
 memcopy src_ptr, dst_ptr, 40 # word vars for source and destination
+
+drawmem $C000, $0400, 8, 10, 40 # blit 8×10 rect from $C000 → screen at $0400, stride 40
+drawmem src_ptr, dst_ptr, w, h, 40 # word vars for src/dst
 ```
 
 Both `fill` and `memcopy` support 16-bit lengths (0–65535). When `len` is a numeric literal,
 its high byte = page count, low byte = partial count. For 8-bit expressions, only up to 255
 bytes are copied per call (high byte = 0). Use `word` variables for lengths > 255.
+
+`drawmem src, dst, width, height, stride` copies a 2-D rectangular block. `src` is read
+linearly (packed rows); `dst` advances by `stride` bytes between rows — use `40` ($28) for
+the C64 screen or color RAM (40 columns). Width, height and stride are all 8-bit values.
+`src` and `dst` may be constants, `word` variables, or 8-bit expressions.
 
 ### Raster IRQ
 
@@ -602,17 +666,19 @@ plot erase x, y          # clear pixel at (x, y) — AND ~mask into byte
 plot xor x, y            # toggle (XOR) pixel at (x, y) — EOR mask into byte
 circle x, y, r           # midpoint circle centered at (x, y) with radius r; clips off-screen points
 line x1, y1, x2, y2      # Bresenham line from (x1,y1) to (x2,y2); x: 0-255, y: 0-199
+paint x, y               # 4-connected flood fill from (x, y); fills clear pixels bounded by set ones
 ```
 
-Both `graphics on` variants blank the VIC display during setup ($D011 DEN bit) to prevent
-mode-switch glitches, then re-enable it in the new mode.
+All `graphics on` variants blank the VIC display during setup ($D011 DEN bit) to prevent
+mode-switch glitches. Call `display on` after `gcls` and drawing to unblank.
 
 **Hires (standard) bitmap**: each pixel is 0 or 1; foreground/background per 8×8 cell from color RAM.
 **Multicolor bitmap**: each pixel is 2 bits → 4 colors per 8×8 cell (effective 160×200 resolution).
 
-`gcls` should be called after `graphics on` to start with a blank screen.
+`gcls` in hires/multicolor mode clears bitmap $2000-$3FFF + fills video matrix.
 `plot` emits a compact helper subroutine once per program (all `plot` calls share it via `JSR`).
 `plot erase` and `plot xor` each emit their own helper (only if used); all three share the same ZP block.
+`paint` emits a ~200-byte flood-fill helper + allocates 512 bytes of stack at `$C000+` (same pool as arrays).
 
 X supports the full 320-pixel width. For x ≤ 255 the high byte is 0; for x = 256–319 it is 1, which the helper adds as an extra +256 to the byte address. `word` variables work directly as x.
 
@@ -633,12 +699,103 @@ print ">" + chr$(42)     # works in string concat context
 
 ```basic
 sys $FFD2                # JSR $FFD2
-asm $EA, $EA             # inline bytes (NOP NOP)
+asm $EA, $EA             # inline raw bytes (NOP NOP) — legacy form
 asm {
-  $A9 $07                # LDA #7
-  $8D $86 $02            # STA $0286
+  ; Full 6502 mnemonics and addressing modes
+  LDA #$07               ; immediate
+  STA $0286              ; absolute
+  LDA $50                ; zero-page  ($50 ≤ $FF → ZP auto-selected)
+  STA $0400,X            ; absolute,X indexed
+  LDA ($50),Y            ; (indirect),Y
+  LDA ($50,X)            ; (indirect,X)
+  JSR $FFD2              ; subroutine call
+  JMP $C000              ; absolute jump
+  JMP ($FFFC)            ; indirect jump
+
+  CLC
+  ADC #1                 ; 16-bit carry: ADC lo then ADC #0
+  SEC
+  SBC #1
+
+  TAX                    ; implied / transfer
+  ASL A                  ; accumulator (also just: ASL)
+  LSR A
+  ROL
+  ROR
+
+  ; Branches — operand is an absolute address; offset is computed automatically
+  BNE loop               ; forward or backward branch to local label
+  BEQ done
+
+loop:
+  NOP
+done:
+  RTS
+
+  ; #<label / #>label — lo / hi byte of a label address
+  LDA #<handler
+  STA $0314
+  LDA #>handler
+  STA $0315
+
+  ; * — current assembly location
+  JMP *
+
+  ; Raw hex bytes (backward-compatible with old asm { $xx ... } syntax)
+  $EA $EA                ; two NOP bytes
 }
 ```
+
+**Addressing modes supported:**
+
+| Syntax | Mode | Bytes | Example |
+|---|---|---|---|
+| (no operand) | Implied | 1 | `NOP`, `RTS` |
+| `A` | Accumulator | 1 | `ASL A`, `LSR` |
+| `#value` | Immediate | 2 | `LDA #$07` |
+| `$zz` (0–255) | Zero-page | 2 | `LDA $50` |
+| `$zz,X` | ZP,X | 2 | `LDA $50,X` |
+| `$zz,Y` | ZP,Y | 2 | `LDX $50,Y` |
+| `$xxxx` | Absolute | 3 | `LDA $0400` |
+| `$xxxx,X` | Absolute,X | 3 | `LDA $0400,X` |
+| `$xxxx,Y` | Absolute,Y | 3 | `LDA $0400,Y` |
+| `($xxxx)` | Indirect | 3 | `JMP ($FFFC)` |
+| `($zz,X)` | (Indirect,X) | 2 | `LDA ($50,X)` |
+| `($zz),Y` | (Indirect),Y | 2 | `LDA ($50),Y` |
+| `label` | Relative | 2 | `BNE label` (branches only) |
+
+**Notes:**
+- `$zz` (1–2 hex digits, value ≤ 255) selects zero-page if the instruction supports it; otherwise auto-upgrades to absolute. Use `$00xx` (4 digits) to force absolute.
+- Branch operands are absolute addresses; the relative byte offset is computed by the assembler.
+- Local labels (`name:`) are scoped to the `asm { }` block. Forward branches are resolved in pass 2.
+- `#<label` / `#>label` yield the lo / hi byte of a label's address.
+- `*` yields the current instruction address, so `JMP *` assembles as a self-loop.
+- Lines starting with `$`, `%`, or a digit are emitted as raw bytes (backward-compatible with the old `asm { $A9 $07 }` form).
+- Comments: `;` or `//` to end of line. (`#` is the immediate prefix, not a comment.)
+- The `asm $EA, $EA` single-line raw-byte form is unchanged.
+
+**Mixing `asm { }` with subroutine parameters**
+
+Parameter names are **not accessible** inside `asm { }` blocks — only the compiler knows their
+zero-page addresses. Use UltimateBasic statements to move parameter values into known
+locations *before* the `asm { }` block:
+
+```basic
+sub set_colors(border_col, bg_col)
+  poke $D020, border_col   # UltimateBasic resolves the ZP address
+  poke $D021, bg_col
+  asm {
+    ; values are already in $D020 / $D021
+    LDA $D020
+    ; ...
+  }
+end
+```
+
+For routines whose entire body is assembly — especially IRQ handlers that cross-reference
+each other — put **all** handlers in a single top-level `asm { }` block in the main
+program.  Labels defined in the same block are all in scope, so `irq1` and `irq2` can
+reference each other freely.  See `examples/raster_irq_demo.ub`.
 
 ### String ↔ Integer
 
@@ -705,14 +862,12 @@ data pointer) and a full hex dump of the generated machine code.
 
 | Feature | Limitation |
 |---|---|
-| Integer arithmetic | 8-bit unsigned (0–255); `word` vars hold 16-bit values but arithmetic is 8-bit |
-| 16-bit arithmetic | No carry propagation for `word + word`; use `poke`/`peek` patterns instead |
-| Arrays | Byte arrays only; max total size ~4 KB (`$C000–$CFFF`) |
+| Integer arithmetic | 8-bit unsigned (0–255); `word` vars hold 16-bit values |
 | Subroutines | No recursion — ZP parameter slots are statically allocated |
 | String vars | Read-only after init; assignment replaces the pointer, not the data |
 | String concat runtime | `s1 + s2` prints sequentially — no heap allocation or length tracking |
 | `rnd()` | Simple LCG, not cryptographic; period = 256 |
-| `abs()` / `sgn()` / `min()` / `max()` | 8-bit values only |
-| `plot` | No bounds checking; plotting outside 0–319 × 0–199 corrupts adjacent memory |
+| `abs()` / `sgn()` / `min()` / `max()` | 8-bit values only; `abs`/`sgn` treat values as signed (bit 7 = negative → `abs` two's-complements, `sgn` returns `$FF`); `min`/`max` are unsigned (0–255) |
+| `plot` | Out-of-range pixels are silently clipped (CheckPlot: Y ≥ 200 or X ≥ 320 → skip) |
 | `chr$` | No PETSCII↔ASCII mapping — n is passed as-is to CHROUT |
 | Error reporting | Compile-time only; no runtime error handling |

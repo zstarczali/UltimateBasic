@@ -11,18 +11,300 @@ fn compile_raw(src: &str) -> Vec<u8> {
     compile(src, &CompileOptions { basic_stub: false }).prg
 }
 
+#[test]
+fn graphics_on_block_is_rejected() {
+    let res = compile("graphics on block", &CompileOptions { basic_stub: false });
+    assert!(res.errors.iter().any(|err| err.contains("Unsupported feature: graphics on block")),
+        "expected graphics on block to be rejected, got {:?}", res.errors);
+}
+
+#[test]
+fn plot4_is_rejected() {
+    let res = compile("plot4 1, 2", &CompileOptions { basic_stub: false });
+    assert!(res.errors.iter().any(|err| err.contains("Unsupported feature: plot4")),
+        "expected plot4 to be rejected, got {:?}", res.errors);
+}
+
+struct TestCpu {
+    mem: [u8; 65536],
+    pc: u16,
+    sp: u8,
+    a: u8,
+    x: u8,
+    y: u8,
+    carry: bool,
+    zero: bool,
+    negative: bool,
+    call_depth: usize,
+}
+
+impl TestCpu {
+    fn new(prg: &[u8]) -> Self {
+        let mut mem = [0u8; 65536];
+        let load_addr = u16::from_le_bytes([prg[0], prg[1]]);
+        let start = load_addr as usize;
+        mem[start..start + prg[2..].len()].copy_from_slice(&prg[2..]);
+        Self {
+            mem,
+            pc: load_addr,
+            sp: 0xFF,
+            a: 0,
+            x: 0,
+            y: 0,
+            carry: false,
+            zero: false,
+            negative: false,
+            call_depth: 0,
+        }
+    }
+
+    fn run_until_main_rts(&mut self, max_steps: usize) {
+        for _ in 0..max_steps {
+            if !self.step() {
+                return;
+            }
+        }
+        panic!("test CPU exceeded step budget at ${:04X}", self.pc);
+    }
+
+    fn step(&mut self) -> bool {
+        let opcode = self.fetch_byte();
+        match opcode {
+            0x05 => {
+                let zp = self.fetch_byte();
+                self.a |= self.mem[zp as usize];
+                self.set_zn(self.a);
+            }
+            0x09 => {
+                let imm = self.fetch_byte();
+                self.a |= imm;
+                self.set_zn(self.a);
+            }
+            0x18 => self.carry = false,
+            0x20 => {
+                let addr = self.fetch_word();
+                let ret = self.pc.wrapping_sub(1);
+                self.push((ret >> 8) as u8);
+                self.push(ret as u8);
+                self.pc = addr;
+                self.call_depth += 1;
+            }
+            0x29 => {
+                let imm = self.fetch_byte();
+                self.a &= imm;
+                self.set_zn(self.a);
+            }
+            0x46 => {
+                let zp = self.fetch_byte();
+                let value = self.mem[zp as usize];
+                self.carry = value & 1 != 0;
+                let result = value >> 1;
+                self.mem[zp as usize] = result;
+                self.set_zn(result);
+            }
+            0x48 => self.push(self.a),
+            0x4A => {
+                self.carry = self.a & 1 != 0;
+                self.a >>= 1;
+                self.set_zn(self.a);
+            }
+            0x4C => self.pc = self.fetch_word(),
+            0x60 => {
+                if self.call_depth == 0 {
+                    return false;
+                }
+                let lo = self.pop();
+                let hi = self.pop();
+                self.pc = u16::from_le_bytes([lo, hi]).wrapping_add(1);
+                self.call_depth -= 1;
+            }
+            0x65 => {
+                let zp = self.fetch_byte();
+                let value = self.mem[zp as usize];
+                self.adc(value);
+            }
+            0x68 => {
+                self.a = self.pop();
+                self.set_zn(self.a);
+            }
+            0x85 => {
+                let zp = self.fetch_byte();
+                self.mem[zp as usize] = self.a;
+            }
+            0x8D => {
+                let addr = self.fetch_word();
+                self.mem[addr as usize] = self.a;
+            }
+            0x90 => self.branch(!self.carry),
+            0x91 => {
+                let zp = self.fetch_byte();
+                let addr = self.indirect_y_addr(zp);
+                self.mem[addr as usize] = self.a;
+            }
+            0x98 => {
+                self.a = self.y;
+                self.set_zn(self.a);
+            }
+            0x9D => {
+                let base = self.fetch_word();
+                let addr = base.wrapping_add(self.x as u16);
+                self.mem[addr as usize] = self.a;
+            }
+            0xA0 => {
+                self.y = self.fetch_byte();
+                self.set_zn(self.y);
+            }
+            0xA2 => {
+                self.x = self.fetch_byte();
+                self.set_zn(self.x);
+            }
+            0xA5 => {
+                let zp = self.fetch_byte();
+                self.a = self.mem[zp as usize];
+                self.set_zn(self.a);
+            }
+            0xA6 => {
+                let zp = self.fetch_byte();
+                self.x = self.mem[zp as usize];
+                self.set_zn(self.x);
+            }
+            0xA8 => {
+                self.y = self.a;
+                self.set_zn(self.y);
+            }
+            0xA9 => {
+                self.a = self.fetch_byte();
+                self.set_zn(self.a);
+            }
+            0x8A => {
+                self.a = self.x;
+                self.set_zn(self.a);
+            }
+            0xAA => {
+                self.x = self.a;
+                self.set_zn(self.x);
+            }
+            0xAD => {
+                let addr = self.fetch_word();
+                self.a = self.mem[addr as usize];
+                self.set_zn(self.a);
+            }
+            0xB0 => self.branch(self.carry),
+            0xB1 => {
+                let zp = self.fetch_byte();
+                let addr = self.indirect_y_addr(zp);
+                self.a = self.mem[addr as usize];
+                self.set_zn(self.a);
+            }
+            0xBD => {
+                let base = self.fetch_word();
+                let addr = base.wrapping_add(self.x as u16);
+                self.a = self.mem[addr as usize];
+                self.set_zn(self.a);
+            }
+            0xC5 => {
+                let zp = self.fetch_byte();
+                self.compare(self.a, self.mem[zp as usize]);
+            }
+            0xC9 => {
+                let imm = self.fetch_byte();
+                self.compare(self.a, imm);
+            }
+            0xC8 => {
+                self.y = self.y.wrapping_add(1);
+                self.set_zn(self.y);
+            }
+            0xCA => {
+                self.x = self.x.wrapping_sub(1);
+                self.set_zn(self.x);
+            }
+            0xD8 => {}
+            0xD0 => self.branch(!self.zero),
+            0xE6 => {
+                let zp = self.fetch_byte();
+                let result = self.mem[zp as usize].wrapping_add(1);
+                self.mem[zp as usize] = result;
+                self.set_zn(result);
+            }
+            0xE8 => {
+                self.x = self.x.wrapping_add(1);
+                self.set_zn(self.x);
+            }
+            0xF0 => self.branch(self.zero),
+            0x10 => self.branch(!self.negative),
+            _ => panic!("unsupported opcode ${:02X} at ${:04X}", opcode, self.pc.wrapping_sub(1)),
+        }
+        true
+    }
+
+    fn fetch_byte(&mut self) -> u8 {
+        let byte = self.mem[self.pc as usize];
+        self.pc = self.pc.wrapping_add(1);
+        byte
+    }
+
+    fn fetch_word(&mut self) -> u16 {
+        let lo = self.fetch_byte();
+        let hi = self.fetch_byte();
+        u16::from_le_bytes([lo, hi])
+    }
+
+    fn push(&mut self, value: u8) {
+        self.mem[0x0100 | self.sp as usize] = value;
+        self.sp = self.sp.wrapping_sub(1);
+    }
+
+    fn pop(&mut self) -> u8 {
+        self.sp = self.sp.wrapping_add(1);
+        self.mem[0x0100 | self.sp as usize]
+    }
+
+    fn set_zn(&mut self, value: u8) {
+        self.zero = value == 0;
+        self.negative = value & 0x80 != 0;
+    }
+
+    fn adc(&mut self, value: u8) {
+        let carry_in = u16::from(self.carry);
+        let sum = self.a as u16 + value as u16 + carry_in;
+        self.a = sum as u8;
+        self.carry = sum > 0xFF;
+        self.set_zn(self.a);
+    }
+
+    fn compare(&mut self, left: u8, right: u8) {
+        let result = left.wrapping_sub(right);
+        self.carry = left >= right;
+        self.zero = left == right;
+        self.negative = result & 0x80 != 0;
+    }
+
+    fn branch(&mut self, take: bool) {
+        let offset = self.fetch_byte() as i8;
+        if take {
+            self.pc = self.pc.wrapping_add_signed(offset as i16);
+        }
+    }
+
+    fn indirect_y_addr(&self, zp: u8) -> u16 {
+        let lo = self.mem[zp as usize];
+        let hi = self.mem[zp.wrapping_add(1) as usize];
+        u16::from_le_bytes([lo, hi]).wrapping_add(self.y as u16)
+    }
+}
+
 // ── BASIC stub ──────────────────────────────────────────────────────────────
 
 #[test]
 fn stub_is_correct_length() {
     let prg = compile_stub("");
-    assert_eq!(prg.len(), 15, "Empty program: 14 stub + 1 RTS = 15");
+    assert_eq!(prg.len(), 16, "Empty program: 14 stub + CLD(1) + RTS(1) = 16");
 }
 
 #[test]
 fn no_stub_is_correct_length() {
     let prg = compile_raw("");
-    assert_eq!(prg.len(), 3, "Empty program: 2 header + 1 RTS = 3");
+    assert_eq!(prg.len(), 4, "Empty program: 2 header + CLD(1) + RTS(1) = 4");
 }
 
 #[test]
@@ -42,22 +324,24 @@ fn stub_has_sys_2061() {
 #[test]
 fn var_decl_generates_code() {
     let prg = compile_raw("var x = 42");
-    // Should have: LDA #42, STA $02, RTS (+ header)
-    assert!(prg.len() > 6); // header(2) + LDA #42(2) + STA $02(2) + RTS(1)
-    assert_eq!(prg[2], 0xA9); // LDA immediate
-    assert_eq!(prg[3], 42);   // #42
-    assert_eq!(prg[4], 0x85); // STA zp
-    assert_eq!(prg[5], 0x02); // $02
-    assert_eq!(prg[6], 0x60); // RTS
+    // Should have: CLD, LDA #42, STA $02, RTS (+ header)
+    assert!(prg.len() > 7); // header(2) + CLD(1) + LDA #42(2) + STA $02(2) + RTS(1)
+    assert_eq!(prg[2], 0xD8); // CLD
+    assert_eq!(prg[3], 0xA9); // LDA immediate
+    assert_eq!(prg[4], 42);   // #42
+    assert_eq!(prg[5], 0x85); // STA zp
+    assert_eq!(prg[6], 0x02); // $02
+    assert_eq!(prg[7], 0x60); // RTS
 }
 
 #[test]
 fn var_assign_generates_code() {
     let prg = compile_raw("x = 99");
-    assert_eq!(prg[2], 0xA9); // LDA immediate
-    assert_eq!(prg[3], 99);
-    assert_eq!(prg[4], 0x85); // STA
-    assert_eq!(prg[5], 0x02); // first ZP var
+    assert_eq!(prg[2], 0xD8); // CLD
+    assert_eq!(prg[3], 0xA9); // LDA immediate
+    assert_eq!(prg[4], 99);
+    assert_eq!(prg[5], 0x85); // STA
+    assert_eq!(prg[6], 0x02); // first ZP var
 }
 
 #[test]
@@ -72,13 +356,14 @@ fn type_annotation_parses() {
 #[test]
 fn print_string_literal() {
     let prg = compile_raw("print \"A\"");
-    // print_str_inline: LDA #'A', JSR CHROUT, print_newline (LDA #$0D, JSR CHROUT), RTS
+    // print_str_inline: CLD, LDA #'A', JSR CHROUT, ..., RTS
     assert!(prg.len() > 10);
-    assert_eq!(prg[2], 0xA9); // LDA #'A'
-    assert_eq!(prg[3], 0x41); // 'A' = 65 in PETSCII? Actually uppercase A is same
-    assert_eq!(prg[4], 0x20); // JSR
-    assert_eq!(prg[5], 0xD2); // CHROUT lo
-    assert_eq!(prg[6], 0xFF); // CHROUT hi
+    assert_eq!(prg[2], 0xD8); // CLD
+    assert_eq!(prg[3], 0xA9); // LDA #'A'
+    assert_eq!(prg[4], 0x41); // 'A' = 65 in PETSCII
+    assert_eq!(prg[5], 0x20); // JSR
+    assert_eq!(prg[6], 0xD2); // CHROUT lo
+    assert_eq!(prg[7], 0xFF); // CHROUT hi
 }
 
 #[test]
@@ -193,7 +478,7 @@ fn or_operator() {
 fn not_operator() {
     let prg = compile_raw("var r = not 0");
     let bytes = &prg[2..];
-    assert!(bytes.contains(&0xF0)); // BEQ (for not: if == 0, skip to LDA #1)
+    assert!(bytes.contains(&0xB0)); // BCS (not: carry set = any non-zero → return 0)
 }
 
 // ── Control flow ────────────────────────────────────────────────────────────
@@ -560,18 +845,20 @@ fn sys_emits_jsr() {
 #[test]
 fn asm_bytes_inline() {
     let prg = compile_raw("asm $EA, $EA, $EA");
-    // Should have 3 NOPs
-    assert_eq!(prg[2], 0xEA);
+    // Should have 3 NOPs after CLD
+    assert_eq!(prg[2], 0xD8); // CLD
     assert_eq!(prg[3], 0xEA);
     assert_eq!(prg[4], 0xEA);
-    assert_eq!(prg[5], 0x60); // RTS follows
+    assert_eq!(prg[5], 0xEA);
+    assert_eq!(prg[6], 0x60); // RTS follows
 }
 
 #[test]
 fn asm_block_braces() {
     let prg = compile_raw("asm { $A9 $01 }");
-    assert_eq!(prg[2], 0xA9);
-    assert_eq!(prg[3], 0x01);
+    assert_eq!(prg[2], 0xD8); // CLD
+    assert_eq!(prg[3], 0xA9);
+    assert_eq!(prg[4], 0x01);
 }
 
 #[test]
@@ -610,8 +897,9 @@ fn blank_lines_ignored() {
 #[test]
 fn empty_program_compiles() {
     let prg = compile_raw("");
-    assert_eq!(prg.len(), 3); // header(2) + RTS(1)
-    assert_eq!(prg[2], 0x60); // RTS
+    assert_eq!(prg.len(), 4); // header(2) + CLD(1) + RTS(1)
+    assert_eq!(prg[2], 0xD8); // CLD
+    assert_eq!(prg[3], 0x60); // RTS
 }
 
 // ── Complex programs ────────────────────────────────────────────────────────
@@ -979,11 +1267,12 @@ fn word_copy_copies_both_bytes() {
 fn print_empty_is_just_newline() {
     let prg = compile_raw("print");
     let bytes = &prg[2..];
-    // header(2) + LDA #$0D(2) + JSR $FFD2(3) + RTS(1) = 8 bytes total
-    assert_eq!(prg.len(), 8, "bare print = header + LDA #CR + JSR CHROUT + RTS");
-    assert_eq!(bytes[0], 0xA9);  // LDA immediate
-    assert_eq!(bytes[1], 0x0D);  // #$0D = carriage return
-    assert_eq!(bytes[2], 0x20);  // JSR
+    // header(2) + CLD(1) + LDA #$0D(2) + JSR $FFD2(3) + RTS(1) = 9 bytes total
+    assert_eq!(prg.len(), 9, "bare print = header + CLD + LDA #CR + JSR CHROUT + RTS");
+    assert_eq!(bytes[0], 0xD8);  // CLD
+    assert_eq!(bytes[1], 0xA9);  // LDA immediate
+    assert_eq!(bytes[2], 0x0D);  // #$0D = carriage return
+    assert_eq!(bytes[3], 0x20);  // JSR
 }
 
 #[test]
@@ -1291,10 +1580,30 @@ fn min_max_compile() {
 }
 
 #[test]
-fn sgn_compiles() {
-    let src = "var s1 = sgn(0)\nvar s2 = sgn(5)";
-    let res = compile(src, &CompileOptions { basic_stub: false });
-    assert!(res.errors.is_empty());
+fn sgn_correct_opcodes() {
+    // sgn(0) → 0, sgn(positive 1-127) → 1, sgn(negative 128-255) → $FF
+    // New implementation uses BCC ($90) and BPL ($10) — NOT the old BCS-offset-4 pattern.
+    let prg = compile_raw("var s = sgn(200)");
+    let bytes = &prg[2..];
+    assert!(bytes.contains(&0x90), "sgn should emit BCC ($90) for zero branch");
+    assert!(bytes.contains(&0x10), "sgn should emit BPL ($10) for positive branch");
+    // Must emit LDA #$FF for the negative case
+    let has_ff = bytes.windows(2).any(|w| w[0] == 0xA9 && w[1] == 0xFF);
+    assert!(has_ff, "sgn should emit LDA #$FF ($A9 $FF) for negative case");
+}
+
+#[test]
+fn not_correct_opcode() {
+    // `not x` should return 0 for any non-zero value, not just for x==1.
+    // Implementation must use BCS ($B0), not BEQ ($F0).
+    let prg = compile_raw("var x = 5\nvar n = not x");
+    let bytes = &prg[2..];
+    // Must contain BCS ($B0) — the branch that handles all non-zero values
+    assert!(bytes.contains(&0xB0), "not should emit BCS ($B0), not BEQ");
+    // Must NOT use BEQ ($F0) as the branch after CMP #1
+    // (BEQ would only fire for x==1, breaking `not 5` etc.)
+    let cmp1_beq = bytes.windows(4).any(|w| w[0]==0xC9 && w[1]==0x01 && w[2]==0xF0);
+    assert!(!cmp1_beq, "not must not use BEQ after CMP #1 (breaks values > 1)");
 }
 
 #[test]
@@ -1774,8 +2083,8 @@ fn sprite_word_x_uses_lo_byte_and_runtime_msb() {
 
 #[test]
 fn sprite_def_aligns_to_64_byte_boundary() {
-    // sprdef 0, <63 bytes>  at $080D → JMP over data, data at $0840 (page $21)
-    // JMP = 4C lo hi = 3 bytes; $080D+3 = $0810; next 64-boundary = $0840
+    // sprdef 0, <63 bytes>  at $080D → CLD (1 byte), then JMP over data, data at $0840 (page $21)
+    // CLD = 1 byte, JMP = 3 bytes; $080D+4 = $0811; next 64-boundary = $0840
     let mut bytes63 = vec![0u8; 63];
     bytes63[1] = 0x7E; // row 1 byte 1, easily spotted
     let src = format!(
@@ -1785,8 +2094,10 @@ fn sprite_def_aligns_to_64_byte_boundary() {
     let prg = compile_raw(&src);
     let bytes = &prg[2..]; // skip load address
 
-    // JMP $?? $?? should be first instruction = 4C
-    assert_eq!(bytes[0], 0x4C, "sprite_def should start with JMP");
+    // CLD first
+    assert_eq!(bytes[0], 0xD8, "code should start with CLD");
+    // JMP $?? $?? should be next = 4C
+    assert_eq!(bytes[1], 0x4C, "sprite_def should start with JMP after CLD");
 
     // data_addr = $0840, page = $21; expect LDA #$21 somewhere
     let has_lda_page = bytes.windows(2).any(|w| w == &[0xA9, 0x21]);
@@ -1796,7 +2107,8 @@ fn sprite_def_aligns_to_64_byte_boundary() {
     let has_sta_ptr = bytes.windows(3).any(|w| w == &[0x8D, 0xF8, 0x07]);
     assert!(has_sta_ptr, "sprite_def should emit STA $07F8");
 
-    // $7E marker byte should be at $0841 = bytes[64] (prg[2..] starts at $0801; $0841-$0801=64)
+    // $7E marker byte: data starts at $0840, prg[2..] = $0801 base, offset = $0840-$0801 = $3F = 63
+    // byte[1] of sprite data = offset 64 from $080D base = bytes[$3F+1] = bytes[64]
     assert_eq!(bytes[64], 0x7E, "sprite data byte 1 should be at expected offset");
 }
 
@@ -1913,6 +2225,93 @@ fn memcopy_increments_src_and_dst_hi() {
     let inc_zp_count = bytes.windows(1).filter(|w| w[0] == 0xE6).count();
     // Must have at least 2 INC zp (src_hi and dst_hi) in the page loop
     assert!(inc_zp_count >= 2, "memcopy should INC src_hi and dst_hi each page");
+}
+
+// ── DrawMem ───────────────────────────────────────────────────────────────────
+
+#[test]
+fn drawmem_emits_lda_indirect_and_sta_indirect() {
+    let prg = compile_raw("drawmem $C000, $0400, 8, 10, 40");
+    let bytes = &prg[2..];
+    assert!(bytes.iter().any(|&b| b == 0xB1), "drawmem should emit LDA (src),Y ($B1)");
+    assert!(bytes.iter().any(|&b| b == 0x91), "drawmem should emit STA (dst),Y ($91)");
+}
+
+#[test]
+fn drawmem_emits_iny_for_inner_loop() {
+    let prg = compile_raw("drawmem $C000, $0400, 8, 10, 40");
+    let bytes = &prg[2..];
+    assert!(bytes.iter().any(|&b| b == 0xC8), "drawmem should emit INY ($C8)");
+}
+
+#[test]
+fn drawmem_emits_cpy_for_width_check() {
+    let prg = compile_raw("drawmem $C000, $0400, 8, 10, 40");
+    let bytes = &prg[2..];
+    // CPY zp is $C4
+    assert!(bytes.iter().any(|&b| b == 0xC4), "drawmem should emit CPY w_hold ($C4)");
+}
+
+#[test]
+fn drawmem_emits_dec_for_height_counter() {
+    let prg = compile_raw("drawmem $C000, $0400, 8, 10, 40");
+    let bytes = &prg[2..];
+    // DEC zp is $C6
+    assert!(bytes.iter().any(|&b| b == 0xC6), "drawmem should emit DEC h_ctr ($C6)");
+}
+
+#[test]
+fn drawmem_emits_inc_for_src_and_dst_hi() {
+    let prg = compile_raw("drawmem $C000, $0400, 8, 10, 40");
+    let bytes = &prg[2..];
+    // INC zp is $E6 — should appear for both INC src_hi and INC dst_hi
+    let inc_count = bytes.iter().filter(|&&b| b == 0xE6).count();
+    assert!(inc_count >= 2, "drawmem should emit INC src_hi and INC dst_hi ($E6), got {}", inc_count);
+}
+
+#[test]
+fn drawmem_initialises_src_address() {
+    // src = $C000 → LDA #$00, STA zp, LDA #$C0, STA zp+1
+    let prg = compile_raw("drawmem $C000, $0400, 8, 10, 40");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(2).any(|w| w[0] == 0xA9 && w[1] == 0x00),
+        "drawmem should load low byte $00 for src $C000");
+    assert!(bytes.windows(2).any(|w| w[0] == 0xA9 && w[1] == 0xC0),
+        "drawmem should load high byte $C0 for src $C000");
+}
+
+#[test]
+fn drawmem_initialises_dst_address() {
+    // dst = $0400 → LDA #$00, STA zp, LDA #$04, STA zp+1
+    let prg = compile_raw("drawmem $C000, $0400, 8, 10, 40");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(2).any(|w| w[0] == 0xA9 && w[1] == 0x04),
+        "drawmem should load high byte $04 for dst $0400");
+}
+
+#[test]
+fn drawmem_uses_word_var_for_src() {
+    let src = r#"
+var src: word = $C000
+drawmem src, $0400, 8, 10, 40
+"#;
+    let prg = compile_raw(src);
+    let bytes = &prg[2..];
+    // LDA zp ($A5) used to load word var lo/hi bytes
+    assert!(bytes.iter().any(|&b| b == 0xA5), "drawmem with word src should emit LDA zp ($A5)");
+    assert!(bytes.iter().any(|&b| b == 0xB1), "drawmem should still emit LDA (src),Y");
+}
+
+#[test]
+fn drawmem_uses_word_var_for_dst() {
+    let src = r#"
+var dst: word = $0400
+drawmem $C000, dst, 8, 10, 40
+"#;
+    let prg = compile_raw(src);
+    let bytes = &prg[2..];
+    assert!(bytes.iter().any(|&b| b == 0xA5), "drawmem with word dst should emit LDA zp ($A5)");
+    assert!(bytes.iter().any(|&b| b == 0x91), "drawmem should still emit STA (dst),Y");
 }
 
 // ── IRQ ───────────────────────────────────────────────────────────────────────
@@ -2244,3 +2643,702 @@ fn all_three_plot_modes_together() {
     assert!(bytes.contains(&0x45), "plot xor: EOR zp missing");
 }
 
+// ── peek16 / poke16 ─────────────────────────────────────────────────────────
+
+#[test]
+fn peek16_constant_addr_reads_two_bytes() {
+    // var p: word = peek16($D012) — should emit two LDA abs instructions
+    let prg = compile_raw("var p: word = peek16($D012)");
+    let bytes = &prg[2..];
+    // LDA $D012 = AD 12 D0 and LDA $D013 = AD 13 D0
+    assert!(bytes.windows(3).any(|w| w == &[0xAD, 0x12, 0xD0]), "peek16 lo: LDA $D012");
+    assert!(bytes.windows(3).any(|w| w == &[0xAD, 0x13, 0xD0]), "peek16 hi: LDA $D013");
+}
+
+#[test]
+fn poke16_constant_addr_writes_two_bytes() {
+    // poke16 $0314, $EA81 — writes lo=$81 to $0314, hi=$EA to $0315
+    let prg = compile_raw("poke16 $0314, $EA81");
+    let bytes = &prg[2..];
+    // STA $0314 = 8D 14 03  and  STA $0315 = 8D 15 03
+    assert!(bytes.windows(3).any(|w| w == &[0x8D, 0x14, 0x03]), "poke16: STA $0314 (lo)");
+    assert!(bytes.windows(3).any(|w| w == &[0x8D, 0x15, 0x03]), "poke16: STA $0315 (hi)");
+}
+
+#[test]
+fn poke16_word_value_emits_both_bytes() {
+    // var v: word = $1234 \n poke16 $C000, v
+    let prg = compile_raw("var v: word = $1234\npoke16 $C000, v");
+    let bytes = &prg[2..];
+    // Value lo = $34, hi = $12 loaded via LDA zp ($A5)
+    let has_lda_zp_twice = bytes.windows(1).filter(|w| *w == &[0xA5]).count() >= 2;
+    assert!(has_lda_zp_twice, "poke16 word var: should LDA zp twice (lo then hi)");
+    // STA $C000 = 8D 00 C0
+    assert!(bytes.windows(3).any(|w| w == &[0x8D, 0x00, 0xC0]), "poke16: STA $C000");
+}
+
+#[test]
+fn poke16_word_addr_uses_indirect() {
+    // var ptr: word = $C000 \n poke16 ptr, 0
+    let prg = compile_raw("var ptr: word = $C000\npoke16 ptr, 0");
+    let bytes = &prg[2..];
+    // STA (ptr),Y — opcode $91
+    assert!(bytes.contains(&0x91), "poke16 via word ptr: STA (zp),Y missing");
+}
+
+#[test]
+fn word_vardecl_with_add_emits_clc() {
+    // var ptr: word = $00FF \n  var ptr2: word = ptr + 1
+    let prg = compile_raw("var ptr: word = $00FF\nvar ptr2: word = ptr + 1");
+    let bytes = &prg[2..];
+    assert!(bytes.contains(&0x18), "word VarDecl += should emit CLC");
+    assert!(bytes.windows(2).any(|w| w == &[0x69, 0x00]),
+        "word VarDecl += should propagate carry with ADC #0");
+}
+
+#[test]
+fn word_vardecl_sub_emits_sec() {
+    let prg = compile_raw("var ptr: word = $0200\nvar ptr2: word = ptr - 5");
+    let bytes = &prg[2..];
+    assert!(bytes.contains(&0x38), "word VarDecl -= should emit SEC");
+    assert!(bytes.windows(2).any(|w| w == &[0xE9, 0x00]),
+        "word VarDecl -= should propagate borrow with SBC #0");
+}
+
+// ── open / close / print# ────────────────────────────────────────────────────
+
+#[test]
+fn open_emits_setnam_setlfs_open() {
+    // open 1, 8, 2, "TEST" → SETNAM($FFBD) + SETLFS($FFBA) + OPEN($FFC0)
+    let prg = compile_raw("open 1, 8, 2, \"TEST\"");
+    let bytes = &prg[2..];
+    // JSR $FFBD = 20 BD FF
+    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xBD, 0xFF]), "open: JSR SETNAM missing");
+    // JSR $FFBA = 20 BA FF
+    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xBA, 0xFF]), "open: JSR SETLFS missing");
+    // JSR $FFC0 = 20 C0 FF
+    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xC0, 0xFF]), "open: JSR OPEN missing");
+}
+
+#[test]
+fn close_emits_kernal_close() {
+    // close 1 → A = 1, JSR $FFC3
+    let prg = compile_raw("close 1");
+    let bytes = &prg[2..];
+    // LDA #1 = A9 01
+    assert!(bytes.windows(2).any(|w| w == &[0xA9, 0x01]), "close: LDA #1 missing");
+    // JSR $FFC3 = 20 C3 FF
+    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xC3, 0xFF]), "close: JSR CLOSE missing");
+}
+
+#[test]
+fn print_hash_emits_chkout_clrchn() {
+    // print# 3, "HI" → CHKOUT($FFC9) + CHROUT + CLRCHN($FFCC)
+    let prg = compile_raw("print# 3, \"HI\"");
+    let bytes = &prg[2..];
+    // TAX = AA (channel → X for CHKOUT)
+    assert!(bytes.contains(&0xAA), "print#: TAX missing");
+    // JSR $FFC9 = 20 C9 FF
+    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xC9, 0xFF]), "print#: JSR CHKOUT missing");
+    // JSR $FFCC = 20 CC FF
+    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xCC, 0xFF]), "print#: JSR CLRCHN missing");
+    // 'H' in PETSCII = $48
+    assert!(bytes.contains(&0x48), "print#: 'H' PETSCII byte missing");
+}
+
+#[test]
+fn open_no_filename_emits_empty_setnam() {
+    // open 2, 4, 7  (no filename → SETNAM with len=0)
+    let prg = compile_raw("open 2, 4, 7");
+    let bytes = &prg[2..];
+    // LDA #0 (len=0 for SETNAM) = A9 00 followed by LDX #0, LDY #0
+    // Check SETNAM is still called
+    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xBD, 0xFF]), "open no filename: JSR SETNAM missing");
+    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xFFC0u16 as u8, (0xFFC0u16 >> 8) as u8]),
+        "open no filename: JSR OPEN missing");
+}
+
+// ── asm { } inline assembler ─────────────────────────────────────────────────
+
+#[test]
+fn asm_block_raw_bytes_backward_compat() {
+    // Old raw-byte syntax inside asm { } still works
+    let prg = compile_raw("asm { $EA $EA }");
+    let bytes = &prg[2..];
+    // CLD, then Two NOPs ($EA)
+    assert_eq!(bytes[0], 0xD8, "CLD");
+    assert_eq!(&bytes[1..3], &[0xEA, 0xEA], "raw bytes in asm block");
+}
+
+#[test]
+fn asm_block_nop_rts_mnemonics() {
+    let prg = compile_raw("asm {\n  NOP\n  NOP\n  RTS\n}");
+    let bytes = &prg[2..];
+    assert_eq!(bytes[0], 0xD8, "CLD = $D8");
+    assert_eq!(bytes[1], 0xEA, "NOP = $EA");
+    assert_eq!(bytes[2], 0xEA, "NOP = $EA");
+    assert_eq!(bytes[3], 0x60, "RTS = $60");
+}
+
+#[test]
+fn asm_block_lda_immediate() {
+    // LDA #$07 → A9 07
+    let prg = compile_raw("asm { LDA #$07 }");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(2).any(|w| w == &[0xA9, 0x07]), "LDA #$07 = A9 07");
+}
+
+#[test]
+fn asm_block_sta_absolute() {
+    // STA $0286 → 8D 86 02
+    let prg = compile_raw("asm { STA $0286 }");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(3).any(|w| w == &[0x8D, 0x86, 0x02]), "STA $0286 = 8D 86 02");
+}
+
+#[test]
+fn asm_block_sta_zp() {
+    // STA $50 → 85 50 (zero-page because value ≤ 255 and written as 2 hex digits)
+    let prg = compile_raw("asm { STA $50 }");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(2).any(|w| w == &[0x85, 0x50]), "STA $50 = 85 50 (ZP)");
+}
+
+#[test]
+fn asm_block_jsr_absolute() {
+    // JSR $FFD2 → 20 D2 FF
+    let prg = compile_raw("asm { JSR $FFD2 }");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xD2, 0xFF]), "JSR $FFD2 = 20 D2 FF");
+}
+
+#[test]
+fn asm_block_jmp_absolute() {
+    // JMP $C000 → 4C 00 C0  (no ZP mode for JMP, auto-upgraded)
+    let prg = compile_raw("asm { JMP $C000 }");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(3).any(|w| w == &[0x4C, 0x00, 0xC0]), "JMP $C000 = 4C 00 C0");
+}
+
+#[test]
+fn asm_block_jmp_current_location() {
+    let prg = compile_raw("asm { JMP * }");
+    let load_addr = u16::from_le_bytes([prg[0], prg[1]]);
+    let bytes = &prg[2..];
+    let has_self_jump = bytes.windows(3).enumerate().any(|(offset, window)| {
+        window[0] == 0x4C && u16::from_le_bytes([window[1], window[2]]) == load_addr + offset as u16
+    });
+    assert!(has_self_jump, "JMP * should target its own instruction address");
+}
+
+#[test]
+fn asm_block_clc_adc() {
+    // CLC + ADC #1 → 18  69 01
+    let prg = compile_raw("asm {\n  CLC\n  ADC #1\n}");
+    let bytes = &prg[2..];
+    assert!(bytes.contains(&0x18), "CLC = $18");
+    assert!(bytes.windows(2).any(|w| w == &[0x69, 0x01]), "ADC #1 = 69 01");
+}
+
+#[test]
+fn asm_block_indirect_x() {
+    // LDA ($50,X) → A1 50
+    let prg = compile_raw("asm { LDA ($50,X) }");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(2).any(|w| w == &[0xA1, 0x50]), "LDA ($50,X) = A1 50");
+}
+
+#[test]
+fn asm_block_indirect_y() {
+    // LDA ($50),Y → B1 50
+    let prg = compile_raw("asm { LDA ($50),Y }");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(2).any(|w| w == &[0xB1, 0x50]), "LDA ($50),Y = B1 50");
+}
+
+#[test]
+fn asm_block_abs_x_indexed() {
+    // LDA $0400,X → BD 00 04
+    let prg = compile_raw("asm { LDA $0400,X }");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(3).any(|w| w == &[0xBD, 0x00, 0x04]), "LDA $0400,X = BD 00 04");
+}
+
+#[test]
+fn asm_block_branch_forward() {
+    // BNE past NOP: the branch should skip 1 byte ($01 offset)
+    // BNE +1 ($01), NOP, NOP  — BNE offset = 1 (skip the first NOP, land on second)
+    let prg = compile_raw("asm {\n  BNE skip\n  NOP\nskip:\n  NOP\n}");
+    let bytes = &prg[2..];
+    // D8  D0 01  EA  EA
+    assert_eq!(bytes[0], 0xD8, "CLD");
+    assert_eq!(bytes[1], 0xD0, "BNE opcode");
+    assert_eq!(bytes[2], 0x01, "BNE forward offset = 1");
+    assert_eq!(bytes[3], 0xEA, "NOP at skip-1");
+    assert_eq!(bytes[4], 0xEA, "NOP at skip");
+}
+
+#[test]
+fn asm_block_branch_backward() {
+    // loop: NOP / BNE loop  — backward branch: offset = -3 ($FD)
+    let prg = compile_raw("asm {\nloop:\n  NOP\n  BNE loop\n}");
+    let bytes = &prg[2..];
+    // D8  EA  D0 FD
+    assert_eq!(bytes[0], 0xD8, "CLD");
+    assert_eq!(bytes[1], 0xEA, "NOP");
+    assert_eq!(bytes[2], 0xD0, "BNE opcode");
+    assert_eq!(bytes[3], 0xFD_u8, "BNE backward offset = -3");
+}
+
+#[test]
+fn asm_block_transfers_implied() {
+    let prg = compile_raw("asm { TAX\nTAY\nTXA\nTYA }");
+    let bytes = &prg[2..];
+    assert_eq!(bytes[0], 0xD8, "CLD");
+    assert_eq!(bytes[1], 0xAA, "TAX");
+    assert_eq!(bytes[2], 0xA8, "TAY");
+    assert_eq!(bytes[3], 0x8A, "TXA");
+    assert_eq!(bytes[4], 0x98, "TYA");
+}
+
+#[test]
+fn asm_block_sec_sbc() {
+    // SEC + SBC #1 → 38  E9 01
+    let prg = compile_raw("asm {\n  SEC\n  SBC #1\n}");
+    let bytes = &prg[2..];
+    assert!(bytes.contains(&0x38), "SEC = $38");
+    assert!(bytes.windows(2).any(|w| w == &[0xE9, 0x01]), "SBC #1 = E9 01");
+}
+
+#[test]
+fn asm_block_comment_semicolon() {
+    // Comments with ; should be stripped
+    let prg = compile_raw("asm {\n  NOP  ; this is a comment\n  NOP\n}");
+    let bytes = &prg[2..];
+    assert_eq!(bytes[0], 0xD8, "CLD");
+    assert_eq!(bytes[1], 0xEA, "NOP");
+    assert_eq!(bytes[2], 0xEA, "NOP after comment line");
+}
+
+#[test]
+fn asm_block_mixed_mnemonics_and_raw_bytes() {
+    // Mixing mnemonic instructions with raw byte lines
+    let prg = compile_raw("asm {\n  NOP\n  $EA\n  NOP\n}");
+    let bytes = &prg[2..];
+    assert_eq!(bytes[0], 0xD8, "CLD");
+    assert_eq!(&bytes[1..4], &[0xEA, 0xEA, 0xEA], "three NOPs");
+}
+
+// ── 16-bit word AND/OR/XOR ───────────────────────────────────────────────────
+
+#[test]
+fn word_and_const_emits_two_and_imm() {
+    // var p: word = $ABCD \n var r: word = p and $FF00
+    // Should emit: LDA lzp; AND #$00; STA dst; LDA lzp+1; AND #$FF; STA dst+1
+    let prg = compile_raw("var p: word = $ABCD\nvar r: word = p and $FF00");
+    let bytes = &prg[2..];
+    // AND immediate = $29; hi mask $FF
+    let has_and_ff = bytes.windows(2).any(|w| w == &[0x29, 0xFF]);
+    let has_and_00 = bytes.windows(2).any(|w| w == &[0x29, 0x00]);
+    assert!(has_and_ff, "word AND $FF00: AND #$FF for hi byte missing");
+    assert!(has_and_00, "word AND $FF00: AND #$00 for lo byte missing");
+}
+
+#[test]
+fn word_or_const_emits_ora_imm() {
+    // var p: word = $0100 \n var r: word = p or $00FF
+    // Should set lo byte to $FF and leave hi byte as $01
+    let prg = compile_raw("var p: word = $0100\nvar r: word = p or $00FF");
+    let bytes = &prg[2..];
+    // ORA immediate = $09; lo mask $FF
+    let has_ora_ff = bytes.windows(2).any(|w| w == &[0x09, 0xFF]);
+    assert!(has_ora_ff, "word OR $00FF: ORA #$FF for lo byte missing");
+    // hi mask $00
+    let has_ora_00 = bytes.windows(2).any(|w| w == &[0x09, 0x00]);
+    assert!(has_ora_00, "word OR $00FF: ORA #$00 for hi byte missing");
+}
+
+#[test]
+fn word_xor_const_emits_eor_imm() {
+    // var p: word = $FFFF \n var r: word = p xor $00FF  → r = $FF00
+    let prg = compile_raw("var p: word = $FFFF\nvar r: word = p xor $00FF");
+    let bytes = &prg[2..];
+    // EOR immediate = $49
+    let eor_count = bytes.windows(1).filter(|w| w[0] == 0x49).count();
+    assert!(eor_count >= 2, "word XOR const: should emit EOR imm twice (lo and hi)");
+}
+
+#[test]
+fn word_and_word_var_emits_and_zp() {
+    // var a: word = $FFFF \n var b: word = $0F0F \n var r: word = a and b
+    let prg = compile_raw("var a: word = $FFFF\nvar b: word = $0F0F\nvar r: word = a and b");
+    let bytes = &prg[2..];
+    // AND zp = $25
+    let and_zp_count = bytes.windows(1).filter(|w| w[0] == 0x25).count();
+    assert!(and_zp_count >= 2, "word AND word: should emit AND zp twice (lo and hi)");
+}
+
+#[test]
+fn word_or_word_var_emits_ora_zp() {
+    let prg = compile_raw("var a: word = $0F00\nvar b: word = $00F0\nvar r: word = a or b");
+    let bytes = &prg[2..];
+    // ORA zp = $05
+    let ora_zp_count = bytes.windows(1).filter(|w| w[0] == 0x05).count();
+    assert!(ora_zp_count >= 2, "word OR word: should emit ORA zp twice");
+}
+
+#[test]
+fn word_xor_word_var_emits_eor_zp() {
+    let prg = compile_raw("var a: word = $AAAA\nvar b: word = $5555\nvar r: word = a xor b");
+    let bytes = &prg[2..];
+    // EOR zp = $45
+    let eor_zp_count = bytes.windows(1).filter(|w| w[0] == 0x45).count();
+    assert!(eor_zp_count >= 2, "word XOR word: should emit EOR zp twice");
+}
+
+// ── 16-bit word SHL/SHR ──────────────────────────────────────────────────────
+
+#[test]
+fn word_shl_const_emits_asl_rol() {
+    // var p: word = $0001 \n var r: word = p shl 1
+    let prg = compile_raw("var p: word = $0001\nvar r: word = p shl 1");
+    let bytes = &prg[2..];
+    // ASL zp = $06, ROL zp = $26
+    let has_asl = bytes.contains(&0x06);
+    let has_rol = bytes.contains(&0x26);
+    assert!(has_asl, "word SHL 1: ASL zp ($06) missing");
+    assert!(has_rol, "word SHL 1: ROL zp ($26) missing");
+}
+
+#[test]
+fn word_shr_const_emits_lsr_ror() {
+    // var p: word = $0100 \n var r: word = p shr 1
+    let prg = compile_raw("var p: word = $0100\nvar r: word = p shr 1");
+    let bytes = &prg[2..];
+    // LSR zp = $46, ROR zp = $66
+    let has_lsr = bytes.contains(&0x46);
+    let has_ror = bytes.contains(&0x66);
+    assert!(has_lsr, "word SHR 1: LSR zp ($46) missing");
+    assert!(has_ror, "word SHR 1: ROR zp ($66) missing");
+}
+
+#[test]
+fn word_shl_8_swaps_bytes() {
+    // p shl 8: hi = lo, lo = 0  →  LDA dst; STA dst+1; LDA #0; STA dst
+    let prg = compile_raw("var p: word = $0042\nvar r: word = p shl 8");
+    let bytes = &prg[2..];
+    // LDA #0 = A9 00
+    assert!(bytes.windows(2).any(|w| w == &[0xA9, 0x00]), "word SHL 8: LDA #0 missing");
+}
+
+#[test]
+fn word_shr_8_swaps_bytes() {
+    // p shr 8: lo = hi, hi = 0
+    let prg = compile_raw("var p: word = $4200\nvar r: word = p shr 8");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(2).any(|w| w == &[0xA9, 0x00]), "word SHR 8: LDA #0 missing");
+}
+
+#[test]
+fn word_shl_var_emits_beq_loop() {
+    // variable shift count: should emit BEQ (F0) to skip if count=0, DEC (C6) for loop
+    let prg = compile_raw("var p: word = $0001\nvar n = 3\nvar r: word = p shl n");
+    let bytes = &prg[2..];
+    assert!(bytes.contains(&0xF0), "word SHL var: BEQ ($F0) missing");
+    assert!(bytes.contains(&0xC6), "word SHL var: DEC zp ($C6) missing");
+}
+
+#[test]
+fn word_shr_var_emits_beq_loop() {
+    let prg = compile_raw("var p: word = $0400\nvar n = 2\nvar r: word = p shr n");
+    let bytes = &prg[2..];
+    assert!(bytes.contains(&0xF0), "word SHR var: BEQ ($F0) missing");
+    assert!(bytes.contains(&0xC6), "word SHR var: DEC zp ($C6) missing");
+}
+
+// ── 16-bit word MUL ──────────────────────────────────────────────────────────
+
+#[test]
+fn word_mul_const_emits_shift_add_loop() {
+    // var p: word = $0064 \n var r: word = p * 3
+    // Should emit LSR mr ($46), BCC ($90), loop structure with DEX ($CA)
+    let prg = compile_raw("var p: word = $0064\nvar r: word = p * 3");
+    let bytes = &prg[2..];
+    assert!(bytes.contains(&0x46), "word *: LSR zp ($46) missing (shift multiplier)");
+    assert!(bytes.contains(&0x90), "word *: BCC ($90) missing (skip add if bit=0)");
+    assert!(bytes.contains(&0xCA), "word *: DEX ($CA) missing (loop counter)");
+}
+
+#[test]
+fn word_mul_commutative() {
+    // 3 * p  should produce same structure as p * 3
+    let prg1 = compile_raw("var p: word = $0064\nvar r: word = p * 3");
+    let prg2 = compile_raw("var p: word = $0064\nvar r: word = 3 * p");
+    // Both must contain the shift-add loop opcodes
+    assert!(prg1[2..].contains(&0xCA), "p*3: DEX missing");
+    assert!(prg2[2..].contains(&0xCA), "3*p: DEX missing");
+}
+
+// ── 16-bit word DIV ──────────────────────────────────────────────────────────
+
+#[test]
+fn word_div_const_emits_division_loop() {
+    // var p: word = $012C \n var r: word = p / 7  (300/7 = 42)
+    // Division uses 16-iteration loop: LDX #16 ($A2 $10), INC num_lo ($E6)
+    let prg = compile_raw("var p: word = $012C\nvar r: word = p / 7");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(2).any(|w| w == &[0xA2, 0x10]), "word /: LDX #16 missing");
+    // INC zp = $E6 (setting quotient bit)
+    assert!(bytes.contains(&0xE6), "word /: INC zp ($E6) missing");
+    // STY = $84 (storing lo result of subtraction)
+    assert!(bytes.contains(&0x84), "word /: STY zp ($84) missing");
+}
+
+#[test]
+fn word_div_word_var() {
+    // var a: word = $0064 \n var b: word = 10 \n var r: word = a / b
+    let res = compile("var a: word = $0064\nvar b: word = 10\nvar r: word = a / b",
+                      &CompileOptions { basic_stub: false });
+    assert!(res.errors.is_empty(), "word / word: {:?}", res.errors);
+    let bytes = &res.prg[2..];
+    assert!(bytes.windows(2).any(|w| w == &[0xA2, 0x10]), "word / word: LDX #16 missing");
+}
+
+// ── 16-bit word MOD ──────────────────────────────────────────────────────────
+
+#[test]
+fn word_mod_const_emits_division_loop() {
+    // var p: word = $012C \n var r: word = p mod 7  (300 mod 7 = 6)
+    // Same division machinery but stores rem instead of quo
+    let prg = compile_raw("var p: word = $012C\nvar r: word = p mod 7");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(2).any(|w| w == &[0xA2, 0x10]), "word mod: LDX #16 missing");
+    assert!(bytes.contains(&0xE6), "word mod: INC zp ($E6) missing");
+}
+
+#[test]
+fn word_mod_word_var() {
+    let res = compile("var a: word = $012C\nvar b: word = 7\nvar r: word = a mod b",
+                      &CompileOptions { basic_stub: false });
+    assert!(res.errors.is_empty(), "word mod word: {:?}", res.errors);
+}
+
+// ── word arrays ───────────────────────────────────────────────────────────────
+
+#[test]
+fn word_array_decl_compiles() {
+    let res = compile("var tbl = array_word(4)", &CompileOptions { basic_stub: false });
+    assert!(res.errors.is_empty(), "array_word decl: {:?}", res.errors);
+}
+
+#[test]
+fn word_array_set_const_index_emits_two_stas() {
+    // word arr: tbl[0] = $1234 → STA $C000 ($34) and STA $C001 ($12)
+    let prg = compile_raw("var tbl = array_word(4)\nvar v: word = $1234\ntbl[0] = v");
+    let bytes = &prg[2..];
+    // STA $C000 = 8D 00 C0
+    assert!(bytes.windows(3).any(|w| w == &[0x8D, 0x00, 0xC0]),
+        "word_array set [0]: STA $C000 missing");
+    // STA $C001 = 8D 01 C0
+    assert!(bytes.windows(3).any(|w| w == &[0x8D, 0x01, 0xC0]),
+        "word_array set [0]: STA $C001 missing");
+}
+
+#[test]
+fn word_array_get_const_index_emits_two_ldas() {
+    // word arr: r = tbl[0] → LDA $C000 and LDA $C001
+    let prg = compile_raw("var tbl = array_word(4)\nvar r: word = tbl[0]");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(3).any(|w| w == &[0xAD, 0x00, 0xC0]),
+        "word_array get [0]: LDA $C000 missing");
+    assert!(bytes.windows(3).any(|w| w == &[0xAD, 0x01, 0xC0]),
+        "word_array get [0]: LDA $C001 missing");
+}
+
+#[test]
+fn word_array_get_const_index_1_uses_stride_2() {
+    // tbl[1] → base $C000 + 1*2 = $C002/$C003
+    let prg = compile_raw("var tbl = array_word(4)\nvar r: word = tbl[1]");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(3).any(|w| w == &[0xAD, 0x02, 0xC0]),
+        "word_array get [1]: LDA $C002 (stride 2) missing");
+    assert!(bytes.windows(3).any(|w| w == &[0xAD, 0x03, 0xC0]),
+        "word_array get [1]: LDA $C003 missing");
+}
+
+#[test]
+fn word_array_var_index_emits_asl_for_stride() {
+    // Variable index: ASL A (0A) to multiply index by 2
+    let prg = compile_raw("var tbl = array_word(4)\nvar i = 1\nvar r: word = tbl[i]");
+    let bytes = &prg[2..];
+    // ASL A = $0A
+    assert!(bytes.contains(&0x0A), "word_array var index: ASL A ($0A) for stride missing");
+}
+
+#[test]
+fn word_array_set_var_index_emits_iny() {
+    // Variable index store: INY ($C8) to advance to hi byte
+    let prg = compile_raw("var tbl = array_word(4)\nvar i = 0\nvar v: word = $0042\ntbl[i] = v");
+    let bytes = &prg[2..];
+    // INY = $C8
+    assert!(bytes.contains(&0xC8), "word_array set var index: INY ($C8) missing");
+}
+
+// ── Backward compat: plot4/block removed — tests below kept as compile-only ─
+// (These tests were removed because plot4 and graphics-on-block are no longer
+//  supported. The rejection tests above verify the error path still works.)
+
+#[test]
+#[ignore = "plot4 / graphics on block removed"]
+fn graphics_on_block_emits_correct_d018() {
+    // Direct write $1A to $D018 to set screen@$0400 and charset@$2800.
+    let prg = compile_raw("graphics on block");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(5).any(|w| w == &[0xA9, 0x1A, 0x8D, 0x18, 0xD0]),
+        "graphics on block should emit LDA #$1A; STA $D018 ($A9 $1A $8D $18 $D0) to set screen@$0400 and charset@$2800");
+}
+
+#[test]
+#[ignore = "plot4 / graphics on block removed"]
+fn graphics_on_block_sets_vic_bank_0() {
+    let prg = compile_raw("graphics on block");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(10).any(|w| w == &[0xAD, 0x00, 0xDD, 0x29, 0xFC, 0x09, 0x03, 0x8D, 0x00, 0xDD]),
+        "graphics on block should emit LDA $DD00; AND #$FC; ORA #$03; STA $DD00 to select VIC bank 0");
+}
+
+#[test]
+#[ignore = "plot4 / graphics on block removed"]
+fn graphics_on_block_copies_charset_to_2800() {
+    // STA $2800,X = 9D 00 28
+    let prg = compile_raw("graphics on block");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(3).any(|w| w == &[0x9D, 0x00, 0x28]),
+        "graphics on block should emit STA $2800,X ($9D $00 $28) for charset copy");
+}
+
+#[test]
+#[ignore = "plot4 / graphics on block removed"]
+fn graphics_on_block_emits_canonical_blanked_d011() {
+    let prg = compile_raw("graphics on block");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(5).any(|w| w == &[0xA9, 0x0B, 0x8D, 0x11, 0xD0]),
+        "graphics on block should emit LDA #$0B; STA $D011 to force canonical blanked text-mode VIC state");
+}
+
+#[test]
+#[ignore = "plot4 / graphics on block removed"]
+fn graphics_on_block_canonicalizes_d011_before_display_on() {
+    let prg = compile_raw("graphics on block\ndisplay on");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(5).any(|w| w == &[0xA9, 0x0B, 0x8D, 0x11, 0xD0]),
+        "graphics on block should emit LDA #$0B; STA $D011 before display on so block mode starts from a canonical blanked text state");
+}
+
+#[test]
+#[ignore = "plot4 removed"]
+fn plot4_emits_ora_pnt() {
+    // ORA zero-page (opcode $05) for the set-pixel operation
+    let prg = compile_raw("graphics on block\nplot4 10, 5");
+    let bytes = &prg[2..];
+    assert!(bytes.iter().any(|&b| b == 0x05),
+        "plot4 should emit ORA zp ($05) in the set-pixel helper");
+}
+
+#[test]
+#[ignore = "plot4 removed"]
+fn plot4_emits_lda_indirect_y() {
+    // LDA (ptr),Y = $B1
+    let prg = compile_raw("graphics on block\nplot4 10, 5");
+    let bytes = &prg[2..];
+    assert!(bytes.iter().any(|&b| b == 0xB1),
+        "plot4 should emit LDA (ptr_lo),Y ($B1) for screen char read");
+}
+
+#[test]
+#[ignore = "plot4 removed"]
+fn plot4_emits_sta_indirect_y() {
+    // STA (ptr),Y = $91
+    let prg = compile_raw("graphics on block\nplot4 10, 5");
+    let bytes = &prg[2..];
+    assert!(bytes.iter().any(|&b| b == 0x91),
+        "plot4 should emit STA (ptr_lo),Y ($91) for screen char write");
+}
+
+#[test]
+#[ignore = "plot4 removed"]
+fn plot4_erase_emits_eor_ff() {
+    // De Morgan erase uses EOR #$FF (opcode $49, value $FF) twice
+    let prg = compile_raw("graphics on block\nplot4 erase 10, 5");
+    let bytes = &prg[2..];
+    let count = bytes.windows(2).filter(|w| *w == &[0x49, 0xFF]).count();
+    assert!(count >= 2,
+        "plot4 erase should emit EOR #$FF ($49 $FF) twice for De Morgan NOT, got {}", count);
+}
+
+#[test]
+#[ignore = "plot4 / graphics on block removed"]
+fn gcls_in_block_mode_fills_screen_ram() {
+    // In block mode, gcls fills $0400-$07E7 with 0 → STA $0400,X = 9D 00 04
+    let prg = compile_raw("graphics on block\ngcls");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(3).any(|w| w == &[0x9D, 0x00, 0x04]),
+        "gcls in block mode should emit STA $0400,X ($9D $00 $04)");
+}
+
+#[test]
+#[ignore = "plot4 / graphics on block removed"]
+fn gcls_in_block_mode_fills_color_ram() {
+    // Also fills color RAM $D800-$DBE7 → STA $D800,X = 9D 00 D8
+    let prg = compile_raw("graphics on block\ngcls");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(3).any(|w| w == &[0x9D, 0x00, 0xD8]),
+        "gcls in block mode should emit STA $D800,X ($9D $00 $D8) for color RAM");
+}
+
+#[test]
+#[ignore = "plot4 removed"]
+fn plot4_fullscreen_fill_reaches_bottom_rows_in_emulation() {
+    let src = "graphics on block\ngcls\nvar y = 0\nvar x = 0\nwhile y < 50\n  x = 0\n  while x < 80\n    plot4 x, y\n    x = x + 1\n  end\n  y = y + 1\nend";
+    let prg = compile_raw(src);
+    let mut cpu = TestCpu::new(&prg);
+    cpu.run_until_main_rts(2_000_000);
+
+    let screen = &cpu.mem[0x0400..=0x07E7];
+    assert!(screen.iter().all(|&b| b == 0x0F),
+        "expected full screen RAM fill to end at $0F in every cell, last row was {:02X?}",
+        &cpu.mem[0x07C0..=0x07E7]);
+}
+
+    #[test]
+    #[ignore = "graphics on block removed"]
+    fn direct_block_fill_reaches_full_screen_in_emulation() {
+        let src = "graphics on block\ngcls\ndisplay on\nfill $0C00, 1000, 15";
+        let prg = compile_raw(src);
+        let mut cpu = TestCpu::new(&prg);
+        cpu.run_until_main_rts(2_000_000);
+
+        let screen = &cpu.mem[0x0400..=0x07E7];
+        assert!(screen.iter().all(|&b| b == 0x0F),
+        "expected direct block fill to write $0F across the full screen matrix, last row was {:02X?}",
+            &cpu.mem[0x07C0..=0x07E7]);
+    }
+
+#[test]
+#[ignore = "graphics on block removed"]
+fn graphics_on_block_parser_sets_block_flag() {
+    // Parser test: `graphics on block` should parse to Graphics { on: true, block: true, multi: false }
+    use ultimate_basic::compiler::parser::Parser;
+    use ultimate_basic::compiler::lexer::Lexer;
+    use ultimate_basic::compiler::ast::Stmt;
+    let tokens = Lexer::new("graphics on block").tokenize();
+    let stmts = Parser::new(tokens).parse();
+    assert!(matches!(&stmts[0], Stmt::Graphics { on: true, multi: false, block: true }),
+        "graphics on block should parse to Graphics {{ on:true, multi:false, block:true }}");
+}
+
+#[test]
+fn generated_program_starts_with_cld() {
+    let prg = compile_raw("var x = 1\nx = x + 1");
+    assert_eq!(prg[2], 0xD8, "generated machine code should begin with CLD");
+}
