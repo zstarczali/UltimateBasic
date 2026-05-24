@@ -346,8 +346,11 @@ impl Parser {
                 let multi = if on && self.peek() == &Token::Multi {
                     self.advance(); true
                 } else { false };
+                let block = if on && !multi && self.peek() == &Token::Block {
+                    self.advance(); true
+                } else { false };
                 self.expect_newline();
-                Some(Stmt::Graphics { on, multi })
+                Some(Stmt::Graphics { on, multi, block })
             }
             Token::Display => {
                 self.advance();
@@ -535,6 +538,23 @@ impl Parser {
                     Some(Stmt::Plot(x, y))
                 }
             }
+            Token::Plot4 => {
+                self.advance();
+                if matches!(self.peek(), Token::Erase) {
+                    self.advance();
+                    let x = self.parse_expr();
+                    if self.peek() == &Token::Comma { self.advance(); }
+                    let y = self.parse_expr();
+                    self.expect_newline();
+                    Some(Stmt::Plot4Erase(x, y))
+                } else {
+                    let x = self.parse_expr();
+                    if self.peek() == &Token::Comma { self.advance(); }
+                    let y = self.parse_expr();
+                    self.expect_newline();
+                    Some(Stmt::Plot4(x, y))
+                }
+            }
             Token::Circle => {
                 self.advance();
                 let x = self.parse_expr();
@@ -662,6 +682,20 @@ impl Parser {
                 let len = self.parse_expr();
                 self.expect_newline();
                 Some(Stmt::Memcopy { src, dst, len })
+            }
+            Token::DrawMem => {
+                self.advance();
+                let src = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let dst = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let width = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let height = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let stride = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::DrawMem { src, dst, width, height, stride })
             }
             Token::Irq => {
                 self.advance();
@@ -1422,15 +1456,15 @@ mod tests {
     }
     #[test] fn graphics_on() {
         let stmts = parse("graphics on");
-        assert!(matches!(&stmts[0], Stmt::Graphics { on: true, multi: false }));
+        assert!(matches!(&stmts[0], Stmt::Graphics { on: true, multi: false, block: false }));
     }
     #[test] fn graphics_off() {
         let stmts = parse("graphics off");
-        assert!(matches!(&stmts[0], Stmt::Graphics { on: false, multi: false }));
+        assert!(matches!(&stmts[0], Stmt::Graphics { on: false, multi: false, block: false }));
     }
     #[test] fn graphics_on_multi() {
         let stmts = parse("graphics on multi");
-        assert!(matches!(&stmts[0], Stmt::Graphics { on: true, multi: true }));
+        assert!(matches!(&stmts[0], Stmt::Graphics { on: true, multi: true, block: false }));
     }
 
     // ── Colors ───────────────────────────────────────────────────────────

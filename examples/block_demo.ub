@@ -1,0 +1,38 @@
+# block_demo.ub — 4×4 block pixel mode demonstration
+# Draws a border and diagonal lines at 80×50 effective resolution,
+# then waits for a keypress.
+
+# Switch to 4×4 block pixel mode (custom charset at $2800, text mode).
+graphics on block
+color bg 0        # black background
+gcls              # fill screen with char 0 (blank) and color RAM with white
+display on        # unblank display
+
+# Draw top and bottom border (y=0 and y=49, x=0..79)
+var x = 0
+while x < 80
+  plot4 x, 0
+  plot4 x, 49
+  x = x + 1
+end
+
+# Draw left and right border (x=0 and x=79, y=1..48)
+var y = 1
+while y < 49
+  plot4 0, y
+  plot4 79, y
+  y = y + 1
+end
+
+# Draw two diagonal lines (top-left to bottom-right, top-right to bottom-left)
+var i = 0
+while i < 50
+  plot4 i, i             # top-left to bottom-right (partial, x capped at 49)
+  plot4 79 - i, i        # top-right to bottom-left
+  i = i + 1
+end
+
+# Wait for a keypress, then return to BASIC
+var k = getch()
+graphics off
+bye

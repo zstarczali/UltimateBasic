@@ -27,8 +27,7 @@ asm {
     STA $D01A        ; enable VIC raster IRQ
     CLI
 
-main:
-    JMP main         ; spin forever — IRQs do all the work
+    JMP *         ; spin forever — IRQs do all the work
 
     ; ------------------------------------------------------------------
     ; IRQ handler 1

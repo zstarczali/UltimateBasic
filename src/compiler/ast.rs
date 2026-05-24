@@ -63,7 +63,7 @@ pub enum Stmt {
     WhileLoop(Expr, Vec<Stmt>),
     Break,
     Cls { fast: bool },
-    Graphics { on: bool, multi: bool },  // multi=true → multicolor bitmap mode ($D016.b4 set)
+    Graphics { on: bool, multi: bool, block: bool }, // multi=true → multicolor bitmap; block=true → 4×4 text block mode
     Display { on: bool },  // display on/off — controls VIC DEN bit ($D011 bit4)
     Sys(u16),
     AsmBytes(Vec<u8>),
@@ -77,6 +77,8 @@ pub enum Stmt {
     Goto(String),
     Poke(Expr, Expr),
     Plot(Expr, Expr), // plot x, y — set pixel in bitmap mode
+    Plot4(Expr, Expr),      // plot4 x, y — set 4×4 block pixel
+    Plot4Erase(Expr, Expr), // plot4 erase x, y — clear 4×4 block pixel
     Circle { x: Expr, y: Expr, radius: Expr }, // circle x,y,r — midpoint circle using bitmap plot helper
     Line { x1: Expr, y1: Expr, x2: Expr, y2: Expr }, // line x1,y1,x2,y2 — Bresenham line
     Gcls,             // gcls — clear bitmap screen
@@ -88,6 +90,7 @@ pub enum Stmt {
     Input { prompt: Option<String>, var: String }, // input ["prompt",] var — BASIN line input
     Fill { addr: Expr, len: Expr, val: Expr },     // fill addr, len, val — memory block fill
     Memcopy { src: Expr, dst: Expr, len: Expr },   // memcopy src, dst, len — memory block copy
+    DrawMem { src: Expr, dst: Expr, width: Expr, height: Expr, stride: Expr }, // drawmem src, dst, width, height, stride — 2-D rectangular blit
     Irq { handler: Expr, line: Option<Expr> },     // irq handler [, raster_line] — raster IRQ setup
     Save { filename: String, addr: Option<Expr>, len: Option<Expr> }, // save "file" [, addr, len] — KERNAL SAVE
     Cursor { x: Expr, y: Expr },                   // cursor x, y — KERNAL PLOT set cursor position

@@ -1935,6 +1935,93 @@ fn memcopy_increments_src_and_dst_hi() {
     assert!(inc_zp_count >= 2, "memcopy should INC src_hi and dst_hi each page");
 }
 
+// ── DrawMem ───────────────────────────────────────────────────────────────────
+
+#[test]
+fn drawmem_emits_lda_indirect_and_sta_indirect() {
+    let prg = compile_raw("drawmem $C000, $0400, 8, 10, 40");
+    let bytes = &prg[2..];
+    assert!(bytes.iter().any(|&b| b == 0xB1), "drawmem should emit LDA (src),Y ($B1)");
+    assert!(bytes.iter().any(|&b| b == 0x91), "drawmem should emit STA (dst),Y ($91)");
+}
+
+#[test]
+fn drawmem_emits_iny_for_inner_loop() {
+    let prg = compile_raw("drawmem $C000, $0400, 8, 10, 40");
+    let bytes = &prg[2..];
+    assert!(bytes.iter().any(|&b| b == 0xC8), "drawmem should emit INY ($C8)");
+}
+
+#[test]
+fn drawmem_emits_cpy_for_width_check() {
+    let prg = compile_raw("drawmem $C000, $0400, 8, 10, 40");
+    let bytes = &prg[2..];
+    // CPY zp is $C4
+    assert!(bytes.iter().any(|&b| b == 0xC4), "drawmem should emit CPY w_hold ($C4)");
+}
+
+#[test]
+fn drawmem_emits_dec_for_height_counter() {
+    let prg = compile_raw("drawmem $C000, $0400, 8, 10, 40");
+    let bytes = &prg[2..];
+    // DEC zp is $C6
+    assert!(bytes.iter().any(|&b| b == 0xC6), "drawmem should emit DEC h_ctr ($C6)");
+}
+
+#[test]
+fn drawmem_emits_inc_for_src_and_dst_hi() {
+    let prg = compile_raw("drawmem $C000, $0400, 8, 10, 40");
+    let bytes = &prg[2..];
+    // INC zp is $E6 — should appear for both INC src_hi and INC dst_hi
+    let inc_count = bytes.iter().filter(|&&b| b == 0xE6).count();
+    assert!(inc_count >= 2, "drawmem should emit INC src_hi and INC dst_hi ($E6), got {}", inc_count);
+}
+
+#[test]
+fn drawmem_initialises_src_address() {
+    // src = $C000 → LDA #$00, STA zp, LDA #$C0, STA zp+1
+    let prg = compile_raw("drawmem $C000, $0400, 8, 10, 40");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(2).any(|w| w[0] == 0xA9 && w[1] == 0x00),
+        "drawmem should load low byte $00 for src $C000");
+    assert!(bytes.windows(2).any(|w| w[0] == 0xA9 && w[1] == 0xC0),
+        "drawmem should load high byte $C0 for src $C000");
+}
+
+#[test]
+fn drawmem_initialises_dst_address() {
+    // dst = $0400 → LDA #$00, STA zp, LDA #$04, STA zp+1
+    let prg = compile_raw("drawmem $C000, $0400, 8, 10, 40");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(2).any(|w| w[0] == 0xA9 && w[1] == 0x04),
+        "drawmem should load high byte $04 for dst $0400");
+}
+
+#[test]
+fn drawmem_uses_word_var_for_src() {
+    let src = r#"
+var src: word = $C000
+drawmem src, $0400, 8, 10, 40
+"#;
+    let prg = compile_raw(src);
+    let bytes = &prg[2..];
+    // LDA zp ($A5) used to load word var lo/hi bytes
+    assert!(bytes.iter().any(|&b| b == 0xA5), "drawmem with word src should emit LDA zp ($A5)");
+    assert!(bytes.iter().any(|&b| b == 0xB1), "drawmem should still emit LDA (src),Y");
+}
+
+#[test]
+fn drawmem_uses_word_var_for_dst() {
+    let src = r#"
+var dst: word = $0400
+drawmem $C000, dst, 8, 10, 40
+"#;
+    let prg = compile_raw(src);
+    let bytes = &prg[2..];
+    assert!(bytes.iter().any(|&b| b == 0xA5), "drawmem with word dst should emit LDA zp ($A5)");
+    assert!(bytes.iter().any(|&b| b == 0x91), "drawmem should still emit STA (dst),Y");
+}
+
 // ── IRQ ───────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -2785,4 +2872,101 @@ fn word_array_set_var_index_emits_iny() {
     let bytes = &prg[2..];
     // INY = $C8
     assert!(bytes.contains(&0xC8), "word_array set var index: INY ($C8) missing");
+}
+
+// ── 4×4 block pixel mode ─────────────────────────────────────────────────────
+
+#[test]
+fn graphics_on_block_emits_eor_d018() {
+    // EOR #$0E applied to $D018 to switch charset from $1000 to $2800
+    let prg = compile_raw("graphics on block");
+    let bytes = &prg[2..];
+    // EOR imm = $49; value $0E
+    assert!(bytes.windows(2).any(|w| w == &[0x49, 0x0E]),
+        "graphics on block should emit EOR #$0E ($49 $0E) to switch charset");
+}
+
+#[test]
+fn graphics_on_block_copies_charset_to_2800() {
+    // STA $2800,X = 9D 00 28
+    let prg = compile_raw("graphics on block");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(3).any(|w| w == &[0x9D, 0x00, 0x28]),
+        "graphics on block should emit STA $2800,X ($9D $00 $28) for charset copy");
+}
+
+#[test]
+fn graphics_on_block_clears_bmm_bit() {
+    // AND #$DF ($D011 &= $DF clears BMM=bit5)
+    let prg = compile_raw("graphics on block");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(2).any(|w| w == &[0x29, 0xDF]),
+        "graphics on block should emit AND #$DF to clear BMM bit");
+}
+
+#[test]
+fn plot4_emits_ora_pnt() {
+    // ORA zero-page (opcode $05) for the set-pixel operation
+    let prg = compile_raw("graphics on block\nplot4 10, 5");
+    let bytes = &prg[2..];
+    assert!(bytes.iter().any(|&b| b == 0x05),
+        "plot4 should emit ORA zp ($05) in the set-pixel helper");
+}
+
+#[test]
+fn plot4_emits_lda_indirect_y() {
+    // LDA (ptr),Y = $B1
+    let prg = compile_raw("graphics on block\nplot4 10, 5");
+    let bytes = &prg[2..];
+    assert!(bytes.iter().any(|&b| b == 0xB1),
+        "plot4 should emit LDA (ptr_lo),Y ($B1) for screen char read");
+}
+
+#[test]
+fn plot4_emits_sta_indirect_y() {
+    // STA (ptr),Y = $91
+    let prg = compile_raw("graphics on block\nplot4 10, 5");
+    let bytes = &prg[2..];
+    assert!(bytes.iter().any(|&b| b == 0x91),
+        "plot4 should emit STA (ptr_lo),Y ($91) for screen char write");
+}
+
+#[test]
+fn plot4_erase_emits_eor_ff() {
+    // De Morgan erase uses EOR #$FF (opcode $49, value $FF) twice
+    let prg = compile_raw("graphics on block\nplot4 erase 10, 5");
+    let bytes = &prg[2..];
+    let count = bytes.windows(2).filter(|w| *w == &[0x49, 0xFF]).count();
+    assert!(count >= 2,
+        "plot4 erase should emit EOR #$FF ($49 $FF) twice for De Morgan NOT, got {}", count);
+}
+
+#[test]
+fn gcls_in_block_mode_fills_screen_ram() {
+    // In block mode, gcls fills $0400-$07E7 with 0 → STA $0400,X = 9D 00 04
+    let prg = compile_raw("graphics on block\ngcls");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(3).any(|w| w == &[0x9D, 0x00, 0x04]),
+        "gcls in block mode should emit STA $0400,X ($9D $00 $04)");
+}
+
+#[test]
+fn gcls_in_block_mode_fills_color_ram() {
+    // Also fills color RAM $D800-$DBE7 → STA $D800,X = 9D 00 D8
+    let prg = compile_raw("graphics on block\ngcls");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(3).any(|w| w == &[0x9D, 0x00, 0xD8]),
+        "gcls in block mode should emit STA $D800,X ($9D $00 $D8) for color RAM");
+}
+
+#[test]
+fn graphics_on_block_parser_sets_block_flag() {
+    // Parser test: `graphics on block` should parse to Graphics { on: true, block: true, multi: false }
+    use ultimate_basic::compiler::parser::Parser;
+    use ultimate_basic::compiler::lexer::Lexer;
+    use ultimate_basic::compiler::ast::Stmt;
+    let tokens = Lexer::new("graphics on block").tokenize();
+    let stmts = Parser::new(tokens).parse();
+    assert!(matches!(&stmts[0], Stmt::Graphics { on: true, multi: false, block: true }),
+        "graphics on block should parse to Graphics {{ on:true, multi:false, block:true }}");
 }

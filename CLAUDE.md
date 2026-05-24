@@ -304,13 +304,21 @@ color border 6           # border:     $D020
 color bg 0               # background: $D021
 graphics on              # VIC-II hires bitmap mode (320×200)
 graphics on multi        # VIC-II multicolor bitmap mode (160×200, 4 colors/cell)
+graphics on block        # 4×4 block pixel mode (80×50 effective pixels via custom charset at $2800)
 graphics off             # back to text mode
 display on               # re-enable VIC display ($D011 bit4 = DEN → 1)
 display off              # blank display  ($D011 bit4 = DEN → 0)
 ```
 
-`graphics on` leaves display **blanked** (DEN=0). Call `display on` after `gcls` and drawing
-to show the result without the initial bitmap-RAM flash.
+`graphics on` and `graphics on multi` leave the display **blanked** (DEN=0). Call `display on`
+after `gcls` and drawing to show the result without the initial bitmap-RAM flash.
+
+`graphics on block` uses text mode with a custom 16-character charset at $2800.
+Each character encodes which 4×4 pixel quadrants are lit: bit3=top-left, bit2=top-right,
+bit1=bot-left, bit0=bot-right. Effective resolution: 80×50 (40 cols × 25 rows, 2×2 blocks per char).
+After `graphics on block`, use `gcls` to clear and `plot4 x, y` to set pixels.
+Block pixel colors are controlled via color RAM — use `poke $D800...$DBE7, color` or let
+`gcls` fill color RAM with white (1). Background comes from `$D021`.
 
 ### Keyboard
 
@@ -588,11 +596,19 @@ fill ptr, len_word, val  # all operands can be expressions / word vars
 
 memcopy $C000, $0400, 256   # copy 256 bytes from $C000 → $0400
 memcopy src_ptr, dst_ptr, 40 # word vars for source and destination
+
+drawmem $C000, $0400, 8, 10, 40 # blit 8×10 rect from $C000 → screen at $0400, stride 40
+drawmem src_ptr, dst_ptr, w, h, 40 # word vars for src/dst
 ```
 
 Both `fill` and `memcopy` support 16-bit lengths (0–65535). When `len` is a numeric literal,
 its high byte = page count, low byte = partial count. For 8-bit expressions, only up to 255
 bytes are copied per call (high byte = 0). Use `word` variables for lengths > 255.
+
+`drawmem src, dst, width, height, stride` copies a 2-D rectangular block. `src` is read
+linearly (packed rows); `dst` advances by `stride` bytes between rows — use `40` ($28) for
+the C64 screen or color RAM (40 columns). Width, height and stride are all 8-bit values.
+`src` and `dst` may be constants, `word` variables, or 8-bit expressions.
 
 ### Raster IRQ
 
@@ -648,24 +664,32 @@ the pointer. Values must be byte-sized constants (0–255).
 ```basic
 graphics on              # VIC-II hires bitmap mode (320×200), bitmap at $2000
 graphics on multi        # VIC-II multicolor bitmap mode (160×200, 4 colors per 8×8 cell)
+graphics on block        # 4×4 block pixel mode (80×50 effective pixels via custom charset at $2800)
 graphics off             # back to text mode
-gcls                     # clear bitmap (zero-fill $2000-$3FFF)
+gcls                     # clear bitmap (zero-fill $2000-$3FFF); in block mode fills screen+color RAM
 plot x, y                # set pixel at (x, y);  x: 0-319, y: 0-199
 plot erase x, y          # clear pixel at (x, y) — AND ~mask into byte
 plot xor x, y            # toggle (XOR) pixel at (x, y) — EOR mask into byte
+plot4 x, y               # set 4×4 block pixel at (x, y); x: 0-79, y: 0-49
+plot4 erase x, y         # clear 4×4 block pixel at (x, y)
 circle x, y, r           # midpoint circle centered at (x, y) with radius r; clips off-screen points
 line x1, y1, x2, y2      # Bresenham line from (x1,y1) to (x2,y2); x: 0-255, y: 0-199
 ```
 
-Both `graphics on` variants blank the VIC display during setup ($D011 DEN bit) to prevent
-mode-switch glitches, then re-enable it in the new mode.
+All `graphics on` variants blank the VIC display during setup ($D011 DEN bit) to prevent
+mode-switch glitches. Call `display on` after `gcls` and drawing to unblank.
 
 **Hires (standard) bitmap**: each pixel is 0 or 1; foreground/background per 8×8 cell from color RAM.
 **Multicolor bitmap**: each pixel is 2 bits → 4 colors per 8×8 cell (effective 160×200 resolution).
+**Block pixel mode**: text mode + 16-char custom charset at $2800. Each screen char (0–15) encodes
+four 4×4 quadrants (bit3=top-left, bit2=top-right, bit1=bot-left, bit0=bot-right). Effective
+resolution 80×50 pixels. `plot4` uses an inline JSR helper with row-address lookup tables.
 
-`gcls` should be called after `graphics on` to start with a blank screen.
+`gcls` in hires/multicolor mode clears bitmap $2000-$3FFF + fills video matrix.
+`gcls` in block mode fills screen RAM $0400-$07E7 with 0 and color RAM $D800-$DBE7 with 1 (white).
 `plot` emits a compact helper subroutine once per program (all `plot` calls share it via `JSR`).
 `plot erase` and `plot xor` each emit their own helper (only if used); all three share the same ZP block.
+`plot4` and `plot4 erase` each emit a helper with embedded row-address tables (25 bytes × 2).
 
 X supports the full 320-pixel width. For x ≤ 255 the high byte is 0; for x = 256–319 it is 1, which the helper adds as an extra +256 to the byte address. `word` variables work directly as x.
 
@@ -756,6 +780,29 @@ done:
 - Lines starting with `$`, `%`, or a digit are emitted as raw bytes (backward-compatible with the old `asm { $A9 $07 }` form).
 - Comments: `;` or `//` to end of line. (`#` is the immediate prefix, not a comment.)
 - The `asm $EA, $EA` single-line raw-byte form is unchanged.
+
+**Mixing `asm { }` with subroutine parameters**
+
+Parameter names are **not accessible** inside `asm { }` blocks — only the compiler knows their
+zero-page addresses. Use UltimateBasic statements to move parameter values into known
+locations *before* the `asm { }` block:
+
+```basic
+sub set_colors(border_col, bg_col)
+  poke $D020, border_col   # UltimateBasic resolves the ZP address
+  poke $D021, bg_col
+  asm {
+    ; values are already in $D020 / $D021
+    LDA $D020
+    ; ...
+  }
+end
+```
+
+For routines whose entire body is assembly — especially IRQ handlers that cross-reference
+each other — put **all** handlers in a single top-level `asm { }` block in the main
+program.  Labels defined in the same block are all in scope, so `irq1` and `irq2` can
+reference each other freely.  See `examples/raster_irq_demo.ub`.
 
 ### String ↔ Integer
 

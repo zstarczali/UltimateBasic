@@ -419,9 +419,17 @@ fill ptr, len_word, val  # all operands can be expressions / word vars
 
 memcopy $C000, $0400, 256   # copy 256 bytes from $C000 → $0400
 memcopy src_ptr, dst_ptr, 40 # word vars for source and destination
+
+drawmem $C000, $0400, 8, 10, 40 # blit 8×10 rect from $C000 → screen at $0400, stride 40
+drawmem src_ptr, dst_ptr, w, h, 40 # word vars for src/dst
 ```
 
-Both support 16-bit lengths (0–65535). Use `word` variables for lengths > 255.
+Both `fill` and `memcopy` support 16-bit lengths (0–65535). Use `word` variables for lengths > 255.
+
+`drawmem src, dst, width, height, stride` copies a 2-D rectangular block. `src` is read
+linearly (packed rows); `dst` advances by `stride` bytes between rows — use `40` ($28) for
+the C64 screen or color RAM (40 columns). Width, height and stride are all 8-bit values.
+`src` and `dst` may be constants, `word` variables, or 8-bit expressions.
 
 ### Raster IRQ
 
@@ -535,6 +543,27 @@ done:
 - `#<label` / `#>label` yield the lo / hi byte of a label's address.
 - Lines starting with `$`, `%`, or a digit are emitted as raw bytes (backward-compatible).
 - Comments: `;` or `//` to end of line. (`#` is the immediate prefix, not a comment.)
+
+**Mixing `asm { }` with subroutine parameters**
+
+Parameter names are **not accessible** inside `asm { }` blocks. Use UltimateBasic
+statements to move values into known locations before the `asm { }` block:
+
+```basic
+sub set_colors(border_col, bg_col)
+  poke $D020, border_col   # UltimateBasic resolves the ZP address
+  poke $D021, bg_col
+  asm {
+    ; values are already in $D020 / $D021
+    LDA $D020
+  }
+end
+```
+
+For routines whose entire body is assembly — especially IRQ handlers that must
+cross-reference each other — put all handlers in a **single top-level `asm { }` block**
+in the main program. Labels in the same block share scope, so `irq1` and `irq2` can
+reference each other freely. See `examples/raster_irq_demo.ub`.
 
 ### String ↔ integer
 

@@ -430,6 +430,10 @@ pub struct Codegen {
     data_ptr_hi_patch: Option<usize>,       // code pos of LDA #hi in init sequence
     irq_patches: Vec<(usize, usize, String)>, // (lo_byte_pos, hi_byte_pos, sub_name) for irq forward refs
     word_arrays: std::collections::HashSet<String>, // names of word-typed arrays
+    plot4_zp: Option<u8>,               // base of 5-byte ZP block for plot4 helper (pnt, ptr_lo, ptr_hi, x_in, y_in)
+    plot4_patches: Vec<usize>,          // JSR targets for plot4 set-pixel helper
+    plot4_erase_patches: Vec<usize>,    // JSR targets for plot4 clear-pixel helper
+    fourxfour_mode: bool,               // compile-time flag: true when block pixel mode is active
 }
 
 impl Codegen {
@@ -469,6 +473,10 @@ impl Codegen {
             data_ptr_hi_patch: None,
             irq_patches: vec![],
             word_arrays: std::collections::HashSet::new(),
+            plot4_zp: None,
+            plot4_patches: vec![],
+            plot4_erase_patches: vec![],
+            fourxfour_mode: false,
         }
     }
 
@@ -531,6 +539,28 @@ impl Codegen {
                 }
                 Stmt::RepeatLoop(body, _) => {
                     if Self::has_line_stmt(body) { return true; }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// Recursively check whether any Plot4 or Plot4Erase statement exists anywhere in the AST.
+    fn has_plot4_stmt(stmts: &[Stmt]) -> bool {
+        for stmt in stmts {
+            match stmt {
+                Stmt::Plot4(..) | Stmt::Plot4Erase(..) => return true,
+                Stmt::SubDef(_, _, body) => if Self::has_plot4_stmt(body) { return true; }
+                Stmt::If(_, then_b, else_b) => {
+                    if Self::has_plot4_stmt(then_b) { return true; }
+                    if let Some(eb) = else_b { if Self::has_plot4_stmt(eb) { return true; } }
+                }
+                Stmt::ForLoop { body, .. } | Stmt::Loop(_, body) | Stmt::WhileLoop(_, body) => {
+                    if Self::has_plot4_stmt(body) { return true; }
+                }
+                Stmt::RepeatLoop(body, _) => {
+                    if Self::has_plot4_stmt(body) { return true; }
                 }
                 _ => {}
             }
@@ -617,6 +647,13 @@ impl Codegen {
             self.perm_zp += 2;
             self.data_zp = Some(zp);
             self.data_bytes = Self::collect_data_bytes(stmts);
+        }
+
+        // Reserve 5 ZP bytes for the 4×4 block pixel helper (pnt, ptr_lo, ptr_hi, x_in, y_in).
+        if Self::has_plot4_stmt(stmts) {
+            let zp = self.perm_zp;
+            self.perm_zp += 5;
+            self.plot4_zp = Some(zp);
         }
 
         for stmt in stmts {
@@ -1481,6 +1518,7 @@ impl Codegen {
 
     // Graphics OFF: back to text mode with display blanking around the switch.
     fn emit_graphics_off(&mut self) {
+        self.fourxfour_mode = false;
         // ── 1. Blank display ──────────────────────────────────────────────
         self.emit(0xAD); self.emit16(0xD011); // LDA $D011
         self.emit(0x29); self.emit(0xEF);     // AND #$EF  (clear DEN → blank)
@@ -1509,9 +1547,111 @@ impl Codegen {
         self.emit(0x8D); self.emit16(0xD011); // STA $D011
     }
 
+    // Graphics ON BLOCK: 4×4 block pixel mode via custom charset at $2800.
+    // Effective resolution 80×50 pixels (40 cols × 25 rows, each cell = 2×2 4-pixel blocks).
+    // Character N encodes: bit3=top-left, bit2=top-right, bit1=bot-left, bit0=bot-right 4-pixel area.
+    fn emit_graphics_on_block(&mut self) {
+        // 1. Blank display to avoid glitch.
+        self.emit(0xAD); self.emit16(0xD011); // LDA $D011
+        self.emit(0x29); self.emit(0xEF);     // AND #$EF  (clear DEN)
+        self.emit(0x8D); self.emit16(0xD011); // STA $D011
+
+        // 2. Build and copy the 16-char charset (128 bytes) to $2800.
+        //    top_tab[n] = ((n>>3)&1)*0xF0 | ((n>>2)&1)*0x0F  (bits 3 and 2)
+        //    bot_tab[n] = ((n>>1)&1)*0xF0 | ((n>>0)&1)*0x0F  (bits 1 and 0)
+        //    Char n rows 0-3 = top_tab[n], rows 4-7 = bot_tab[n]
+        let mut charset = [0u8; 128];
+        for n in 0u8..16 {
+            let top = if n & 8 != 0 { 0xF0u8 } else { 0 } | if n & 4 != 0 { 0x0Fu8 } else { 0 };
+            let bot = if n & 2 != 0 { 0xF0u8 } else { 0 } | if n & 1 != 0 { 0x0Fu8 } else { 0 };
+            for row in 0u8..8 {
+                charset[(n as usize) * 8 + row as usize] = if row < 4 { top } else { bot };
+            }
+        }
+
+        // JMP over the 128-byte charset data block.
+        self.emit(0x4C);
+        let jmp_pos = self.code.len(); self.emit16(0x0000);
+
+        let charset_addr = self.current_addr();
+        for b in &charset { self.emit(*b); }
+
+        let copy_start = self.current_addr();
+        self.code[jmp_pos]     = copy_start as u8;
+        self.code[jmp_pos + 1] = (copy_start >> 8) as u8;
+
+        // Copy 128 bytes (X from 127 downto 0) from charset_addr → $2800.
+        self.emit(0xA2); self.emit(127u8);    // LDX #127
+        let copy_loop = self.current_addr();
+        self.emit(0xBD); self.emit16(charset_addr); // LDA charset_addr,X
+        self.emit(0x9D); self.emit(0x00); self.emit(0x28); // STA $2800,X
+        self.emit(0xCA);                       // DEX
+        self.emit(0x10);                       // BPL copy_loop
+        let bpl_pos = self.code.len(); self.emit(0x00);
+        self.patch_bxx(bpl_pos, copy_loop);
+
+        // 3. Point VIC charset to $2800: EOR $D018 with $0E ($1000→$2800).
+        self.emit(0xAD); self.emit16(0xD018); // LDA $D018
+        self.emit(0x49); self.emit(0x0E);     // EOR #$0E
+        self.emit(0x8D); self.emit16(0xD018); // STA $D018
+
+        // 4. Ensure text mode (BMM=0); display stays blanked until user calls `display on`.
+        self.emit(0xAD); self.emit16(0xD011); // LDA $D011
+        self.emit(0x29); self.emit(0xDF);     // AND #$DF  (clear BMM=bit5)
+        self.emit(0x8D); self.emit16(0xD011); // STA $D011
+
+        self.fourxfour_mode = true;
+    }
+
+    // Gcls for 4×4 block mode: fill screen RAM ($0400-$07E7, 1000 bytes) with 0
+    // and color RAM ($D800-$DBE7, 1000 bytes) with 1 (white pixels on background color).
+    fn emit_gcls_block(&mut self) {
+        // ── Screen RAM ($0400-$07E7) ← 0 (char 0 = all pixels off) ───────
+        // 3 full pages ($04xx, $05xx, $06xx) then 232 bytes ($07xx).
+        self.emit(0xA9); self.emit(0x00);    // LDA #0
+        self.emit(0xA2); self.emit(0x00);    // LDX #0
+        let top1 = self.current_addr();
+        self.emit(0x9D); self.emit(0x00); self.emit(0x04); // STA $0400,X
+        self.emit(0x9D); self.emit(0x00); self.emit(0x05); // STA $0500,X
+        self.emit(0x9D); self.emit(0x00); self.emit(0x06); // STA $0600,X
+        self.emit(0xE8);                     // INX
+        self.emit(0xD0); let b1 = self.code.len(); self.emit(0x00);
+        self.patch_bxx(b1, top1);
+        // Remaining 232 bytes ($0700-$07E7): X from 231 downto 0.
+        self.emit(0xA2); self.emit(231u8);   // LDX #231
+        let top2 = self.current_addr();
+        self.emit(0x9D); self.emit(0x00); self.emit(0x07); // STA $0700,X
+        self.emit(0xCA);                     // DEX
+        self.emit(0x10); let b2 = self.code.len(); self.emit(0x00);
+        self.patch_bxx(b2, top2);
+
+        // ── Color RAM ($D800-$DBE7) ← 1 (white pixels) ───────────────────
+        self.emit(0xA9); self.emit(0x01);    // LDA #1 (white)
+        self.emit(0xA2); self.emit(0x00);    // LDX #0
+        let top3 = self.current_addr();
+        self.emit(0x9D); self.emit(0x00); self.emit(0xD8); // STA $D800,X
+        self.emit(0x9D); self.emit(0x00); self.emit(0xD9); // STA $D900,X
+        self.emit(0x9D); self.emit(0x00); self.emit(0xDA); // STA $DA00,X
+        self.emit(0xE8);                     // INX
+        self.emit(0xD0); let b3 = self.code.len(); self.emit(0x00);
+        self.patch_bxx(b3, top3);
+        // Remaining 232 bytes ($DB00-$DBE7).
+        self.emit(0xA2); self.emit(231u8);   // LDX #231
+        let top4 = self.current_addr();
+        self.emit(0x9D); self.emit(0x00); self.emit(0xDB); // STA $DB00,X
+        self.emit(0xCA);                     // DEX
+        self.emit(0x10); let b4 = self.code.len(); self.emit(0x00);
+        self.patch_bxx(b4, top4);
+    }
+
     // Gcls: clear bitmap $2000-$3FFF (32 pages with $00) AND fill video matrix
     // $0400-$07FF (4 pages with $10 = white-on-black) so bitmap mode has clean colors.
+    // In 4×4 block mode, clears screen RAM ($0400-$07E7) with char 0 and color RAM white.
     fn emit_gcls(&mut self) {
+        if self.fourxfour_mode {
+            self.emit_gcls_block();
+            return;
+        }
         let ptr_lo = self.tmp_zp; self.tmp_zp += 1;
         let ptr_hi = self.tmp_zp; self.tmp_zp += 1;
         let pg_ctr = self.tmp_zp; self.tmp_zp += 1;
@@ -1793,6 +1933,146 @@ impl Codegen {
         self.emit(0xB1); self.emit(zp + 4);   // LDA (ptr_lo),Y
         self.emit(0x45); self.emit(zp + 3);   // EOR mask → flip pixel
         self.emit(0x91); self.emit(zp + 4);   // STA (ptr_lo),Y
+        self.emit(0x60);                       // RTS
+    }
+
+    // Emit helper function for 4×4 block pixel SET.
+    // ZP layout (plot4_zp): pnt=base, ptr_lo=base+1, ptr_hi=base+2, x_in=base+3, y_in=base+4
+    // Algorithm:
+    //   pnt = $08 (top-left bit mask)
+    //   if x_in & 1 → LSR pnt    (move to right half)
+    //   Y = x_in / 2             (character column)
+    //   if y_in & 1 → LSR pnt twice (move to bottom half)
+    //   X = y_in / 2             (character row)
+    //   ptr = lotable[X] | hitable[X]<<8   (screen address = $0400 + row*40 + col)
+    //   screen[ptr + Y] |= pnt
+    fn emit_plot4_helper(&mut self) {
+        let zp = match self.plot4_zp { Some(z) => z, None => return };
+        let pnt    = zp;
+        let ptr_lo = zp + 1;
+        let ptr_hi = zp + 2;
+        let x_in   = zp + 3;
+        let y_in   = zp + 4;
+
+        // JMP over the two lookup tables.
+        self.emit(0x4C);
+        let jmp_pos = self.code.len(); self.emit16(0x0000);
+
+        // lo-byte table: ($0400 + row*40) lo, for rows 0-24
+        let lotable_addr = self.current_addr();
+        for b in &[0x00u8, 0x28, 0x50, 0x78, 0xA0, 0xC8, 0xF0,
+                   0x18, 0x40, 0x68, 0x90, 0xB8, 0xE0,
+                   0x08, 0x30, 0x58, 0x80, 0xA8, 0xD0, 0xF8,
+                   0x20, 0x48, 0x70, 0x98, 0xC0] { self.emit(*b); }
+
+        // hi-byte table: ($0400 + row*40) hi, for rows 0-24
+        let hitable_addr = self.current_addr();
+        for b in &[0x04u8, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04,
+                   0x05, 0x05, 0x05, 0x05, 0x05, 0x05,
+                   0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06,
+                   0x07, 0x07, 0x07, 0x07, 0x07] { self.emit(*b); }
+
+        // Patch the JMP.
+        let helper_start = self.current_addr();
+        self.code[jmp_pos]     = helper_start as u8;
+        self.code[jmp_pos + 1] = (helper_start >> 8) as u8;
+
+        // LDA #$08; STA pnt  — start with top-left pixel bit
+        self.emit(0xA9); self.emit(0x08);
+        self.emit(0x85); self.emit(pnt);
+
+        // LDA x_in; LSR A; BCC :+; LSR pnt  :  TAY
+        self.emit(0xA5); self.emit(x_in);     // LDA x_in
+        self.emit(0x4A);                       // LSR A
+        self.emit(0x90); let bcc1 = self.code.len(); self.emit(0x00); // BCC +
+        self.emit(0x46); self.emit(pnt);       // LSR pnt  (right half)
+        self.patch_bxx(bcc1, self.current_addr());
+        self.emit(0xA8);                       // TAY  (Y = column)
+
+        // LDA y_in; LSR A; BCC :+; LSR pnt; LSR pnt  :  TAX
+        self.emit(0xA5); self.emit(y_in);     // LDA y_in
+        self.emit(0x4A);                       // LSR A
+        self.emit(0x90); let bcc2 = self.code.len(); self.emit(0x00); // BCC +
+        self.emit(0x46); self.emit(pnt);       // LSR pnt  (bottom-left)
+        self.emit(0x46); self.emit(pnt);       // LSR pnt  (bottom-right area)
+        self.patch_bxx(bcc2, self.current_addr());
+        self.emit(0xAA);                       // TAX  (X = row)
+
+        // LDA lotable,X; STA ptr_lo
+        self.emit(0xBD); self.emit16(lotable_addr); // LDA lotable,X
+        self.emit(0x85); self.emit(ptr_lo);
+
+        // LDA hitable,X; STA ptr_hi
+        self.emit(0xBD); self.emit16(hitable_addr); // LDA hitable,X
+        self.emit(0x85); self.emit(ptr_hi);
+
+        // LDA (ptr_lo),Y; ORA pnt; STA (ptr_lo),Y; RTS
+        self.emit(0xB1); self.emit(ptr_lo);   // LDA (ptr_lo),Y
+        self.emit(0x05); self.emit(pnt);       // ORA pnt  (set pixel bit)
+        self.emit(0x91); self.emit(ptr_lo);   // STA (ptr_lo),Y
+        self.emit(0x60);                       // RTS
+    }
+
+    // Emit helper function for 4×4 block pixel ERASE (clear).
+    // Same as emit_plot4_helper but uses De Morgan: A = (A EOR $FF ORA pnt) EOR $FF = A AND NOT pnt
+    fn emit_plot4_erase_helper(&mut self) {
+        let zp = match self.plot4_zp { Some(z) => z, None => return };
+        let pnt    = zp;
+        let ptr_lo = zp + 1;
+        let ptr_hi = zp + 2;
+        let x_in   = zp + 3;
+        let y_in   = zp + 4;
+
+        // JMP over lookup tables.
+        self.emit(0x4C);
+        let jmp_pos = self.code.len(); self.emit16(0x0000);
+
+        let lotable_addr = self.current_addr();
+        for b in &[0x00u8, 0x28, 0x50, 0x78, 0xA0, 0xC8, 0xF0,
+                   0x18, 0x40, 0x68, 0x90, 0xB8, 0xE0,
+                   0x08, 0x30, 0x58, 0x80, 0xA8, 0xD0, 0xF8,
+                   0x20, 0x48, 0x70, 0x98, 0xC0] { self.emit(*b); }
+
+        let hitable_addr = self.current_addr();
+        for b in &[0x04u8, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04,
+                   0x05, 0x05, 0x05, 0x05, 0x05, 0x05,
+                   0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06,
+                   0x07, 0x07, 0x07, 0x07, 0x07] { self.emit(*b); }
+
+        let helper_start = self.current_addr();
+        self.code[jmp_pos]     = helper_start as u8;
+        self.code[jmp_pos + 1] = (helper_start >> 8) as u8;
+
+        self.emit(0xA9); self.emit(0x08);
+        self.emit(0x85); self.emit(pnt);
+
+        self.emit(0xA5); self.emit(x_in);
+        self.emit(0x4A);
+        self.emit(0x90); let bcc1 = self.code.len(); self.emit(0x00);
+        self.emit(0x46); self.emit(pnt);
+        self.patch_bxx(bcc1, self.current_addr());
+        self.emit(0xA8);
+
+        self.emit(0xA5); self.emit(y_in);
+        self.emit(0x4A);
+        self.emit(0x90); let bcc2 = self.code.len(); self.emit(0x00);
+        self.emit(0x46); self.emit(pnt);
+        self.emit(0x46); self.emit(pnt);
+        self.patch_bxx(bcc2, self.current_addr());
+        self.emit(0xAA);
+
+        self.emit(0xBD); self.emit16(lotable_addr);
+        self.emit(0x85); self.emit(ptr_lo);
+        self.emit(0xBD); self.emit16(hitable_addr);
+        self.emit(0x85); self.emit(ptr_hi);
+
+        // Erase: screen = screen AND NOT pnt  via De Morgan:
+        //   LDA (ptr),Y; EOR #$FF; ORA pnt; EOR #$FF; STA (ptr),Y
+        self.emit(0xB1); self.emit(ptr_lo);   // LDA (ptr_lo),Y
+        self.emit(0x49); self.emit(0xFF);      // EOR #$FF
+        self.emit(0x05); self.emit(pnt);       // ORA pnt
+        self.emit(0x49); self.emit(0xFF);      // EOR #$FF
+        self.emit(0x91); self.emit(ptr_lo);   // STA (ptr_lo),Y
         self.emit(0x60);                       // RTS
     }
 
@@ -3414,9 +3694,13 @@ impl Codegen {
                     self.emit(0x20); self.emit16(0xE544); // JSR $E544
                 }
             }
-            Stmt::Graphics { on, multi } => {
+            Stmt::Graphics { on, multi, block } => {
                 if *on {
-                    self.emit_graphics_on(*multi);
+                    if *block {
+                        self.emit_graphics_on_block();
+                    } else {
+                        self.emit_graphics_on(*multi);
+                    }
                 } else {
                     self.emit_graphics_off();
                 }
@@ -4016,6 +4300,103 @@ impl Codegen {
                 self.patch_bxx(bne_part, part_top);
                 self.patch_bxx(beq_part + 1, self.current_addr());
             }
+            Stmt::DrawMem { src, dst, width, height, stride } => {
+                let src    = src.clone();    let dst    = dst.clone();
+                let width  = width.clone(); let height = height.clone();
+                let stride = stride.clone();
+
+                // ZP scratch layout: src_lo, src_hi, dst_lo, dst_hi, w_hold, h_ctr, stride_zp
+                let src_lo    = self.tmp_zp; self.tmp_zp += 1;
+                let src_hi    = self.tmp_zp; self.tmp_zp += 1;
+                let dst_lo    = self.tmp_zp; self.tmp_zp += 1;
+                let dst_hi    = self.tmp_zp; self.tmp_zp += 1;
+                let w_hold    = self.tmp_zp; self.tmp_zp += 1;
+                let h_ctr     = self.tmp_zp; self.tmp_zp += 1;
+                let stride_zp = self.tmp_zp; self.tmp_zp += 1;
+
+                // Helper macro: load 16-bit address expr into two ZP bytes (lo, hi)
+                macro_rules! emit_addr16 {
+                    ($expr:expr, $lo:expr, $hi:expr) => {
+                        match $expr {
+                            Expr::Number(n) => {
+                                let a = n as u16;
+                                self.emit(0xA9); self.emit(a as u8);        self.emit(0x85); self.emit($lo);
+                                self.emit(0xA9); self.emit((a >> 8) as u8); self.emit(0x85); self.emit($hi);
+                            }
+                            Expr::Var(ref name) => {
+                                let iw = matches!(self.var_types.get(name.as_str()), Some(VarType::Word));
+                                let zo = self.var_addr(name);
+                                if iw { if let Some(zp) = zo {
+                                    self.emit(0xA5); self.emit(zp);     self.emit(0x85); self.emit($lo);
+                                    self.emit(0xA5); self.emit(zp + 1); self.emit(0x85); self.emit($hi);
+                                }} else {
+                                    self.eval_expr(&$expr);
+                                    self.emit(0x85); self.emit($lo);
+                                    self.emit(0xA9); self.emit(0x00); self.emit(0x85); self.emit($hi);
+                                }
+                            }
+                            other => {
+                                self.eval_expr(&other);
+                                self.emit(0x85); self.emit($lo);
+                                self.emit(0xA9); self.emit(0x00); self.emit(0x85); self.emit($hi);
+                            }
+                        }
+                    }
+                }
+
+                // Initialise ZP slots
+                emit_addr16!(src,    src_lo, src_hi);
+                emit_addr16!(dst,    dst_lo, dst_hi);
+
+                self.eval_expr(&width);
+                self.emit(0x85); self.emit(w_hold);    // STA w_hold
+
+                self.eval_expr(&height);
+                self.emit(0x85); self.emit(h_ctr);     // STA h_ctr
+
+                self.eval_expr(&stride);
+                self.emit(0x85); self.emit(stride_zp); // STA stride_zp
+
+                // outer_top: reset Y to 0 each row
+                let outer_top = self.current_addr();
+                self.emit(0xA0); self.emit(0x00);      // LDY #0
+
+                // inner_top: copy one pixel
+                let inner_top = self.current_addr();
+                self.emit(0xB1); self.emit(src_lo);    // LDA (src_lo),Y
+                self.emit(0x91); self.emit(dst_lo);    // STA (dst_lo),Y
+                self.emit(0xC8);                        // INY
+                self.emit(0xC4); self.emit(w_hold);    // CPY w_hold
+                self.emit(0xD0);
+                let bne_inner = self.code.len(); self.emit(0x00);
+                self.patch_bxx(bne_inner, inner_top);
+
+                // Advance src by width (src_lo += w_hold, carry → src_hi)
+                self.emit(0x18);                        // CLC
+                self.emit(0xA5); self.emit(src_lo);    // LDA src_lo
+                self.emit(0x65); self.emit(w_hold);    // ADC w_hold
+                self.emit(0x85); self.emit(src_lo);    // STA src_lo
+                self.emit(0x90);                        // BCC (skip INC src_hi)
+                let bcc_src = self.code.len(); self.emit(0x00);
+                self.emit(0xE6); self.emit(src_hi);    // INC src_hi
+                self.patch_bxx(bcc_src, self.current_addr());
+
+                // Advance dst by stride (dst_lo += stride_zp, carry → dst_hi)
+                self.emit(0x18);                        // CLC
+                self.emit(0xA5); self.emit(dst_lo);    // LDA dst_lo
+                self.emit(0x65); self.emit(stride_zp); // ADC stride_zp
+                self.emit(0x85); self.emit(dst_lo);    // STA dst_lo
+                self.emit(0x90);                        // BCC (skip INC dst_hi)
+                let bcc_dst = self.code.len(); self.emit(0x00);
+                self.emit(0xE6); self.emit(dst_hi);    // INC dst_hi
+                self.patch_bxx(bcc_dst, self.current_addr());
+
+                // Dec row counter; loop if not zero
+                self.emit(0xC6); self.emit(h_ctr);     // DEC h_ctr
+                self.emit(0xD0);
+                let bne_outer = self.code.len(); self.emit(0x00);
+                self.patch_bxx(bne_outer, outer_top);
+            }
             Stmt::Irq { handler, line } => {
                 let handler = handler.clone();
                 let line    = line.clone();
@@ -4576,6 +4957,36 @@ impl Codegen {
                     self.plot_xor_patches.push(patch);
                 }
             }
+            Stmt::Plot4(x_expr, y_expr) => {
+                // Set a 4×4 block pixel — uses plot4 ZP block (pnt, ptr_lo, ptr_hi, x_in, y_in)
+                if let Some(zp) = self.plot4_zp {
+                    let x_in = zp + 3;
+                    let y_in = zp + 4;
+                    let x = x_expr.clone(); let y = y_expr.clone();
+                    self.eval_expr(&x);
+                    self.emit(0x85); self.emit(x_in); // STA x_in
+                    self.eval_expr(&y);
+                    self.emit(0x85); self.emit(y_in); // STA y_in
+                    self.emit(0x20); // JSR plot4_helper
+                    let patch = self.code.len(); self.emit16(0x0000);
+                    self.plot4_patches.push(patch);
+                }
+            }
+            Stmt::Plot4Erase(x_expr, y_expr) => {
+                // Clear a 4×4 block pixel — uses plot4 ZP block
+                if let Some(zp) = self.plot4_zp {
+                    let x_in = zp + 3;
+                    let y_in = zp + 4;
+                    let x = x_expr.clone(); let y = y_expr.clone();
+                    self.eval_expr(&x);
+                    self.emit(0x85); self.emit(x_in); // STA x_in
+                    self.eval_expr(&y);
+                    self.emit(0x85); self.emit(y_in); // STA y_in
+                    self.emit(0x20); // JSR plot4_erase_helper
+                    let patch = self.code.len(); self.emit16(0x0000);
+                    self.plot4_erase_patches.push(patch);
+                }
+            }
             Stmt::SpriteDef { id, bytes } => {
                 let id = *id;
                 // After JMP (3 bytes), find the next 64-byte-aligned address.
@@ -4912,6 +5323,26 @@ impl Codegen {
             let addr = self.current_addr();
             self.emit_plot_xor_helper();
             for &pos in &self.plot_xor_patches.clone() {
+                self.code[pos]     = addr as u8;
+                self.code[pos + 1] = (addr >> 8) as u8;
+            }
+        }
+
+        // Emit plot4 set-pixel helper and patch all JSR targets
+        if !self.plot4_patches.is_empty() {
+            let addr = self.current_addr();
+            self.emit_plot4_helper();
+            for &pos in &self.plot4_patches.clone() {
+                self.code[pos]     = addr as u8;
+                self.code[pos + 1] = (addr >> 8) as u8;
+            }
+        }
+
+        // Emit plot4 clear-pixel helper and patch all JSR targets
+        if !self.plot4_erase_patches.is_empty() {
+            let addr = self.current_addr();
+            self.emit_plot4_erase_helper();
+            for &pos in &self.plot4_erase_patches.clone() {
                 self.code[pos]     = addr as u8;
                 self.code[pos + 1] = (addr >> 8) as u8;
             }

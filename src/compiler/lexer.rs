@@ -85,6 +85,8 @@ pub enum Token {
     Stash,
     Fetch,
     Multi,
+    Block,    // block pixel mode keyword
+    Plot4,    // plot4 — 4×4 block pixel set/erase
     Incbin,
     Include,
     Data,
@@ -93,6 +95,7 @@ pub enum Token {
     Input,
     Fill,
     Memcopy,
+    DrawMem,
     Irq,
     Save,
     Cursor,
@@ -362,6 +365,8 @@ impl Lexer {
             "stash"      => Token::Stash,
             "fetch"      => Token::Fetch,
             "multi"      => Token::Multi,
+            "block"      => Token::Block,
+            "plot4"      => Token::Plot4,
             "exit"       => Token::Bye,
             "incbin"     => Token::Incbin,
             "include"    => Token::Include,
@@ -371,6 +376,7 @@ impl Lexer {
             "input"      => Token::Input,
             "fill"       => Token::Fill,
             "memcopy"    => Token::Memcopy,
+            "drawmem"    => Token::DrawMem,
             "irq"        => Token::Irq,
             "save"       => Token::Save,
             "cursor"     => Token::Cursor,
