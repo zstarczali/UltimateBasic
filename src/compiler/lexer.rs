@@ -67,6 +67,7 @@ pub enum Token {
     Sgn,
     Word,
     Array,
+    ArrayWord,
     For,
     Next,
     Chr,
@@ -106,6 +107,7 @@ pub enum Token {
     Open,        // open channel, device, secondary [, "filename"]
     Close,       // close channel — CLOSE ($FFC3)
     PrintHash,   // print# channel, ... — CHKOUT + CHROUT + CLRCHN
+    AsmSource(String), // asm { ... } — raw assembly source captured verbatim
 
     // Operators
     Plus,
@@ -290,7 +292,24 @@ impl Lexer {
             "off"        => Token::Off,
             "fast"       => Token::Fast,
             "sys"        => Token::Sys,
-            "asm"        => Token::Asm,
+            "asm" => {
+                // asm { ... } — capture block source verbatim for the inline assembler
+                while matches!(self.peek(), Some(' ') | Some('\t')) { self.advance(); }
+                if self.peek() == Some('{') {
+                    self.advance(); // consume '{'
+                    let mut src = String::new();
+                    loop {
+                        match self.peek() {
+                            None        => break,
+                            Some('}'  ) => { self.advance(); break; }
+                            Some(c)     => { src.push(c); self.advance(); }
+                        }
+                    }
+                    Token::AsmSource(src)
+                } else {
+                    Token::Asm // fall through: asm $EA, $EA raw-byte form
+                }
+            }
             "str_to_int" => Token::StrToInt,
             "numstr"     => Token::NumStr,
             "color"      => Token::Color,
@@ -326,6 +345,7 @@ impl Lexer {
             "sgn"        => Token::Sgn,
             "word"       => Token::Word,
             "array"      => Token::Array,
+            "array_word" => Token::ArrayWord,
             "for"        => Token::For,
             "next"       => Token::Next,
             "plot"       => Token::Plot,
@@ -621,15 +641,11 @@ mod tests {
     }
 
     #[test] fn asm_block_tokens() {
+        // asm { ... } is now captured as a single AsmSource token
         let tokens = tokenize("asm { $A9 $07 }");
-        assert_eq!(tokens, vec![
-            Token::Asm,
-            Token::LBrace,
-            Token::Number(0xA9),
-            Token::Number(0x07),
-            Token::RBrace,
-            Token::Eof,
-        ]);
+        assert!(matches!(&tokens[0], Token::AsmSource(s) if s.contains("$A9")),
+            "asm block should produce AsmSource token, got {:?}", tokens);
+        assert_eq!(tokens[1], Token::Eof);
     }
 
     #[test] fn newline_separates() {

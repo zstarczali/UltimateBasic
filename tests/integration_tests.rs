@@ -193,7 +193,7 @@ fn or_operator() {
 fn not_operator() {
     let prg = compile_raw("var r = not 0");
     let bytes = &prg[2..];
-    assert!(bytes.contains(&0xF0)); // BEQ (for not: if == 0, skip to LDA #1)
+    assert!(bytes.contains(&0xB0)); // BCS (not: carry set = any non-zero → return 0)
 }
 
 // ── Control flow ────────────────────────────────────────────────────────────
@@ -1291,10 +1291,30 @@ fn min_max_compile() {
 }
 
 #[test]
-fn sgn_compiles() {
-    let src = "var s1 = sgn(0)\nvar s2 = sgn(5)";
-    let res = compile(src, &CompileOptions { basic_stub: false });
-    assert!(res.errors.is_empty());
+fn sgn_correct_opcodes() {
+    // sgn(0) → 0, sgn(positive 1-127) → 1, sgn(negative 128-255) → $FF
+    // New implementation uses BCC ($90) and BPL ($10) — NOT the old BCS-offset-4 pattern.
+    let prg = compile_raw("var s = sgn(200)");
+    let bytes = &prg[2..];
+    assert!(bytes.contains(&0x90), "sgn should emit BCC ($90) for zero branch");
+    assert!(bytes.contains(&0x10), "sgn should emit BPL ($10) for positive branch");
+    // Must emit LDA #$FF for the negative case
+    let has_ff = bytes.windows(2).any(|w| w[0] == 0xA9 && w[1] == 0xFF);
+    assert!(has_ff, "sgn should emit LDA #$FF ($A9 $FF) for negative case");
+}
+
+#[test]
+fn not_correct_opcode() {
+    // `not x` should return 0 for any non-zero value, not just for x==1.
+    // Implementation must use BCS ($B0), not BEQ ($F0).
+    let prg = compile_raw("var x = 5\nvar n = not x");
+    let bytes = &prg[2..];
+    // Must contain BCS ($B0) — the branch that handles all non-zero values
+    assert!(bytes.contains(&0xB0), "not should emit BCS ($B0), not BEQ");
+    // Must NOT use BEQ ($F0) as the branch after CMP #1
+    // (BEQ would only fire for x==1, breaking `not 5` etc.)
+    let cmp1_beq = bytes.windows(4).any(|w| w[0]==0xC9 && w[1]==0x01 && w[2]==0xF0);
+    assert!(!cmp1_beq, "not must not use BEQ after CMP #1 (breaks values > 1)");
 }
 
 #[test]
@@ -2359,3 +2379,410 @@ fn open_no_filename_emits_empty_setnam() {
         "open no filename: JSR OPEN missing");
 }
 
+// ── asm { } inline assembler ─────────────────────────────────────────────────
+
+#[test]
+fn asm_block_raw_bytes_backward_compat() {
+    // Old raw-byte syntax inside asm { } still works
+    let prg = compile_raw("asm { $EA $EA }");
+    let bytes = &prg[2..];
+    // Two NOPs ($EA) then RTS ($60) from compile_raw's implicit end
+    assert_eq!(&bytes[0..2], &[0xEA, 0xEA], "raw bytes in asm block");
+}
+
+#[test]
+fn asm_block_nop_rts_mnemonics() {
+    let prg = compile_raw("asm {\n  NOP\n  NOP\n  RTS\n}");
+    let bytes = &prg[2..];
+    assert_eq!(bytes[0], 0xEA, "NOP = $EA");
+    assert_eq!(bytes[1], 0xEA, "NOP = $EA");
+    assert_eq!(bytes[2], 0x60, "RTS = $60");
+}
+
+#[test]
+fn asm_block_lda_immediate() {
+    // LDA #$07 → A9 07
+    let prg = compile_raw("asm { LDA #$07 }");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(2).any(|w| w == &[0xA9, 0x07]), "LDA #$07 = A9 07");
+}
+
+#[test]
+fn asm_block_sta_absolute() {
+    // STA $0286 → 8D 86 02
+    let prg = compile_raw("asm { STA $0286 }");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(3).any(|w| w == &[0x8D, 0x86, 0x02]), "STA $0286 = 8D 86 02");
+}
+
+#[test]
+fn asm_block_sta_zp() {
+    // STA $50 → 85 50 (zero-page because value ≤ 255 and written as 2 hex digits)
+    let prg = compile_raw("asm { STA $50 }");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(2).any(|w| w == &[0x85, 0x50]), "STA $50 = 85 50 (ZP)");
+}
+
+#[test]
+fn asm_block_jsr_absolute() {
+    // JSR $FFD2 → 20 D2 FF
+    let prg = compile_raw("asm { JSR $FFD2 }");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xD2, 0xFF]), "JSR $FFD2 = 20 D2 FF");
+}
+
+#[test]
+fn asm_block_jmp_absolute() {
+    // JMP $C000 → 4C 00 C0  (no ZP mode for JMP, auto-upgraded)
+    let prg = compile_raw("asm { JMP $C000 }");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(3).any(|w| w == &[0x4C, 0x00, 0xC0]), "JMP $C000 = 4C 00 C0");
+}
+
+#[test]
+fn asm_block_clc_adc() {
+    // CLC + ADC #1 → 18  69 01
+    let prg = compile_raw("asm {\n  CLC\n  ADC #1\n}");
+    let bytes = &prg[2..];
+    assert!(bytes.contains(&0x18), "CLC = $18");
+    assert!(bytes.windows(2).any(|w| w == &[0x69, 0x01]), "ADC #1 = 69 01");
+}
+
+#[test]
+fn asm_block_indirect_x() {
+    // LDA ($50,X) → A1 50
+    let prg = compile_raw("asm { LDA ($50,X) }");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(2).any(|w| w == &[0xA1, 0x50]), "LDA ($50,X) = A1 50");
+}
+
+#[test]
+fn asm_block_indirect_y() {
+    // LDA ($50),Y → B1 50
+    let prg = compile_raw("asm { LDA ($50),Y }");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(2).any(|w| w == &[0xB1, 0x50]), "LDA ($50),Y = B1 50");
+}
+
+#[test]
+fn asm_block_abs_x_indexed() {
+    // LDA $0400,X → BD 00 04
+    let prg = compile_raw("asm { LDA $0400,X }");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(3).any(|w| w == &[0xBD, 0x00, 0x04]), "LDA $0400,X = BD 00 04");
+}
+
+#[test]
+fn asm_block_branch_forward() {
+    // BNE past NOP: the branch should skip 1 byte ($01 offset)
+    // BNE +1 ($01), NOP, NOP  — BNE offset = 1 (skip the first NOP, land on second)
+    let prg = compile_raw("asm {\n  BNE skip\n  NOP\nskip:\n  NOP\n}");
+    let bytes = &prg[2..];
+    // D0 01  EA  EA
+    assert_eq!(bytes[0], 0xD0, "BNE opcode");
+    assert_eq!(bytes[1], 0x01, "BNE forward offset = 1");
+    assert_eq!(bytes[2], 0xEA, "NOP at skip-1");
+    assert_eq!(bytes[3], 0xEA, "NOP at skip");
+}
+
+#[test]
+fn asm_block_branch_backward() {
+    // loop: NOP / BNE loop  — backward branch: offset = -3 ($FD)
+    let prg = compile_raw("asm {\nloop:\n  NOP\n  BNE loop\n}");
+    let bytes = &prg[2..];
+    // EA  D0 FD
+    assert_eq!(bytes[0], 0xEA, "NOP");
+    assert_eq!(bytes[1], 0xD0, "BNE opcode");
+    assert_eq!(bytes[2], 0xFD_u8, "BNE backward offset = -3");
+}
+
+#[test]
+fn asm_block_transfers_implied() {
+    let prg = compile_raw("asm { TAX\nTAY\nTXA\nTYA }");
+    let bytes = &prg[2..];
+    assert_eq!(bytes[0], 0xAA, "TAX");
+    assert_eq!(bytes[1], 0xA8, "TAY");
+    assert_eq!(bytes[2], 0x8A, "TXA");
+    assert_eq!(bytes[3], 0x98, "TYA");
+}
+
+#[test]
+fn asm_block_sec_sbc() {
+    // SEC + SBC #1 → 38  E9 01
+    let prg = compile_raw("asm {\n  SEC\n  SBC #1\n}");
+    let bytes = &prg[2..];
+    assert!(bytes.contains(&0x38), "SEC = $38");
+    assert!(bytes.windows(2).any(|w| w == &[0xE9, 0x01]), "SBC #1 = E9 01");
+}
+
+#[test]
+fn asm_block_comment_semicolon() {
+    // Comments with ; should be stripped
+    let prg = compile_raw("asm {\n  NOP  ; this is a comment\n  NOP\n}");
+    let bytes = &prg[2..];
+    assert_eq!(bytes[0], 0xEA, "NOP");
+    assert_eq!(bytes[1], 0xEA, "NOP after comment line");
+}
+
+#[test]
+fn asm_block_mixed_mnemonics_and_raw_bytes() {
+    // Mixing mnemonic instructions with raw byte lines
+    let prg = compile_raw("asm {\n  NOP\n  $EA\n  NOP\n}");
+    let bytes = &prg[2..];
+    assert_eq!(&bytes[0..3], &[0xEA, 0xEA, 0xEA], "three NOPs");
+}
+
+// ── 16-bit word AND/OR/XOR ───────────────────────────────────────────────────
+
+#[test]
+fn word_and_const_emits_two_and_imm() {
+    // var p: word = $ABCD \n var r: word = p and $FF00
+    // Should emit: LDA lzp; AND #$00; STA dst; LDA lzp+1; AND #$FF; STA dst+1
+    let prg = compile_raw("var p: word = $ABCD\nvar r: word = p and $FF00");
+    let bytes = &prg[2..];
+    // AND immediate = $29; hi mask $FF
+    let has_and_ff = bytes.windows(2).any(|w| w == &[0x29, 0xFF]);
+    let has_and_00 = bytes.windows(2).any(|w| w == &[0x29, 0x00]);
+    assert!(has_and_ff, "word AND $FF00: AND #$FF for hi byte missing");
+    assert!(has_and_00, "word AND $FF00: AND #$00 for lo byte missing");
+}
+
+#[test]
+fn word_or_const_emits_ora_imm() {
+    // var p: word = $0100 \n var r: word = p or $00FF
+    // Should set lo byte to $FF and leave hi byte as $01
+    let prg = compile_raw("var p: word = $0100\nvar r: word = p or $00FF");
+    let bytes = &prg[2..];
+    // ORA immediate = $09; lo mask $FF
+    let has_ora_ff = bytes.windows(2).any(|w| w == &[0x09, 0xFF]);
+    assert!(has_ora_ff, "word OR $00FF: ORA #$FF for lo byte missing");
+    // hi mask $00
+    let has_ora_00 = bytes.windows(2).any(|w| w == &[0x09, 0x00]);
+    assert!(has_ora_00, "word OR $00FF: ORA #$00 for hi byte missing");
+}
+
+#[test]
+fn word_xor_const_emits_eor_imm() {
+    // var p: word = $FFFF \n var r: word = p xor $00FF  → r = $FF00
+    let prg = compile_raw("var p: word = $FFFF\nvar r: word = p xor $00FF");
+    let bytes = &prg[2..];
+    // EOR immediate = $49
+    let eor_count = bytes.windows(1).filter(|w| w[0] == 0x49).count();
+    assert!(eor_count >= 2, "word XOR const: should emit EOR imm twice (lo and hi)");
+}
+
+#[test]
+fn word_and_word_var_emits_and_zp() {
+    // var a: word = $FFFF \n var b: word = $0F0F \n var r: word = a and b
+    let prg = compile_raw("var a: word = $FFFF\nvar b: word = $0F0F\nvar r: word = a and b");
+    let bytes = &prg[2..];
+    // AND zp = $25
+    let and_zp_count = bytes.windows(1).filter(|w| w[0] == 0x25).count();
+    assert!(and_zp_count >= 2, "word AND word: should emit AND zp twice (lo and hi)");
+}
+
+#[test]
+fn word_or_word_var_emits_ora_zp() {
+    let prg = compile_raw("var a: word = $0F00\nvar b: word = $00F0\nvar r: word = a or b");
+    let bytes = &prg[2..];
+    // ORA zp = $05
+    let ora_zp_count = bytes.windows(1).filter(|w| w[0] == 0x05).count();
+    assert!(ora_zp_count >= 2, "word OR word: should emit ORA zp twice");
+}
+
+#[test]
+fn word_xor_word_var_emits_eor_zp() {
+    let prg = compile_raw("var a: word = $AAAA\nvar b: word = $5555\nvar r: word = a xor b");
+    let bytes = &prg[2..];
+    // EOR zp = $45
+    let eor_zp_count = bytes.windows(1).filter(|w| w[0] == 0x45).count();
+    assert!(eor_zp_count >= 2, "word XOR word: should emit EOR zp twice");
+}
+
+// ── 16-bit word SHL/SHR ──────────────────────────────────────────────────────
+
+#[test]
+fn word_shl_const_emits_asl_rol() {
+    // var p: word = $0001 \n var r: word = p shl 1
+    let prg = compile_raw("var p: word = $0001\nvar r: word = p shl 1");
+    let bytes = &prg[2..];
+    // ASL zp = $06, ROL zp = $26
+    let has_asl = bytes.contains(&0x06);
+    let has_rol = bytes.contains(&0x26);
+    assert!(has_asl, "word SHL 1: ASL zp ($06) missing");
+    assert!(has_rol, "word SHL 1: ROL zp ($26) missing");
+}
+
+#[test]
+fn word_shr_const_emits_lsr_ror() {
+    // var p: word = $0100 \n var r: word = p shr 1
+    let prg = compile_raw("var p: word = $0100\nvar r: word = p shr 1");
+    let bytes = &prg[2..];
+    // LSR zp = $46, ROR zp = $66
+    let has_lsr = bytes.contains(&0x46);
+    let has_ror = bytes.contains(&0x66);
+    assert!(has_lsr, "word SHR 1: LSR zp ($46) missing");
+    assert!(has_ror, "word SHR 1: ROR zp ($66) missing");
+}
+
+#[test]
+fn word_shl_8_swaps_bytes() {
+    // p shl 8: hi = lo, lo = 0  →  LDA dst; STA dst+1; LDA #0; STA dst
+    let prg = compile_raw("var p: word = $0042\nvar r: word = p shl 8");
+    let bytes = &prg[2..];
+    // LDA #0 = A9 00
+    assert!(bytes.windows(2).any(|w| w == &[0xA9, 0x00]), "word SHL 8: LDA #0 missing");
+}
+
+#[test]
+fn word_shr_8_swaps_bytes() {
+    // p shr 8: lo = hi, hi = 0
+    let prg = compile_raw("var p: word = $4200\nvar r: word = p shr 8");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(2).any(|w| w == &[0xA9, 0x00]), "word SHR 8: LDA #0 missing");
+}
+
+#[test]
+fn word_shl_var_emits_beq_loop() {
+    // variable shift count: should emit BEQ (F0) to skip if count=0, DEC (C6) for loop
+    let prg = compile_raw("var p: word = $0001\nvar n = 3\nvar r: word = p shl n");
+    let bytes = &prg[2..];
+    assert!(bytes.contains(&0xF0), "word SHL var: BEQ ($F0) missing");
+    assert!(bytes.contains(&0xC6), "word SHL var: DEC zp ($C6) missing");
+}
+
+#[test]
+fn word_shr_var_emits_beq_loop() {
+    let prg = compile_raw("var p: word = $0400\nvar n = 2\nvar r: word = p shr n");
+    let bytes = &prg[2..];
+    assert!(bytes.contains(&0xF0), "word SHR var: BEQ ($F0) missing");
+    assert!(bytes.contains(&0xC6), "word SHR var: DEC zp ($C6) missing");
+}
+
+// ── 16-bit word MUL ──────────────────────────────────────────────────────────
+
+#[test]
+fn word_mul_const_emits_shift_add_loop() {
+    // var p: word = $0064 \n var r: word = p * 3
+    // Should emit LSR mr ($46), BCC ($90), loop structure with DEX ($CA)
+    let prg = compile_raw("var p: word = $0064\nvar r: word = p * 3");
+    let bytes = &prg[2..];
+    assert!(bytes.contains(&0x46), "word *: LSR zp ($46) missing (shift multiplier)");
+    assert!(bytes.contains(&0x90), "word *: BCC ($90) missing (skip add if bit=0)");
+    assert!(bytes.contains(&0xCA), "word *: DEX ($CA) missing (loop counter)");
+}
+
+#[test]
+fn word_mul_commutative() {
+    // 3 * p  should produce same structure as p * 3
+    let prg1 = compile_raw("var p: word = $0064\nvar r: word = p * 3");
+    let prg2 = compile_raw("var p: word = $0064\nvar r: word = 3 * p");
+    // Both must contain the shift-add loop opcodes
+    assert!(prg1[2..].contains(&0xCA), "p*3: DEX missing");
+    assert!(prg2[2..].contains(&0xCA), "3*p: DEX missing");
+}
+
+// ── 16-bit word DIV ──────────────────────────────────────────────────────────
+
+#[test]
+fn word_div_const_emits_division_loop() {
+    // var p: word = $012C \n var r: word = p / 7  (300/7 = 42)
+    // Division uses 16-iteration loop: LDX #16 ($A2 $10), INC num_lo ($E6)
+    let prg = compile_raw("var p: word = $012C\nvar r: word = p / 7");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(2).any(|w| w == &[0xA2, 0x10]), "word /: LDX #16 missing");
+    // INC zp = $E6 (setting quotient bit)
+    assert!(bytes.contains(&0xE6), "word /: INC zp ($E6) missing");
+    // STY = $84 (storing lo result of subtraction)
+    assert!(bytes.contains(&0x84), "word /: STY zp ($84) missing");
+}
+
+#[test]
+fn word_div_word_var() {
+    // var a: word = $0064 \n var b: word = 10 \n var r: word = a / b
+    let res = compile("var a: word = $0064\nvar b: word = 10\nvar r: word = a / b",
+                      &CompileOptions { basic_stub: false });
+    assert!(res.errors.is_empty(), "word / word: {:?}", res.errors);
+    let bytes = &res.prg[2..];
+    assert!(bytes.windows(2).any(|w| w == &[0xA2, 0x10]), "word / word: LDX #16 missing");
+}
+
+// ── 16-bit word MOD ──────────────────────────────────────────────────────────
+
+#[test]
+fn word_mod_const_emits_division_loop() {
+    // var p: word = $012C \n var r: word = p mod 7  (300 mod 7 = 6)
+    // Same division machinery but stores rem instead of quo
+    let prg = compile_raw("var p: word = $012C\nvar r: word = p mod 7");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(2).any(|w| w == &[0xA2, 0x10]), "word mod: LDX #16 missing");
+    assert!(bytes.contains(&0xE6), "word mod: INC zp ($E6) missing");
+}
+
+#[test]
+fn word_mod_word_var() {
+    let res = compile("var a: word = $012C\nvar b: word = 7\nvar r: word = a mod b",
+                      &CompileOptions { basic_stub: false });
+    assert!(res.errors.is_empty(), "word mod word: {:?}", res.errors);
+}
+
+// ── word arrays ───────────────────────────────────────────────────────────────
+
+#[test]
+fn word_array_decl_compiles() {
+    let res = compile("var tbl = array_word(4)", &CompileOptions { basic_stub: false });
+    assert!(res.errors.is_empty(), "array_word decl: {:?}", res.errors);
+}
+
+#[test]
+fn word_array_set_const_index_emits_two_stas() {
+    // word arr: tbl[0] = $1234 → STA $C000 ($34) and STA $C001 ($12)
+    let prg = compile_raw("var tbl = array_word(4)\nvar v: word = $1234\ntbl[0] = v");
+    let bytes = &prg[2..];
+    // STA $C000 = 8D 00 C0
+    assert!(bytes.windows(3).any(|w| w == &[0x8D, 0x00, 0xC0]),
+        "word_array set [0]: STA $C000 missing");
+    // STA $C001 = 8D 01 C0
+    assert!(bytes.windows(3).any(|w| w == &[0x8D, 0x01, 0xC0]),
+        "word_array set [0]: STA $C001 missing");
+}
+
+#[test]
+fn word_array_get_const_index_emits_two_ldas() {
+    // word arr: r = tbl[0] → LDA $C000 and LDA $C001
+    let prg = compile_raw("var tbl = array_word(4)\nvar r: word = tbl[0]");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(3).any(|w| w == &[0xAD, 0x00, 0xC0]),
+        "word_array get [0]: LDA $C000 missing");
+    assert!(bytes.windows(3).any(|w| w == &[0xAD, 0x01, 0xC0]),
+        "word_array get [0]: LDA $C001 missing");
+}
+
+#[test]
+fn word_array_get_const_index_1_uses_stride_2() {
+    // tbl[1] → base $C000 + 1*2 = $C002/$C003
+    let prg = compile_raw("var tbl = array_word(4)\nvar r: word = tbl[1]");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(3).any(|w| w == &[0xAD, 0x02, 0xC0]),
+        "word_array get [1]: LDA $C002 (stride 2) missing");
+    assert!(bytes.windows(3).any(|w| w == &[0xAD, 0x03, 0xC0]),
+        "word_array get [1]: LDA $C003 missing");
+}
+
+#[test]
+fn word_array_var_index_emits_asl_for_stride() {
+    // Variable index: ASL A (0A) to multiply index by 2
+    let prg = compile_raw("var tbl = array_word(4)\nvar i = 1\nvar r: word = tbl[i]");
+    let bytes = &prg[2..];
+    // ASL A = $0A
+    assert!(bytes.contains(&0x0A), "word_array var index: ASL A ($0A) for stride missing");
+}
+
+#[test]
+fn word_array_set_var_index_emits_iny() {
+    // Variable index store: INY ($C8) to advance to hi byte
+    let prg = compile_raw("var tbl = array_word(4)\nvar i = 0\nvar v: word = $0042\ntbl[i] = v");
+    let bytes = &prg[2..];
+    // INY = $C8
+    assert!(bytes.contains(&0xC8), "word_array set var index: INY ($C8) missing");
+}

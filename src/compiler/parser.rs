@@ -179,6 +179,15 @@ impl Parser {
                     self.expect_newline();
                     return Some(Stmt::VarDecl { name, vtype: Some(VarType::Array), expr: size });
                 }
+                // array_word(N) initializer — word (16-bit) element array
+                if matches!(self.peek(), Token::ArrayWord) {
+                    self.advance(); // consume 'array_word'
+                    if self.peek() == &Token::LParen { self.advance(); }
+                    let size = self.parse_expr();
+                    if self.peek() == &Token::RParen { self.advance(); }
+                    self.expect_newline();
+                    return Some(Stmt::VarDecl { name, vtype: Some(VarType::WordArray), expr: size });
+                }
                 let expr = self.parse_expr();
                 self.expect_newline();
                 Some(Stmt::VarDecl { name, vtype, expr })
@@ -365,6 +374,12 @@ impl Parser {
                     self.parse_asm_line()
                 };
                 Some(Stmt::AsmBytes(bytes))
+            }
+            Token::AsmSource(src) => {
+                // asm { ... } block: raw source captured by the lexer, assembled at codegen time
+                let src = src.clone();
+                self.advance();
+                Some(Stmt::AsmSource(src))
             }
             Token::NumStr => {
                 self.advance();
@@ -1448,8 +1463,9 @@ mod tests {
         assert!(matches!(&stmts[0], Stmt::AsmBytes(b) if b.len() == 2));
     }
     #[test] fn asm_block() {
+        // asm { ... } now produces AsmSource; raw bytes are assembled at codegen time
         let stmts = parse("asm { $A9 $07 }");
-        assert!(matches!(&stmts[0], Stmt::AsmBytes(b) if b.len() == 2));
+        assert!(matches!(&stmts[0], Stmt::AsmSource(_)));
     }
 
     // ── IntToStr (numstr) ────────────────────────────────────────────────

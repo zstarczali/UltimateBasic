@@ -45,7 +45,7 @@ pub enum ColorTarget { Text, Border, Bg }
 /// `Array` = byte array       (`var arr = array(10)`)
 /// `Int`   = 8-bit (default)
 #[derive(Debug, Clone, PartialEq)]
-pub enum VarType { Int, Str, Float, Word, Array }
+pub enum VarType { Int, Str, Float, Word, Array, WordArray }
 
 /// REU (RAM Expansion Unit) transfer type.
 #[derive(Debug, Clone)]
@@ -118,4 +118,6 @@ pub enum Stmt {
     Close(Expr),
     /// print# channel, ... — CHKOUT ($FFC9) then CHROUT per char then CLRCHN ($FFCC)
     PrintHash { channel: Expr, args: Vec<Expr> },
+    /// asm { ... } — raw 6502 assembly source assembled inline at the current code position
+    AsmSource(String),
 }

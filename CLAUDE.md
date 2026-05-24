@@ -27,6 +27,15 @@ src/
 examples/
   features.ub          – original feature demo
   new_features.ub      – arrays, word vars, sub params, string vars demo
+  bitmap_demo.ub       – 320×200 bitmap, plot, circle, line
+  joystick_demo.ub     – joystick reading, sprite movement
+  mux_demo.ub          – raster sprite multiplexer (3 windows × 8 sprites)
+  orbit_demo.ub        – 24-sprite orbit with pulsating radius
+  plasma_demo.ub       – plasma-effect bitmap with raster bar animation
+  sprite_data.ub       – sprdef shape data (included by other demos)
+  sprite_mux_orbit.ub  – 24-sprite orbit with sprdef + precomputed positions
+  sprite_orbit_demo.ub – 8 hardware sprites in circular orbit via sin/cos
+  reu_bitmap_demo.ub   – REU stash/fetch with bitmap graphics
 ```
 
 ## Architecture
@@ -97,6 +106,7 @@ var ptr: word = $0400    # 16-bit (two ZP bytes, lo/hi)
 var msg = "HELLO"        # string (inferred from literal)
 var s: string = "TEXT"   # string (explicit type)
 var scores = array(10)   # byte array, 10 elements at $C000+
+var times  = array_word(8) # word array, 8 word elements at $C000+
 const SCREEN = $0400     # compile-time constant (substituted inline)
 ```
 
@@ -107,7 +117,8 @@ const SCREEN = $0400     # compile-time constant (substituted inline)
 | `int` | 8-bit | default for numeric vars |
 | `word` | 16-bit | two ZP bytes; usable as address in `poke`/`peek` |
 | `string` | pointer | ZP pair → null-terminated PETSCII in code segment |
-| `array(N)` | N bytes | lives at `$C000+`, not ZP |
+| `array(N)` | N bytes | byte elements; lives at `$C000+`, not ZP |
+| `array_word(N)` | N×2 bytes | word (16-bit) elements; lives at `$C000+`, not ZP |
 
 ### Arithmetic & Bitwise
 
@@ -250,6 +261,14 @@ var v = scores[0]        # constant index → LDA $C000
 var v = scores[i]        # variable index → LDA (ptr),Y
 
 print scores[2]          # inline in print
+
+var times = array_word(8)  # allocates 16 bytes (8×2) at $C000+
+
+times[0] = $1234         # constant index → STA $C000 (lo), STA $C001 (hi)
+times[i] = $1234         # variable index → ASL A for stride; (ptr),Y × 2
+
+var t: word = times[0]   # constant index → LDA $C000, LDA $C001
+var t: word = times[i]   # variable index → ASL A; LDA (ptr),Y × 2
 ```
 
 ### 16-bit Variables (word)
@@ -433,7 +452,7 @@ var c = asc("A")         # compile-time: returns constant PETSCII code
 var a = abs(x - 20)      # two's-complement absolute value
 var b = min(x, 39)       # 8-bit minimum
 var c = max(x, 0)        # 8-bit maximum
-var s = sgn(score)       # 0 = zero, 1 = positive, $FF = negative
+var s = sgn(score)       # 0 = zero, 1 = positive (1–127), $FF = negative (128–255)
 var r = rnd()            # LCG pseudo-random 0–255; seed from raster line
 var s = sin(angle)       # sine lookup: angle 0-255 (full circle), returns 0-255 (center=128)
 var c = cos(angle)       # cosine = sin(angle+64); same scale
@@ -667,12 +686,76 @@ print ">" + chr$(42)     # works in string concat context
 
 ```basic
 sys $FFD2                # JSR $FFD2
-asm $EA, $EA             # inline bytes (NOP NOP)
+asm $EA, $EA             # inline raw bytes (NOP NOP) — legacy form
 asm {
-  $A9 $07                # LDA #7
-  $8D $86 $02            # STA $0286
+  ; Full 6502 mnemonics and addressing modes
+  LDA #$07               ; immediate
+  STA $0286              ; absolute
+  LDA $50                ; zero-page  ($50 ≤ $FF → ZP auto-selected)
+  STA $0400,X            ; absolute,X indexed
+  LDA ($50),Y            ; (indirect),Y
+  LDA ($50,X)            ; (indirect,X)
+  JSR $FFD2              ; subroutine call
+  JMP $C000              ; absolute jump
+  JMP ($FFFC)            ; indirect jump
+
+  CLC
+  ADC #1                 ; 16-bit carry: ADC lo then ADC #0
+  SEC
+  SBC #1
+
+  TAX                    ; implied / transfer
+  ASL A                  ; accumulator (also just: ASL)
+  LSR A
+  ROL
+  ROR
+
+  ; Branches — operand is an absolute address; offset is computed automatically
+  BNE loop               ; forward or backward branch to local label
+  BEQ done
+
+loop:
+  NOP
+done:
+  RTS
+
+  ; #<label / #>label — lo / hi byte of a label address
+  LDA #<handler
+  STA $0314
+  LDA #>handler
+  STA $0315
+
+  ; Raw hex bytes (backward-compatible with old asm { $xx ... } syntax)
+  $EA $EA                ; two NOP bytes
 }
 ```
+
+**Addressing modes supported:**
+
+| Syntax | Mode | Bytes | Example |
+|---|---|---|---|
+| (no operand) | Implied | 1 | `NOP`, `RTS` |
+| `A` | Accumulator | 1 | `ASL A`, `LSR` |
+| `#value` | Immediate | 2 | `LDA #$07` |
+| `$zz` (0–255) | Zero-page | 2 | `LDA $50` |
+| `$zz,X` | ZP,X | 2 | `LDA $50,X` |
+| `$zz,Y` | ZP,Y | 2 | `LDX $50,Y` |
+| `$xxxx` | Absolute | 3 | `LDA $0400` |
+| `$xxxx,X` | Absolute,X | 3 | `LDA $0400,X` |
+| `$xxxx,Y` | Absolute,Y | 3 | `LDA $0400,Y` |
+| `($xxxx)` | Indirect | 3 | `JMP ($FFFC)` |
+| `($zz,X)` | (Indirect,X) | 2 | `LDA ($50,X)` |
+| `($zz),Y` | (Indirect),Y | 2 | `LDA ($50),Y` |
+| `label` | Relative | 2 | `BNE label` (branches only) |
+
+**Notes:**
+- `$zz` (1–2 hex digits, value ≤ 255) selects zero-page if the instruction supports it; otherwise auto-upgrades to absolute. Use `$00xx` (4 digits) to force absolute.
+- Branch operands are absolute addresses; the relative byte offset is computed by the assembler.
+- Local labels (`name:`) are scoped to the `asm { }` block. Forward branches are resolved in pass 2.
+- `#<label` / `#>label` yield the lo / hi byte of a label's address.
+- Lines starting with `$`, `%`, or a digit are emitted as raw bytes (backward-compatible with the old `asm { $A9 $07 }` form).
+- Comments: `;` or `//` to end of line. (`#` is the immediate prefix, not a comment.)
+- The `asm $EA, $EA` single-line raw-byte form is unchanged.
 
 ### String ↔ Integer
 
@@ -740,13 +823,11 @@ data pointer) and a full hex dump of the generated machine code.
 | Feature | Limitation |
 |---|---|
 | Integer arithmetic | 8-bit unsigned (0–255); `word` vars hold 16-bit values |
-| 16-bit arithmetic | `word + const`, `word + word`, `word - const`, `word - word` fully supported with carry/borrow propagation |
-| Arrays | Byte arrays only; max total size ~4 KB (`$C000–$CFFF`) |
 | Subroutines | No recursion — ZP parameter slots are statically allocated |
 | String vars | Read-only after init; assignment replaces the pointer, not the data |
 | String concat runtime | `s1 + s2` prints sequentially — no heap allocation or length tracking |
 | `rnd()` | Simple LCG, not cryptographic; period = 256 |
-| `abs()` / `sgn()` / `min()` / `max()` | 8-bit values only |
-| `plot` | No bounds checking; plotting outside 0–319 × 0–199 corrupts adjacent memory |
+| `abs()` / `sgn()` / `min()` / `max()` | 8-bit values only; `abs`/`sgn` treat values as signed (bit 7 = negative → `abs` two's-complements, `sgn` returns `$FF`); `min`/`max` are unsigned (0–255) |
+| `plot` | Out-of-range pixels are silently clipped (CheckPlot: Y ≥ 200 or X ≥ 320 → skip) |
 | `chr$` | No PETSCII↔ASCII mapping — n is passed as-is to CHROUT |
 | Error reporting | Compile-time only; no runtime error handling |
