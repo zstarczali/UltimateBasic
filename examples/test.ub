@@ -3,9 +3,9 @@
 # then waits for a keypress.
 
 # Switch to 4×4 block pixel mode (custom charset at $2800, text mode).
-graphics on block
+rem graphics on block
 color bg 0        # black background
-gcls              # fill screen with char 0 (blank) and color RAM with white
+cls              # fill screen with char 0 (blank) and color RAM with white
 display on        # unblank display
 
 # Draw top and bottom border (y=0 and y=49, x=0..79)

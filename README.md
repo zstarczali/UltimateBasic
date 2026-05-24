@@ -514,6 +514,9 @@ done:
   LDA #>handler
   STA $0315
 
+  ; * — current assembly location
+  JMP *
+
   ; Raw hex bytes (backward-compatible with old asm { $xx ... } syntax)
   $EA $EA                ; two NOP bytes
 }
@@ -541,6 +544,7 @@ done:
 - Branch operands are absolute addresses; the relative byte offset is computed automatically.
 - Local labels (`name:`) are scoped to the `asm { }` block. Forward branches resolved in pass 2.
 - `#<label` / `#>label` yield the lo / hi byte of a label's address.
+- `*` yields the current instruction address, so `JMP *` assembles as a self-loop.
 - Lines starting with `$`, `%`, or a digit are emitted as raw bytes (backward-compatible).
 - Comments: `;` or `//` to end of line. (`#` is the immediate prefix, not a comment.)
 

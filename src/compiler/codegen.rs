@@ -4,6 +4,10 @@ use super::{MemoryMap, VarEntry, SubEntry, ArrayEntry};
 
 const ZP_BASE: u8 = 0x02;
 const TMP_BASE: u8 = 0x50;
+const PLOT4_MASK_ZP: u8 = 0xFB;
+const PLOT4_PTR_LO_ZP: u8 = 0xFC;
+const PLOT4_PTR_HI_ZP: u8 = 0xFD;
+const RND_SEED_ZP: u8 = 0xFE;
 const CHROUT: u16 = 0xFFD2;
 const VIC_BORDER: u16 = 0xD020;
 const VIC_BG: u16 = 0xD021;
@@ -183,12 +187,17 @@ fn asm_resolve_mode(mnem: &str, mode: AMode) -> AMode {
 /// Parse the operand field of one assembly line.
 /// Returns `(addressing_mode, Option<numeric_value>, Option<label_reference>)`.
 /// For `#<label` the label_ref starts with `<`; for `#>label` it starts with `>`.
+/// `*` resolves to the current instruction address.
 fn asm_parse_operand(mnem: &str, s: &str) -> (AMode, Option<u16>, Option<String>) {
     use AMode::*;
     let s = s.trim();
 
     if s.is_empty()                       { return (Imp, None, None); }
     if s.eq_ignore_ascii_case("A")        { return (Acc, None, None); }
+    if s == "*" {
+        let mode = if asm_is_branch(mnem) { Rel } else { Abs };
+        return (mode, None, Some("*".to_string()));
+    }
 
     // Immediate: #value, #<label (lo), #>label (hi)
     if let Some(imm) = s.strip_prefix('#') {
@@ -356,7 +365,11 @@ pub(crate) fn assemble_inline(src: &str, base_addr: u16) -> Vec<u8> {
             let _is_lo = lab.starts_with('<');
             let is_hi = lab.starts_with('>');
             let key   = lab.trim_start_matches(|c| c == '<' || c == '>').trim();
-            let target = *labels.get(key).unwrap_or(&0);
+                let target = if key == "*" {
+                    base_addr + item.offset
+                } else {
+                    *labels.get(key).unwrap_or(&0)
+                };
 
             if item.mode == Imm {
                 let byte = if is_hi { (target >> 8) as u16 } else { target & 0xFF };
@@ -649,11 +662,10 @@ impl Codegen {
             self.data_bytes = Self::collect_data_bytes(stmts);
         }
 
-        // Reserve 5 ZP bytes for the 4×4 block pixel helper (pnt, ptr_lo, ptr_hi, x_in, y_in).
+        // The 4×4 block pixel helper uses fixed high ZP scratch ($FB-$FD), which is
+        // the documented user-safe area on the C64.
         if Self::has_plot4_stmt(stmts) {
-            let zp = self.perm_zp;
-            self.perm_zp += 5;
-            self.plot4_zp = Some(zp);
+            self.plot4_zp = Some(PLOT4_MASK_ZP);
         }
 
         for stmt in stmts {
@@ -981,21 +993,21 @@ impl Codegen {
             }
             Expr::Rnd => {
                 // LCG: seed = seed*5 + 1 mod 256  (full period, Hull-Dobell)
-                // Seed at $FB – free ZP, not used by KERNAL or BASIC
+                // Seed at $FE – documented free ZP byte on the C64.
                 if !self.rnd_seeded {
                     // Seed with raster line for variety across runs
                     self.emit(0xAD); self.emit(0x12); self.emit(0xD0); // LDA $D012
-                    self.emit(0x85); self.emit(0xFB);                   // STA $FB
+                    self.emit(0x85); self.emit(RND_SEED_ZP);            // STA seed
                     self.rnd_seeded = true;
                 }
-                self.emit(0xA5); self.emit(0xFB); // LDA $FB
+                self.emit(0xA5); self.emit(RND_SEED_ZP); // LDA seed
                 self.emit(0x0A);                   // ASL A  (×2)
                 self.emit(0x0A);                   // ASL A  (×4)
                 self.emit(0x18);                   // CLC
-                self.emit(0x65); self.emit(0xFB); // ADC $FB (×5)
+                self.emit(0x65); self.emit(RND_SEED_ZP); // ADC seed (×5)
                 self.emit(0x18);                   // CLC
                 self.emit(0x69); self.emit(0x01);  // ADC #1
-                self.emit(0x85); self.emit(0xFB);  // STA $FB  (store seed)
+                self.emit(0x85); self.emit(RND_SEED_ZP);  // STA seed
                 self.emit(0x4D); self.emit(0x12); self.emit(0xD0); // EOR $D012 (post-whiten)
             }
             Expr::Abs(expr) => {
@@ -1184,26 +1196,28 @@ impl Codegen {
                     BinOp::Div => {
                         let divisor = self.tmp_zp; self.tmp_zp += 1;
                         let quot = self.tmp_zp; self.tmp_zp += 1;
-                        self.emit(0x85); self.emit(divisor);
+                        self.emit(0x85); self.emit(divisor);    // STA divisor
                         self.emit(0xA9); self.emit(0x00);
-                        self.emit(0x85); self.emit(quot);
+                        self.emit(0x85); self.emit(quot);        // STA quot = 0
                         let loop_addr = self.current_addr();
-                        self.emit(0xA5); self.emit(tmp);
-                        self.emit(0x38);
-                        self.emit(0xE5); self.emit(divisor);
-                        self.emit(0x85); self.emit(tmp);
-                        self.emit(0xB0); self.emit(0x04); // BCS +4 (continue)
-                        self.emit(0x4C); // JMP end
+                        self.emit(0xA5); self.emit(tmp);         // LDA tmp (dividend)
+                        self.emit(0x38);                          // SEC
+                        self.emit(0xE5); self.emit(divisor);     // SBC divisor
+                        self.emit(0x85); self.emit(tmp);         // STA tmp
+                        // BCS +3: skip the 3-byte JMP below and land on INC quot
+                        self.emit(0xB0); self.emit(0x03);        // BCS +3 (no borrow → continue)
+                        self.emit(0x4C);                          // JMP end (borrow → done)
                         let patch = self.code.len();
-                        self.emit16(0x0000);
-                        self.emit(0xE6); self.emit(quot); // INC quot
-                        let back = loop_addr as i32 - self.current_addr() as i32 - 2;
-                        self.emit(0x90); self.emit(back as u8); // BCC loop
+                        self.emit16(0x0000);                      // (patched below)
+                        self.emit(0xE6); self.emit(quot);        // INC quot
+                        self.emit(0x4C);                          // JMP loop_addr (unconditional)
+                        self.emit(loop_addr as u8);
+                        self.emit((loop_addr >> 8) as u8);
                         let end_addr = self.current_addr();
                         let p = patch;
                         self.code[p] = end_addr as u8;
                         self.code[p+1] = (end_addr >> 8) as u8;
-                        self.emit(0xA5); self.emit(quot);
+                        self.emit(0xA5); self.emit(quot);        // LDA quot
                     }
                     BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq => {
                         // Compare: returns 1 (true) or 0 (false) in A
@@ -1556,6 +1570,29 @@ impl Codegen {
         self.emit(0x29); self.emit(0xEF);     // AND #$EF  (clear DEN)
         self.emit(0x8D); self.emit16(0xD011); // STA $D011
 
+        // 1a. Defensive reset of VIC state in case a prior program left it dirty
+        //     (sprites enabled, MCM/ECM set, etc.). Prevents leftover sprites
+        //     from rendering through the 4x4 block playfield.
+        self.emit(0xA9); self.emit(0x00);     // LDA #0
+        self.emit(0x8D); self.emit16(0xD015); // STA $D015  (disable all 8 sprites)
+        self.emit(0x8D); self.emit16(0xD01C); // STA $D01C  (clear sprite multicolor)
+        self.emit(0x8D); self.emit16(0xD017); // STA $D017  (clear sprite Y-expand)
+        self.emit(0x8D); self.emit16(0xD01D); // STA $D01D  (clear sprite X-expand)
+        self.emit(0x8D); self.emit16(0xD01B); // STA $D01B  (clear sprite priority)
+        // Clear MCM bit and force CSEL=40-col in $D016.
+        self.emit(0xAD); self.emit16(0xD016); // LDA $D016
+        self.emit(0x29); self.emit(0xEF);     // AND #$EF  (clear MCM=bit4)
+        self.emit(0x09); self.emit(0x08);     // ORA #$08  (set CSEL=bit3, 40 cols)
+        self.emit(0x8D); self.emit16(0xD016); // STA $D016
+        // Force VIC bank 0 ($0000-$3FFF) so screen @$0400 and charset @$2800
+        // are read from the same bank the CPU writes to.
+        self.emit(0xAD); self.emit16(0xDD00); // LDA $DD00
+        self.emit(0x29); self.emit(0xFC);     // AND #$FC
+        self.emit(0x09); self.emit(0x03);     // ORA #$03
+        self.emit(0x8D); self.emit16(0xDD00); // STA $DD00
+        // Clear ECM bit in $D011 (will be re-asserted by step 4 below).
+        // (Step 4's AND #$DF only clears BMM; ECM=bit6 needs explicit clear.)
+
         // 2. Build and copy the 16-char charset (128 bytes) to $2800.
         //    top_tab[n] = ((n>>3)&1)*0xF0 | ((n>>2)&1)*0x0F  (bits 3 and 2)
         //    bot_tab[n] = ((n>>1)&1)*0xF0 | ((n>>0)&1)*0x0F  (bits 1 and 0)
@@ -1580,7 +1617,28 @@ impl Codegen {
         self.code[jmp_pos]     = copy_start as u8;
         self.code[jmp_pos + 1] = (copy_start >> 8) as u8;
 
-        // Copy 128 bytes (X from 127 downto 0) from charset_addr → $2800.
+        // 2a. Zero the entire 2KB charset area $2800-$2FFF (8 pages) so that
+        //     chars 16-255 render as blank (background color).  Prevents garbage
+        //     from VICE RAM init or cursor-blink (char $80 = offset $2C00) from
+        //     showing as stripes in the VIC display / overscan area.
+        //     LDA #0; LDX #0; loop: STA $2800..2F00,X; INX; BNE loop
+        self.emit(0xA9); self.emit(0x00);     // LDA #0
+        self.emit(0xA2); self.emit(0x00);     // LDX #0
+        let zero_loop = self.current_addr();
+        self.emit(0x9D); self.emit(0x00); self.emit(0x28); // STA $2800,X
+        self.emit(0x9D); self.emit(0x00); self.emit(0x29); // STA $2900,X
+        self.emit(0x9D); self.emit(0x00); self.emit(0x2A); // STA $2A00,X
+        self.emit(0x9D); self.emit(0x00); self.emit(0x2B); // STA $2B00,X
+        self.emit(0x9D); self.emit(0x00); self.emit(0x2C); // STA $2C00,X
+        self.emit(0x9D); self.emit(0x00); self.emit(0x2D); // STA $2D00,X
+        self.emit(0x9D); self.emit(0x00); self.emit(0x2E); // STA $2E00,X
+        self.emit(0x9D); self.emit(0x00); self.emit(0x2F); // STA $2F00,X
+        self.emit(0xE8);                                    // INX
+        self.emit(0xD0); let bne_zero = self.code.len(); self.emit(0x00);
+        self.patch_bxx(bne_zero, zero_loop);
+
+        // 2b. Copy our 16-char charset (128 bytes) from PRG → $2800-$287F,
+        //     overwriting the first 128 zero bytes we just wrote.
         self.emit(0xA2); self.emit(127u8);    // LDX #127
         let copy_loop = self.current_addr();
         self.emit(0xBD); self.emit16(charset_addr); // LDA charset_addr,X
@@ -1590,14 +1648,16 @@ impl Codegen {
         let bpl_pos = self.code.len(); self.emit(0x00);
         self.patch_bxx(bpl_pos, copy_loop);
 
-        // 3. Point VIC charset to $2800: EOR $D018 with $0E ($1000→$2800).
-        self.emit(0xAD); self.emit16(0xD018); // LDA $D018
-        self.emit(0x49); self.emit(0x0E);     // EOR #$0E
+        // 3. Point VIC charset to $2800 and keep the screen matrix at $0400.
+        //    $1A = screen@$0400 (bits7-4 = 0001), charset@$2800 (bits3-1 = 101).
+        //    Direct write is idempotent; EOR would fail if re-entered without graphics off.
+        self.emit(0xA9); self.emit(0x1A);     // LDA #$1A
         self.emit(0x8D); self.emit16(0xD018); // STA $D018
 
-        // 4. Ensure text mode (BMM=0); display stays blanked until user calls `display on`.
-        self.emit(0xAD); self.emit16(0xD011); // LDA $D011
-        self.emit(0x29); self.emit(0xDF);     // AND #$DF  (clear BMM=bit5)
+        // 4. Canonical blanked text-mode state for block graphics: DEN=0, RSEL=1,
+        //    YSCROLL=3, BMM=0, ECM=0. `display on` only sets DEN, so block mode
+        //    must normalize the remaining bits here instead of inheriting prior VIC state.
+        self.emit(0xA9); self.emit(0x0B);     // LDA #$0B
         self.emit(0x8D); self.emit16(0xD011); // STA $D011
 
         self.fourxfour_mode = true;
@@ -1937,60 +1997,36 @@ impl Codegen {
     }
 
     // Emit helper function for 4×4 block pixel SET.
-    // ZP layout (plot4_zp): pnt=base, ptr_lo=base+1, ptr_hi=base+2, x_in=base+3, y_in=base+4
+    // Fixed ZP layout: pnt=$FB, ptr_lo=$FC, ptr_hi=$FD.
     // Algorithm:
     //   pnt = $08 (top-left bit mask)
-    //   if x_in & 1 → LSR pnt    (move to right half)
-    //   Y = x_in / 2             (character column)
-    //   if y_in & 1 → LSR pnt twice (move to bottom half)
-    //   X = y_in / 2             (character row)
-    //   ptr = lotable[X] | hitable[X]<<8   (screen address = $0400 + row*40 + col)
+    //   input X = y, Y = x
+    //   if x & 1 → LSR pnt       (move to right half)
+    //   Y = x / 2                (character column)
+    //   if y & 1 → LSR pnt twice (move to bottom half)
+    //   X = y / 2                (character row)
+    //   ptr = $0400 + row*40     (computed arithmetically)
     //   screen[ptr + Y] |= pnt
     fn emit_plot4_helper(&mut self) {
-        let zp = match self.plot4_zp { Some(z) => z, None => return };
-        let pnt    = zp;
-        let ptr_lo = zp + 1;
-        let ptr_hi = zp + 2;
-        let x_in   = zp + 3;
-        let y_in   = zp + 4;
-
-        // JMP over the two lookup tables.
-        self.emit(0x4C);
-        let jmp_pos = self.code.len(); self.emit16(0x0000);
-
-        // lo-byte table: ($0400 + row*40) lo, for rows 0-24
-        let lotable_addr = self.current_addr();
-        for b in &[0x00u8, 0x28, 0x50, 0x78, 0xA0, 0xC8, 0xF0,
-                   0x18, 0x40, 0x68, 0x90, 0xB8, 0xE0,
-                   0x08, 0x30, 0x58, 0x80, 0xA8, 0xD0, 0xF8,
-                   0x20, 0x48, 0x70, 0x98, 0xC0] { self.emit(*b); }
-
-        // hi-byte table: ($0400 + row*40) hi, for rows 0-24
-        let hitable_addr = self.current_addr();
-        for b in &[0x04u8, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04,
-                   0x05, 0x05, 0x05, 0x05, 0x05, 0x05,
-                   0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06,
-                   0x07, 0x07, 0x07, 0x07, 0x07] { self.emit(*b); }
-
-        // Patch the JMP.
-        let helper_start = self.current_addr();
-        self.code[jmp_pos]     = helper_start as u8;
-        self.code[jmp_pos + 1] = (helper_start >> 8) as u8;
+        if self.plot4_zp.is_none() { return; }
+        let pnt = PLOT4_MASK_ZP;
+        let ptr_lo = PLOT4_PTR_LO_ZP;
+        let ptr_hi = PLOT4_PTR_HI_ZP;
 
         // LDA #$08; STA pnt  — start with top-left pixel bit
         self.emit(0xA9); self.emit(0x08);
         self.emit(0x85); self.emit(pnt);
 
-        // LDA x_in; LSR A; BCC :+; LSR pnt  :  TAY
-        self.emit(0xA5); self.emit(x_in);     // LDA x_in
+        // TYA; LSR A; BCC :+; LSR pnt  :  TAY
+        self.emit(0x98);                       // TYA
         self.emit(0x4A);                       // LSR A
         self.emit(0x90); let bcc1 = self.code.len(); self.emit(0x00); // BCC +
         self.emit(0x46); self.emit(pnt);       // LSR pnt  (right half)
         self.patch_bxx(bcc1, self.current_addr());
         self.emit(0xA8);                       // TAY  (Y = column)
 
-        // LDA y_in; LSR A; BCC :+; LSR pnt; LSR pnt  :  TAX
-        self.emit(0xA5); self.emit(y_in);     // LDA y_in
+        // TXA; LSR A; BCC :+; LSR pnt; LSR pnt  :  TAX
+        self.emit(0x8A);                       // TXA
         self.emit(0x4A);                       // LSR A
         self.emit(0x90); let bcc2 = self.code.len(); self.emit(0x00); // BCC +
         self.emit(0x46); self.emit(pnt);       // LSR pnt  (bottom-left)
@@ -1998,13 +2034,26 @@ impl Codegen {
         self.patch_bxx(bcc2, self.current_addr());
         self.emit(0xAA);                       // TAX  (X = row)
 
-        // LDA lotable,X; STA ptr_lo
-        self.emit(0xBD); self.emit16(lotable_addr); // LDA lotable,X
-        self.emit(0x85); self.emit(ptr_lo);
+        // ptr = $0400 + row*40
+        self.emit(0xA9); self.emit(0x00);      // LDA #<$0400
+        self.emit(0x85); self.emit(ptr_lo);    // STA ptr_lo
+        self.emit(0xA9); self.emit(0x04);      // LDA #>$0400
+        self.emit(0x85); self.emit(ptr_hi);    // STA ptr_hi
 
-        // LDA hitable,X; STA ptr_hi
-        self.emit(0xBD); self.emit16(hitable_addr); // LDA hitable,X
-        self.emit(0x85); self.emit(ptr_hi);
+        let loop_top = self.current_addr();
+        self.emit(0x8A);                       // TXA
+        self.emit(0xC9); self.emit(0x00);      // CMP #0
+        self.emit(0xF0); let done_beq = self.code.len(); self.emit(0x00); // BEQ done
+        self.emit(0xA9); self.emit(0x28);      // LDA #40
+        self.emit(0x18);                       // CLC
+        self.emit(0x65); self.emit(ptr_lo);    // ADC ptr_lo
+        self.emit(0x85); self.emit(ptr_lo);    // STA ptr_lo
+        self.emit(0x90); let no_carry_bcc = self.code.len(); self.emit(0x00); // BCC skip-inc
+        self.emit(0xE6); self.emit(ptr_hi);    // INC ptr_hi
+        self.patch_bxx(no_carry_bcc, self.current_addr());
+        self.emit(0xCA);                       // DEX
+        self.emit(0x4C); self.emit16(loop_top);// JMP loop_top
+        self.patch_bxx(done_beq, self.current_addr());
 
         // LDA (ptr_lo),Y; ORA pnt; STA (ptr_lo),Y; RTS
         self.emit(0xB1); self.emit(ptr_lo);   // LDA (ptr_lo),Y
@@ -2016,44 +2065,22 @@ impl Codegen {
     // Emit helper function for 4×4 block pixel ERASE (clear).
     // Same as emit_plot4_helper but uses De Morgan: A = (A EOR $FF ORA pnt) EOR $FF = A AND NOT pnt
     fn emit_plot4_erase_helper(&mut self) {
-        let zp = match self.plot4_zp { Some(z) => z, None => return };
-        let pnt    = zp;
-        let ptr_lo = zp + 1;
-        let ptr_hi = zp + 2;
-        let x_in   = zp + 3;
-        let y_in   = zp + 4;
-
-        // JMP over lookup tables.
-        self.emit(0x4C);
-        let jmp_pos = self.code.len(); self.emit16(0x0000);
-
-        let lotable_addr = self.current_addr();
-        for b in &[0x00u8, 0x28, 0x50, 0x78, 0xA0, 0xC8, 0xF0,
-                   0x18, 0x40, 0x68, 0x90, 0xB8, 0xE0,
-                   0x08, 0x30, 0x58, 0x80, 0xA8, 0xD0, 0xF8,
-                   0x20, 0x48, 0x70, 0x98, 0xC0] { self.emit(*b); }
-
-        let hitable_addr = self.current_addr();
-        for b in &[0x04u8, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04,
-                   0x05, 0x05, 0x05, 0x05, 0x05, 0x05,
-                   0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06,
-                   0x07, 0x07, 0x07, 0x07, 0x07] { self.emit(*b); }
-
-        let helper_start = self.current_addr();
-        self.code[jmp_pos]     = helper_start as u8;
-        self.code[jmp_pos + 1] = (helper_start >> 8) as u8;
+        if self.plot4_zp.is_none() { return; }
+        let pnt = PLOT4_MASK_ZP;
+        let ptr_lo = PLOT4_PTR_LO_ZP;
+        let ptr_hi = PLOT4_PTR_HI_ZP;
 
         self.emit(0xA9); self.emit(0x08);
         self.emit(0x85); self.emit(pnt);
 
-        self.emit(0xA5); self.emit(x_in);
+        self.emit(0x98);                       // TYA
         self.emit(0x4A);
         self.emit(0x90); let bcc1 = self.code.len(); self.emit(0x00);
         self.emit(0x46); self.emit(pnt);
         self.patch_bxx(bcc1, self.current_addr());
         self.emit(0xA8);
 
-        self.emit(0xA5); self.emit(y_in);
+        self.emit(0x8A);                       // TXA
         self.emit(0x4A);
         self.emit(0x90); let bcc2 = self.code.len(); self.emit(0x00);
         self.emit(0x46); self.emit(pnt);
@@ -2061,10 +2088,25 @@ impl Codegen {
         self.patch_bxx(bcc2, self.current_addr());
         self.emit(0xAA);
 
-        self.emit(0xBD); self.emit16(lotable_addr);
+        self.emit(0xA9); self.emit(0x00);      // LDA #<$0400
         self.emit(0x85); self.emit(ptr_lo);
-        self.emit(0xBD); self.emit16(hitable_addr);
+        self.emit(0xA9); self.emit(0x04);      // LDA #>$0400
         self.emit(0x85); self.emit(ptr_hi);
+
+        let loop_top = self.current_addr();
+        self.emit(0x8A);                       // TXA
+        self.emit(0xC9); self.emit(0x00);      // CMP #0
+        self.emit(0xF0); let done_beq = self.code.len(); self.emit(0x00); // BEQ done
+        self.emit(0xA9); self.emit(0x28);      // LDA #40
+        self.emit(0x18);                       // CLC
+        self.emit(0x65); self.emit(ptr_lo);    // ADC ptr_lo
+        self.emit(0x85); self.emit(ptr_lo);
+        self.emit(0x90); let no_carry_bcc = self.code.len(); self.emit(0x00); // BCC skip-inc
+        self.emit(0xE6); self.emit(ptr_hi);    // INC ptr_hi
+        self.patch_bxx(no_carry_bcc, self.current_addr());
+        self.emit(0xCA);                       // DEX
+        self.emit(0x4C); self.emit16(loop_top);
+        self.patch_bxx(done_beq, self.current_addr());
 
         // Erase: screen = screen AND NOT pnt  via De Morgan:
         //   LDA (ptr),Y; EOR #$FF; ORA pnt; EOR #$FF; STA (ptr),Y
@@ -4958,30 +5000,30 @@ impl Codegen {
                 }
             }
             Stmt::Plot4(x_expr, y_expr) => {
-                // Set a 4×4 block pixel — uses plot4 ZP block (pnt, ptr_lo, ptr_hi, x_in, y_in)
-                if let Some(zp) = self.plot4_zp {
-                    let x_in = zp + 3;
-                    let y_in = zp + 4;
+                // Set a 4×4 block pixel — helper uses safe fixed high-ZP scratch.
+                if self.plot4_zp.is_some() {
                     let x = x_expr.clone(); let y = y_expr.clone();
                     self.eval_expr(&x);
-                    self.emit(0x85); self.emit(x_in); // STA x_in
+                    self.emit(0x48); // PHA (save x)
                     self.eval_expr(&y);
-                    self.emit(0x85); self.emit(y_in); // STA y_in
+                    self.emit(0xAA); // TAX (X = y)
+                    self.emit(0x68); // PLA (restore x)
+                    self.emit(0xA8); // TAY (Y = x)
                     self.emit(0x20); // JSR plot4_helper
                     let patch = self.code.len(); self.emit16(0x0000);
                     self.plot4_patches.push(patch);
                 }
             }
             Stmt::Plot4Erase(x_expr, y_expr) => {
-                // Clear a 4×4 block pixel — uses plot4 ZP block
-                if let Some(zp) = self.plot4_zp {
-                    let x_in = zp + 3;
-                    let y_in = zp + 4;
+                // Clear a 4×4 block pixel — helper uses safe fixed high-ZP scratch.
+                if self.plot4_zp.is_some() {
                     let x = x_expr.clone(); let y = y_expr.clone();
                     self.eval_expr(&x);
-                    self.emit(0x85); self.emit(x_in); // STA x_in
+                    self.emit(0x48); // PHA (save x)
                     self.eval_expr(&y);
-                    self.emit(0x85); self.emit(y_in); // STA y_in
+                    self.emit(0xAA); // TAX (X = y)
+                    self.emit(0x68); // PLA (restore x)
+                    self.emit(0xA8); // TAY (Y = x)
                     self.emit(0x20); // JSR plot4_erase_helper
                     let patch = self.code.len(); self.emit16(0x0000);
                     self.plot4_erase_patches.push(patch);
@@ -5242,6 +5284,11 @@ impl Codegen {
     pub fn compile(&mut self, stmts: &[Stmt]) -> Vec<u8> {
         // Pre-scan: allocate ZP for sub params, register arrays, data pointer
         self.pre_scan(stmts);
+
+        // Real C64 environments may leave the decimal flag set. The generated
+        // arithmetic assumes binary ADC/SBC semantics, so normalize once at
+        // program entry.
+        self.emit(0xD8); // CLD
 
         // Emit data pointer init (forward-patched later when data block address is known)
         if let Some(zp) = self.data_zp {

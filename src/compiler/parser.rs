@@ -7,23 +7,28 @@ pub struct Parser {
     pos: usize,
     consts: std::collections::HashMap<String, i16>,
     base_dir: Option<std::path::PathBuf>,
+    errors: Vec<String>,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0, consts: std::collections::HashMap::new(), base_dir: None }
+        Self { tokens, pos: 0, consts: std::collections::HashMap::new(), base_dir: None, errors: vec![] }
     }
 
     pub fn new_with_base(tokens: Vec<Token>, base_dir: std::path::PathBuf) -> Self {
-        Self { tokens, pos: 0, consts: std::collections::HashMap::new(), base_dir: Some(base_dir) }
+        Self { tokens, pos: 0, consts: std::collections::HashMap::new(), base_dir: Some(base_dir), errors: vec![] }
     }
 
     pub fn new_with_consts(tokens: Vec<Token>, consts: std::collections::HashMap<String, i16>) -> Self {
-        Self { tokens, pos: 0, consts, base_dir: None }
+        Self { tokens, pos: 0, consts, base_dir: None, errors: vec![] }
     }
 
     pub fn new_with_consts_and_base(tokens: Vec<Token>, consts: std::collections::HashMap<String, i16>, base_dir: Option<std::path::PathBuf>) -> Self {
-        Self { tokens, pos: 0, consts, base_dir }
+        Self { tokens, pos: 0, consts, base_dir, errors: vec![] }
+    }
+
+    pub fn errors(&self) -> &[String] {
+        &self.errors
     }
 
     fn peek(&self) -> &Token {
@@ -47,6 +52,15 @@ impl Parser {
             self.advance();
             if self.tokens.get(self.pos.saturating_sub(1)) == Some(&Token::Eof) { break; }
         }
+    }
+
+    fn reject_stmt(&mut self, message: &str) -> Option<Stmt> {
+        self.errors.push(message.to_string());
+        while !matches!(self.peek(), Token::Newline | Token::Eof) {
+            self.advance();
+        }
+        self.expect_newline();
+        None
     }
 
     pub fn parse(&mut self) -> Vec<Stmt> {
@@ -349,6 +363,9 @@ impl Parser {
                 let block = if on && !multi && self.peek() == &Token::Block {
                     self.advance(); true
                 } else { false };
+                if block {
+                    return self.reject_stmt("Unsupported feature: graphics on block");
+                }
                 self.expect_newline();
                 Some(Stmt::Graphics { on, multi, block })
             }
@@ -540,20 +557,7 @@ impl Parser {
             }
             Token::Plot4 => {
                 self.advance();
-                if matches!(self.peek(), Token::Erase) {
-                    self.advance();
-                    let x = self.parse_expr();
-                    if self.peek() == &Token::Comma { self.advance(); }
-                    let y = self.parse_expr();
-                    self.expect_newline();
-                    Some(Stmt::Plot4Erase(x, y))
-                } else {
-                    let x = self.parse_expr();
-                    if self.peek() == &Token::Comma { self.advance(); }
-                    let y = self.parse_expr();
-                    self.expect_newline();
-                    Some(Stmt::Plot4(x, y))
-                }
+                self.reject_stmt("Unsupported feature: plot4")
             }
             Token::Circle => {
                 self.advance();

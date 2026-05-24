@@ -11,6 +11,288 @@ fn compile_raw(src: &str) -> Vec<u8> {
     compile(src, &CompileOptions { basic_stub: false }).prg
 }
 
+#[test]
+fn graphics_on_block_is_rejected() {
+    let res = compile("graphics on block", &CompileOptions { basic_stub: false });
+    assert!(res.errors.iter().any(|err| err.contains("Unsupported feature: graphics on block")),
+        "expected graphics on block to be rejected, got {:?}", res.errors);
+}
+
+#[test]
+fn plot4_is_rejected() {
+    let res = compile("plot4 1, 2", &CompileOptions { basic_stub: false });
+    assert!(res.errors.iter().any(|err| err.contains("Unsupported feature: plot4")),
+        "expected plot4 to be rejected, got {:?}", res.errors);
+}
+
+struct TestCpu {
+    mem: [u8; 65536],
+    pc: u16,
+    sp: u8,
+    a: u8,
+    x: u8,
+    y: u8,
+    carry: bool,
+    zero: bool,
+    negative: bool,
+    call_depth: usize,
+}
+
+impl TestCpu {
+    fn new(prg: &[u8]) -> Self {
+        let mut mem = [0u8; 65536];
+        let load_addr = u16::from_le_bytes([prg[0], prg[1]]);
+        let start = load_addr as usize;
+        mem[start..start + prg[2..].len()].copy_from_slice(&prg[2..]);
+        Self {
+            mem,
+            pc: load_addr,
+            sp: 0xFF,
+            a: 0,
+            x: 0,
+            y: 0,
+            carry: false,
+            zero: false,
+            negative: false,
+            call_depth: 0,
+        }
+    }
+
+    fn run_until_main_rts(&mut self, max_steps: usize) {
+        for _ in 0..max_steps {
+            if !self.step() {
+                return;
+            }
+        }
+        panic!("test CPU exceeded step budget at ${:04X}", self.pc);
+    }
+
+    fn step(&mut self) -> bool {
+        let opcode = self.fetch_byte();
+        match opcode {
+            0x05 => {
+                let zp = self.fetch_byte();
+                self.a |= self.mem[zp as usize];
+                self.set_zn(self.a);
+            }
+            0x09 => {
+                let imm = self.fetch_byte();
+                self.a |= imm;
+                self.set_zn(self.a);
+            }
+            0x18 => self.carry = false,
+            0x20 => {
+                let addr = self.fetch_word();
+                let ret = self.pc.wrapping_sub(1);
+                self.push((ret >> 8) as u8);
+                self.push(ret as u8);
+                self.pc = addr;
+                self.call_depth += 1;
+            }
+            0x29 => {
+                let imm = self.fetch_byte();
+                self.a &= imm;
+                self.set_zn(self.a);
+            }
+            0x46 => {
+                let zp = self.fetch_byte();
+                let value = self.mem[zp as usize];
+                self.carry = value & 1 != 0;
+                let result = value >> 1;
+                self.mem[zp as usize] = result;
+                self.set_zn(result);
+            }
+            0x48 => self.push(self.a),
+            0x4A => {
+                self.carry = self.a & 1 != 0;
+                self.a >>= 1;
+                self.set_zn(self.a);
+            }
+            0x4C => self.pc = self.fetch_word(),
+            0x60 => {
+                if self.call_depth == 0 {
+                    return false;
+                }
+                let lo = self.pop();
+                let hi = self.pop();
+                self.pc = u16::from_le_bytes([lo, hi]).wrapping_add(1);
+                self.call_depth -= 1;
+            }
+            0x65 => {
+                let zp = self.fetch_byte();
+                let value = self.mem[zp as usize];
+                self.adc(value);
+            }
+            0x68 => {
+                self.a = self.pop();
+                self.set_zn(self.a);
+            }
+            0x85 => {
+                let zp = self.fetch_byte();
+                self.mem[zp as usize] = self.a;
+            }
+            0x8D => {
+                let addr = self.fetch_word();
+                self.mem[addr as usize] = self.a;
+            }
+            0x90 => self.branch(!self.carry),
+            0x91 => {
+                let zp = self.fetch_byte();
+                let addr = self.indirect_y_addr(zp);
+                self.mem[addr as usize] = self.a;
+            }
+            0x98 => {
+                self.a = self.y;
+                self.set_zn(self.a);
+            }
+            0x9D => {
+                let base = self.fetch_word();
+                let addr = base.wrapping_add(self.x as u16);
+                self.mem[addr as usize] = self.a;
+            }
+            0xA0 => {
+                self.y = self.fetch_byte();
+                self.set_zn(self.y);
+            }
+            0xA2 => {
+                self.x = self.fetch_byte();
+                self.set_zn(self.x);
+            }
+            0xA5 => {
+                let zp = self.fetch_byte();
+                self.a = self.mem[zp as usize];
+                self.set_zn(self.a);
+            }
+            0xA6 => {
+                let zp = self.fetch_byte();
+                self.x = self.mem[zp as usize];
+                self.set_zn(self.x);
+            }
+            0xA8 => {
+                self.y = self.a;
+                self.set_zn(self.y);
+            }
+            0xA9 => {
+                self.a = self.fetch_byte();
+                self.set_zn(self.a);
+            }
+            0x8A => {
+                self.a = self.x;
+                self.set_zn(self.a);
+            }
+            0xAA => {
+                self.x = self.a;
+                self.set_zn(self.x);
+            }
+            0xAD => {
+                let addr = self.fetch_word();
+                self.a = self.mem[addr as usize];
+                self.set_zn(self.a);
+            }
+            0xB0 => self.branch(self.carry),
+            0xB1 => {
+                let zp = self.fetch_byte();
+                let addr = self.indirect_y_addr(zp);
+                self.a = self.mem[addr as usize];
+                self.set_zn(self.a);
+            }
+            0xBD => {
+                let base = self.fetch_word();
+                let addr = base.wrapping_add(self.x as u16);
+                self.a = self.mem[addr as usize];
+                self.set_zn(self.a);
+            }
+            0xC5 => {
+                let zp = self.fetch_byte();
+                self.compare(self.a, self.mem[zp as usize]);
+            }
+            0xC9 => {
+                let imm = self.fetch_byte();
+                self.compare(self.a, imm);
+            }
+            0xC8 => {
+                self.y = self.y.wrapping_add(1);
+                self.set_zn(self.y);
+            }
+            0xCA => {
+                self.x = self.x.wrapping_sub(1);
+                self.set_zn(self.x);
+            }
+            0xD8 => {}
+            0xD0 => self.branch(!self.zero),
+            0xE6 => {
+                let zp = self.fetch_byte();
+                let result = self.mem[zp as usize].wrapping_add(1);
+                self.mem[zp as usize] = result;
+                self.set_zn(result);
+            }
+            0xE8 => {
+                self.x = self.x.wrapping_add(1);
+                self.set_zn(self.x);
+            }
+            0xF0 => self.branch(self.zero),
+            0x10 => self.branch(!self.negative),
+            _ => panic!("unsupported opcode ${:02X} at ${:04X}", opcode, self.pc.wrapping_sub(1)),
+        }
+        true
+    }
+
+    fn fetch_byte(&mut self) -> u8 {
+        let byte = self.mem[self.pc as usize];
+        self.pc = self.pc.wrapping_add(1);
+        byte
+    }
+
+    fn fetch_word(&mut self) -> u16 {
+        let lo = self.fetch_byte();
+        let hi = self.fetch_byte();
+        u16::from_le_bytes([lo, hi])
+    }
+
+    fn push(&mut self, value: u8) {
+        self.mem[0x0100 | self.sp as usize] = value;
+        self.sp = self.sp.wrapping_sub(1);
+    }
+
+    fn pop(&mut self) -> u8 {
+        self.sp = self.sp.wrapping_add(1);
+        self.mem[0x0100 | self.sp as usize]
+    }
+
+    fn set_zn(&mut self, value: u8) {
+        self.zero = value == 0;
+        self.negative = value & 0x80 != 0;
+    }
+
+    fn adc(&mut self, value: u8) {
+        let carry_in = u16::from(self.carry);
+        let sum = self.a as u16 + value as u16 + carry_in;
+        self.a = sum as u8;
+        self.carry = sum > 0xFF;
+        self.set_zn(self.a);
+    }
+
+    fn compare(&mut self, left: u8, right: u8) {
+        let result = left.wrapping_sub(right);
+        self.carry = left >= right;
+        self.zero = left == right;
+        self.negative = result & 0x80 != 0;
+    }
+
+    fn branch(&mut self, take: bool) {
+        let offset = self.fetch_byte() as i8;
+        if take {
+            self.pc = self.pc.wrapping_add_signed(offset as i16);
+        }
+    }
+
+    fn indirect_y_addr(&self, zp: u8) -> u16 {
+        let lo = self.mem[zp as usize];
+        let hi = self.mem[zp.wrapping_add(1) as usize];
+        u16::from_le_bytes([lo, hi]).wrapping_add(self.y as u16)
+    }
+}
+
 // ── BASIC stub ──────────────────────────────────────────────────────────────
 
 #[test]
@@ -2527,6 +2809,17 @@ fn asm_block_jmp_absolute() {
 }
 
 #[test]
+fn asm_block_jmp_current_location() {
+    let prg = compile_raw("asm { JMP * }");
+    let load_addr = u16::from_le_bytes([prg[0], prg[1]]);
+    let bytes = &prg[2..];
+    let has_self_jump = bytes.windows(3).enumerate().any(|(offset, window)| {
+        window[0] == 0x4C && u16::from_le_bytes([window[1], window[2]]) == load_addr + offset as u16
+    });
+    assert!(has_self_jump, "JMP * should target its own instruction address");
+}
+
+#[test]
 fn asm_block_clc_adc() {
     // CLC + ADC #1 → 18  69 01
     let prg = compile_raw("asm {\n  CLC\n  ADC #1\n}");
@@ -2877,13 +3170,20 @@ fn word_array_set_var_index_emits_iny() {
 // ── 4×4 block pixel mode ─────────────────────────────────────────────────────
 
 #[test]
-fn graphics_on_block_emits_eor_d018() {
-    // EOR #$0E applied to $D018 to switch charset from $1000 to $2800
+fn graphics_on_block_emits_correct_d018() {
+    // Direct write $1A to $D018 to set screen@$0400 and charset@$2800.
     let prg = compile_raw("graphics on block");
     let bytes = &prg[2..];
-    // EOR imm = $49; value $0E
-    assert!(bytes.windows(2).any(|w| w == &[0x49, 0x0E]),
-        "graphics on block should emit EOR #$0E ($49 $0E) to switch charset");
+    assert!(bytes.windows(5).any(|w| w == &[0xA9, 0x1A, 0x8D, 0x18, 0xD0]),
+        "graphics on block should emit LDA #$1A; STA $D018 ($A9 $1A $8D $18 $D0) to set screen@$0400 and charset@$2800");
+}
+
+#[test]
+fn graphics_on_block_sets_vic_bank_0() {
+    let prg = compile_raw("graphics on block");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(10).any(|w| w == &[0xAD, 0x00, 0xDD, 0x29, 0xFC, 0x09, 0x03, 0x8D, 0x00, 0xDD]),
+        "graphics on block should emit LDA $DD00; AND #$FC; ORA #$03; STA $DD00 to select VIC bank 0");
 }
 
 #[test]
@@ -2896,12 +3196,19 @@ fn graphics_on_block_copies_charset_to_2800() {
 }
 
 #[test]
-fn graphics_on_block_clears_bmm_bit() {
-    // AND #$DF ($D011 &= $DF clears BMM=bit5)
+fn graphics_on_block_emits_canonical_blanked_d011() {
     let prg = compile_raw("graphics on block");
     let bytes = &prg[2..];
-    assert!(bytes.windows(2).any(|w| w == &[0x29, 0xDF]),
-        "graphics on block should emit AND #$DF to clear BMM bit");
+    assert!(bytes.windows(5).any(|w| w == &[0xA9, 0x0B, 0x8D, 0x11, 0xD0]),
+        "graphics on block should emit LDA #$0B; STA $D011 to force canonical blanked text-mode VIC state");
+}
+
+#[test]
+fn graphics_on_block_canonicalizes_d011_before_display_on() {
+    let prg = compile_raw("graphics on block\ndisplay on");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(5).any(|w| w == &[0xA9, 0x0B, 0x8D, 0x11, 0xD0]),
+        "graphics on block should emit LDA #$0B; STA $D011 before display on so block mode starts from a canonical blanked text state");
 }
 
 #[test]
@@ -2960,6 +3267,32 @@ fn gcls_in_block_mode_fills_color_ram() {
 }
 
 #[test]
+fn plot4_fullscreen_fill_reaches_bottom_rows_in_emulation() {
+    let src = "graphics on block\ngcls\nvar y = 0\nvar x = 0\nwhile y < 50\n  x = 0\n  while x < 80\n    plot4 x, y\n    x = x + 1\n  end\n  y = y + 1\nend";
+    let prg = compile_raw(src);
+    let mut cpu = TestCpu::new(&prg);
+    cpu.run_until_main_rts(2_000_000);
+
+    let screen = &cpu.mem[0x0400..=0x07E7];
+    assert!(screen.iter().all(|&b| b == 0x0F),
+        "expected full screen RAM fill to end at $0F in every cell, last row was {:02X?}",
+        &cpu.mem[0x07C0..=0x07E7]);
+}
+
+    #[test]
+    fn direct_block_fill_reaches_full_screen_in_emulation() {
+        let src = "graphics on block\ngcls\ndisplay on\nfill $0C00, 1000, 15";
+        let prg = compile_raw(src);
+        let mut cpu = TestCpu::new(&prg);
+        cpu.run_until_main_rts(2_000_000);
+
+        let screen = &cpu.mem[0x0400..=0x07E7];
+        assert!(screen.iter().all(|&b| b == 0x0F),
+        "expected direct block fill to write $0F across the full screen matrix, last row was {:02X?}",
+            &cpu.mem[0x07C0..=0x07E7]);
+    }
+
+#[test]
 fn graphics_on_block_parser_sets_block_flag() {
     // Parser test: `graphics on block` should parse to Graphics { on: true, block: true, multi: false }
     use ultimate_basic::compiler::parser::Parser;
@@ -2969,4 +3302,10 @@ fn graphics_on_block_parser_sets_block_flag() {
     let stmts = Parser::new(tokens).parse();
     assert!(matches!(&stmts[0], Stmt::Graphics { on: true, multi: false, block: true }),
         "graphics on block should parse to Graphics {{ on:true, multi:false, block:true }}");
+}
+
+#[test]
+fn generated_program_starts_with_cld() {
+    let prg = compile_raw("var x = 1\nx = x + 1");
+    assert_eq!(prg[2], 0xD8, "generated machine code should begin with CLD");
 }

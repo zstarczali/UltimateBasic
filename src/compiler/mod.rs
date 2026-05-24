@@ -86,9 +86,10 @@ pub fn compile_with_path(source: &str, opts: &CompileOptions, source_path: Optio
         Parser::new(tokens)
     };
     let ast = parser.parse();
+    let mut errors = parser.errors().to_vec();
     let mut cg = Codegen::new(load_addr);
     let raw = cg.compile(&ast);
-    let errors = cg.errors();
+    errors.extend(cg.errors());
     let map = cg.memory_map();
 
     let prg = if opts.basic_stub {
