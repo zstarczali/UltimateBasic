@@ -288,6 +288,35 @@ Useful for smooth hardware scrolling: decrement each frame from 7 down to 0, shi
 `screen col, row, char [, color]` writes directly to screen RAM (`$0400 + row*40 + col`) and
 optionally to color RAM (`$D800 + row*40 + col`). Constant col/row: address computed at compile time.
 
+### Ultimate 64 — CPU Speed
+
+```basic
+speed 4              # set CPU to 4 MHz  (reads $D031, updates bits 0-3, writes back)
+speed 48             # 48 MHz  (maximum speed on U64)
+speed max            # same as speed 48  (alias)
+speed off            # back to 1 MHz  (alias for speed 1)
+
+badlines on          # enable badline timing  ($D031 bit 7 = 0, default C64 behaviour)
+badlines off         # disable badline timing ($D031 bit 7 = 1, more CPU cycles)
+
+var t = turbo()      # 1 if turbo is active (bits 0-3 of $D031 != 0), 0 if at 1 MHz
+```
+
+Available MHz values: `1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 20, 24, 32, 40, 48`.
+Constant values are rounded down to the nearest available speed at compile time.
+Variable values are treated as a raw speed index (0–15) and OR'd into bits 0-3 of `$D031`.
+
+| $D031 index | MHz (U64) | MHz (U64 Elite-II) |
+|---|---|---|
+| 0 | 1 | 1 |
+| 3 | 4 | 4 |
+| 6 | 8 | 10 |
+| 11 | 20 | 24 |
+| 15 | 48 | 64 |
+
+Requires **U64 Turbo Control** set to `U64 Turbo Registers` or `Turbo Enable Bit` in the U64 config menu.
+On a regular C64 or emulator without the register, the `poke` to `$D031` is silently ignored.
+
 ### Keyboard
 
 ```basic

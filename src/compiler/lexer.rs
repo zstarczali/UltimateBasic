@@ -135,6 +135,9 @@ pub enum Token {
     NmiExit,     // nmi_exit — JMP $FE47 (proper NMI handler exit)
     CiaTimer,    // cia_timer period, handler — CIA1 timer A IRQ setup
     Scroll,      // scroll x n / scroll y n — fine scroll ($D016/$D011 bits 0-2)
+    Speed,       // speed N / speed max / speed off — U64 CPU speed ($D031 bits 0-3)
+    Badlines,    // badlines on / badlines off  — U64 badline timing ($D031 bit 7)
+    Turbo,       // turbo() — 1 if U64 turbo is active (bits 0-3 of $D031 != 0), else 0
 
     // Operators
     Plus,
@@ -366,6 +369,9 @@ impl Lexer {
             "nmi_exit" => Token::NmiExit,
             "cia_timer" => Token::CiaTimer,
             "scroll"   => Token::Scroll,
+            "speed"    => Token::Speed,
+            "badlines" => Token::Badlines,
+            "turbo"    => Token::Turbo,
             // "print" is handled above in the match (before the string match block)
             "return"   => Token::Return,
             "call"     => Token::Call,
@@ -565,6 +571,9 @@ mod tests {
     #[test] fn kw_int()  { assert_eq!(tokenize("int")[0],  Token::Int); }
     #[test] fn kw_string(){assert_eq!(tokenize("string")[0],Token::Str);}
     #[test] fn kw_float(){ assert_eq!(tokenize("float")[0],Token::Float);}
+    #[test] fn kw_speed()   { assert_eq!(tokenize("speed")[0],   Token::Speed); }
+    #[test] fn kw_badlines(){ assert_eq!(tokenize("badlines")[0], Token::Badlines); }
+    #[test] fn kw_turbo()   { assert_eq!(tokenize("turbo")[0],    Token::Turbo); }
     #[test] fn kw_graphics(){assert_eq!(tokenize("graphics")[0],Token::Graphics);}
     #[test] fn kw_on()   { assert_eq!(tokenize("on")[0],   Token::On); }
     #[test] fn kw_off()  { assert_eq!(tokenize("off")[0],  Token::Off); }

@@ -375,6 +375,34 @@ scroll x n               # value can be a variable or expression (masked to bits
 `scroll y n` computes `(n AND 7)` and writes it into bits 0-2 of `$D011` (preserving bits 3-7).
 Useful for smooth hardware scrolling: decrement each frame from 7 to 0, then shift screen RAM and reset to 7.
 
+### Ultimate 64 — CPU Speed
+
+```basic
+speed 4              # set U64 CPU to 4 MHz (RMW $D031 bits 0-3)
+speed 48             # 48 MHz  (max U64; 64 MHz on Elite-II)
+speed max            # alias: index 15 (fastest available)
+speed off            # alias: index 0  (1 MHz — back to normal)
+
+badlines on          # enable badline timing  ($D031 bit 7 = 0)
+badlines off         # disable badline timing ($D031 bit 7 = 1)
+
+var t = turbo()      # 1 if turbo active (bits 0-3 of $D031 != 0), 0 if at 1 MHz
+```
+
+Register `$D031` (U64 Turbo Control):
+- bits 0-3: speed index (0=1MHz … 15=48MHz on U64, 15=64MHz on Elite-II)
+- bit 7: badlines timing (0=enabled / 1=disabled)
+- bits 4-6: unused — preserved by RMW
+
+Available MHz values and their indices:
+`1(0), 2(1), 3(2), 4(3), 5(4), 6(5), 8(6), 10(7), 12(8), 14(9), 16(10), 20(11), 24(12), 32(13), 40(14), 48(15)`
+
+For constant MHz values: compile-time floor-lookup (`speed 7` → index 5 = 6 MHz).
+For variable values: raw index (0–15) OR'd into bits 0-3 via read-modify-write.
+
+Requires U64 Turbo Control mode set to `U64 Turbo Registers` or `Turbo Enable Bit` in the U64 config menu.
+On a plain C64, writes to `$D031` are harmless (open bus / ignored).
+
 `graphics on` and `graphics on multi` leave the display **blanked** (DEN=0). Call `display on`
 screen 10, 5, ch         # col 10, row 5 — col/row can be variables
 screen 5, 3, 42, 7       # char 42 at col 5, row 3, color 7 (also writes to color RAM $D800)

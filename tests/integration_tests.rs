@@ -3394,6 +3394,58 @@ fn graphics_on_block_emits_correct_d018() {
         "graphics on block should emit LDA #$1A; STA $D018 ($A9 $1A $8D $18 $D0) to set screen@$0400 and charset@$2800");
 }
 
+// ─── U64 Speed ───────────────────────────────────────────────────────────────
+
+#[test]
+fn speed_constant_compiles() {
+    // speed 4 → index 3; expect LDA $D031, AND #$F0, ORA #3, STA $D031
+    let prg = compile_raw("speed 4");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(6).any(|w| w == &[0xAD, 0x31, 0xD0, 0x29, 0xF0, 0x09]),
+        "speed 4 should emit LDA $D031, AND #$F0, ORA #... sequence");
+    // ORA byte should be 3 (index for 4 MHz)
+    let pos = bytes.windows(6).position(|w| w == &[0xAD, 0x31, 0xD0, 0x29, 0xF0, 0x09]).unwrap();
+    assert_eq!(bytes[pos + 6], 0x03, "speed 4 should OR index 3 into $D031");
+}
+
+#[test]
+fn speed_max_compiles() {
+    // speed max → index 15
+    let prg = compile_raw("speed max");
+    let bytes = &prg[2..];
+    let pos = bytes.windows(6).position(|w| w == &[0xAD, 0x31, 0xD0, 0x29, 0xF0, 0x09]);
+    assert!(pos.is_some(), "speed max should emit LDA $D031, AND #$F0, ORA #...");
+    assert_eq!(bytes[pos.unwrap() + 6], 0x0F, "speed max should OR index 15");
+}
+
+#[test]
+fn speed_off_compiles() {
+    // speed off → index 0; expect LDA $D031, AND #$F0, STA $D031 (no ORA for index 0)
+    let prg = compile_raw("speed off");
+    let bytes = &prg[2..];
+    // LDA $D031 (AD 31 D0), AND #$F0 (29 F0), STA $D031 (8D 31 D0)
+    assert!(bytes.windows(8).any(|w| w == &[0xAD, 0x31, 0xD0, 0x29, 0xF0, 0x8D, 0x31, 0xD0]),
+        "speed off should emit LDA $D031, AND #$F0, STA $D031 with no ORA");
+}
+
+#[test]
+fn badlines_off_compiles() {
+    // badlines off → ORA #$80 into $D031 (set bit 7)
+    let prg = compile_raw("badlines off");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(8).any(|w| w == &[0xAD, 0x31, 0xD0, 0x09, 0x80, 0x8D, 0x31, 0xD0]),
+        "badlines off should emit LDA $D031, ORA #$80, STA $D031");
+}
+
+#[test]
+fn badlines_on_compiles() {
+    // badlines on → AND #$7F into $D031 (clear bit 7)
+    let prg = compile_raw("badlines on");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(8).any(|w| w == &[0xAD, 0x31, 0xD0, 0x29, 0x7F, 0x8D, 0x31, 0xD0]),
+        "badlines on should emit LDA $D031, AND #$7F, STA $D031");
+}
+
 #[test]
 #[ignore = "plot4 / graphics on block removed"]
 fn graphics_on_block_sets_vic_bank_0() {
@@ -3401,6 +3453,16 @@ fn graphics_on_block_sets_vic_bank_0() {
     let bytes = &prg[2..];
     assert!(bytes.windows(10).any(|w| w == &[0xAD, 0x00, 0xDD, 0x29, 0xFC, 0x09, 0x03, 0x8D, 0x00, 0xDD]),
         "graphics on block should emit LDA $DD00; AND #$FC; ORA #$03; STA $DD00 to select VIC bank 0");
+}
+
+#[test]
+fn turbo_compiles() {
+    // turbo() → LDA $D031, AND #$0F, BEQ +2, LDA #1
+    let prg = compile_raw("var t = turbo()");
+    let bytes = &prg[2..];
+    // LDA $D031 (AD 31 D0), AND #$0F (29 0F), BEQ +2 (F0 02), LDA #1 (A9 01)
+    assert!(bytes.windows(8).any(|w| w == &[0xAD, 0x31, 0xD0, 0x29, 0x0F, 0xF0, 0x02, 0xA9]),
+        "turbo() should emit LDA $D031; AND #$0F; BEQ +2; LDA #1 sequence");
 }
 
 #[test]

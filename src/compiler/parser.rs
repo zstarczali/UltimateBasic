@@ -1101,6 +1101,29 @@ impl Parser {
                 self.expect_newline();
                 if dir == 'x' { Some(Stmt::ScrollX(val)) } else { Some(Stmt::ScrollY(val)) }
             }
+            Token::Speed => {
+                self.advance();
+                // speed max  → index 15 (fastest)
+                // speed off  → index 0 (1 MHz, = off turbo)
+                // speed N    → N in MHz for constants; raw index for variables
+                let expr = match self.peek() {
+                    Token::Max => { self.advance(); Expr::Number(48) } // 48+ MHz → index 15
+                    Token::Off => { self.advance(); Expr::Number(0) }  // 0 MHz → index 0 (1 MHz)
+                    _ => self.parse_expr(),
+                };
+                self.expect_newline();
+                Some(Stmt::Speed(expr))
+            }
+            Token::Badlines => {
+                self.advance();
+                let on = match self.peek() {
+                    Token::On  => { self.advance(); true  }
+                    Token::Off => { self.advance(); false }
+                    _ => true,
+                };
+                self.expect_newline();
+                Some(Stmt::Badlines(on))
+            }
             Token::Data => {
                 self.advance();
                 let mut items = vec![];
@@ -1482,9 +1505,14 @@ impl Parser {
                 Expr::Asc(Box::new(arg))
             }
             Token::ReuDet => {
-                if self.peek() == &Token::LParen { self.advance(); } // skip (
-                if self.peek() == &Token::RParen { self.advance(); } // skip )
+                if self.peek() == &Token::LParen { self.advance(); }
+                if self.peek() == &Token::RParen { self.advance(); }
                 Expr::ReuPresent
+            }
+            Token::Turbo => {
+                if self.peek() == &Token::LParen { self.advance(); }
+                if self.peek() == &Token::RParen { self.advance(); }
+                Expr::Turbo
             }
             Token::SpriteHit => {
                 if self.peek() == &Token::LParen { self.advance(); }

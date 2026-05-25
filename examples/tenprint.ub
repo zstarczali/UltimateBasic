@@ -3,7 +3,12 @@
 ##      tenprint.ub                                                                   ##
 ########################################################################################
 
-goto tenprint2
+rem goto tenprint2
+
+var dd = 3.5+78.4
+print dd
+var ll=getch()
+bye
 
 # tenprint.ub — a simple maze generator using the "tenprint" algorithm; press a key to exit
 

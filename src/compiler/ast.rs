@@ -9,6 +9,7 @@ pub enum Expr {
     Inkey,    // inkey() — non-blocking $FFE4; 0 = no key, else PETSCII code
     Waitkey,  // waitkey() — CIA1 matrix direct scan; blocks until any key; works without CIA1 timer IRQ
     ReuPresent,  // reu_present() — 1 if REU detected, 0 otherwise
+    Turbo,       // turbo() — 1 if U64 turbo active (bits 0-3 of $D031 != 0), else 0
     Joy(u8),  // joy(1) or joy(2) — read joystick port, returns inverted bits 0-4
     MouseX,   // mouse_x()  — SID $D419 POT X register (0-255)
     MouseY,   // mouse_y()  — SID $D41A POT Y register (0-255)
@@ -174,4 +175,9 @@ pub enum Stmt {
     ScrollX(Expr),
     /// `scroll y n` — set $D011 bits 0-2 for vertical fine scroll (0-7 pixels)
     ScrollY(Expr),
+    /// `speed N` — set U64 CPU speed; N in MHz for constants, raw index (0-15) for variables
+    /// Writes bits 0-3 of $D031 (U64 Turbo Control register), preserving bit 7 (badlines).
+    Speed(Expr),
+    /// `badlines on/off` — enable/disable badline timing via bit 7 of $D031
+    Badlines(bool),
 }

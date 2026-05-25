@@ -877,6 +877,21 @@ impl Codegen {
                 self.code[jmp_patch]     = (done_addr & 0xFF) as u8;
                 self.code[jmp_patch + 1] = (done_addr >> 8)   as u8;
             }
+            Expr::Turbo => {
+                // Read $D031, isolate bits 0-3 (speed index).
+                // Return 1 if non-zero (turbo active), 0 if zero (1 MHz / off).
+                //
+                // AD 31 D0  LDA $D031
+                // 29 0F     AND #$0F       ; isolate speed bits
+                // F0 02     BEQ done       ; if 0, A is already 0
+                // A9 01     LDA #1         ; turbo on
+                // done:
+                self.emit(0xAD); self.emit16(0xD031); // LDA $D031
+                self.emit(0x29); self.emit(0x0F);      // AND #$0F
+                self.emit(0xF0); self.emit(0x02);      // BEQ done
+                self.emit(0xA9); self.emit(0x01);      // LDA #1  (done skips here)
+                // done: (A = 0 or 1)
+            }
             Expr::Getch => {
                 let loop_addr = self.current_addr();
                 self.emit(0xA9); self.emit(0xFF);     // LDA #$FF
@@ -5062,6 +5077,44 @@ impl Codegen {
                 self.emit(0x05); self.emit(tmp);          // ORA tmp
                 self.emit(0x8D); self.emit16(0xD011);    // STA $D011
             }
+            Stmt::Speed(expr) => {
+                // U64 Turbo Control register $D031: bits 0-3 = speed index, bit 7 = badlines.
+                // speed N (MHz constant) → compile-time table lookup to index 0-15
+                // speed <var>           → variable holds raw index 0-15
+                // Preserves bit 7 (badlines setting) and bits 4-6.
+                let expr = expr.clone();
+                let tmp = self.tmp_zp; self.tmp_zp += 1;
+                match &expr {
+                    Expr::Number(mhz) => {
+                        let idx = mhz_to_speed_index(*mhz as i32);
+                        self.emit(0xAD); self.emit16(0xD031); // LDA $D031
+                        self.emit(0x29); self.emit(0xF0);      // AND #$F0 (clear bits 0-3)
+                        if idx > 0 {
+                            self.emit(0x09); self.emit(idx);   // ORA #index
+                        }
+                        self.emit(0x8D); self.emit16(0xD031); // STA $D031
+                    }
+                    _ => {
+                        self.eval_expr(&expr);
+                        self.emit(0x29); self.emit(0x0F);      // AND #$0F (safety: only bits 0-3)
+                        self.emit(0x85); self.emit(tmp);        // STA tmp
+                        self.emit(0xAD); self.emit16(0xD031); // LDA $D031
+                        self.emit(0x29); self.emit(0xF0);      // AND #$F0
+                        self.emit(0x05); self.emit(tmp);        // ORA tmp
+                        self.emit(0x8D); self.emit16(0xD031); // STA $D031
+                    }
+                }
+            }
+            Stmt::Badlines(on) => {
+                // U64 $D031 bit 7: 0 = badlines enabled (normal C64 timing), 1 = disabled (more CPU cycles)
+                self.emit(0xAD); self.emit16(0xD031); // LDA $D031
+                if *on {
+                    self.emit(0x29); self.emit(0x7F);  // AND #$7F (clear bit 7 → enable badlines)
+                } else {
+                    self.emit(0x09); self.emit(0x80);  // ORA #$80 (set bit 7 → disable badlines)
+                }
+                self.emit(0x8D); self.emit16(0xD031); // STA $D031
+            }
             Stmt::SidVolume(expr) => {
                 self.eval_expr(expr);          // A = volume/filter byte
                 self.emit(0x8D); self.emit16(0xD418); // STA $D418 (master volume + filter mode)
@@ -7075,6 +7128,15 @@ impl Codegen {
             code_bytes: self.code.clone(),
         }
     }
+}
+
+/// Convert an approximate MHz value to the U64 Turbo Control speed index (bits 0-3 of $D031).
+/// Available speeds: 1,2,3,4,5,6,8,10,12,14,16,20,24,32,40,48 MHz (indices 0-15).
+/// Values are rounded down to the nearest available speed; ≥48 gives index 15 (max).
+fn mhz_to_speed_index(mhz: i32) -> u8 {
+    const SPEEDS: [i32; 16] = [1,2,3,4,5,6,8,10,12,14,16,20,24,32,40,48];
+    let idx = SPEEDS.partition_point(|&s| s <= mhz);
+    (if idx == 0 { 0 } else { idx - 1 }).min(15) as u8
 }
 
 fn ascii_to_petscii(c: char) -> u8 {
