@@ -360,7 +360,16 @@ graphics off             # back to text mode
 display on               # re-enable VIC display ($D011 bit4 = DEN → 1)
 display off              # blank display  ($D011 bit4 = DEN → 0)
 
-screen 0, 0, 65          # write char code 65 ('A') to screen RAM at col 0, row 0 ($0400)
+scroll x 3               # horizontal fine scroll: $D016 bits 0-2 = 3 (range 0-7)
+scroll y 2               # vertical fine scroll:   $D011 bits 0-2 = 2 (range 0-7)
+scroll x n               # value can be a variable or expression (masked to bits 0-2)
+```
+
+`scroll x n` computes `(n AND 7)` and writes it into bits 0-2 of `$D016` (preserving bits 3-7).
+`scroll y n` computes `(n AND 7)` and writes it into bits 0-2 of `$D011` (preserving bits 3-7).
+Useful for smooth hardware scrolling: decrement each frame from 7 to 0, then shift screen RAM and reset to 7.
+
+`graphics on` and `graphics on multi` leave the display **blanked** (DEN=0). Call `display on`
 screen 10, 5, ch         # col 10, row 5 — col/row can be variables
 screen 5, 3, 42, 7       # char 42 at col 5, row 3, color 7 (also writes to color RAM $D800)
 screen x, y, ch, col     # all four arguments as variables
@@ -512,10 +521,14 @@ poke16 ptr, w                 # word var as address; word var as value
 var n = len(msg)         # length of null-terminated string var (0–255); byte-count loop
 var c = asc(msg)         # PETSCII code of first character (0 if empty string)
 var c = asc("A")         # compile-time: returns constant PETSCII code
+var n = val(s)           # runtime: parse decimal PETSCII string → 8-bit int ("042" → 42)
+var c = msg[i]           # string index: PETSCII code of character at index i (LDA (ptr),Y)
 ```
 
 `len(s)` walks the string until it finds a `$00` byte and returns the count in A.
 `asc(s)` loads the first byte of the string via `(ptr),Y` with Y=0. Both accept string literals (compile-time constant) or string variables (runtime).
+`val(s)` iterates the null-terminated string accumulating `result = result*10 + digit` for each `'0'`–`'9'` PETSCII byte; stops at null or non-digit. Returns 8-bit result.
+`s[i]` for a string variable loads the byte at index `i`: constant index emits `LDY #i; LDA (ptr),Y`; variable index evaluates `i` into A then `TAY; LDA (ptr),Y`.
 
 ### Math Functions
 
@@ -536,9 +549,12 @@ var c = cos(angle)       # cosine = sin(angle+64); same scale
 print hex(n)             # print n as 2 uppercase hex digits (e.g. 255 → "FF")
 print bin(n)             # print n as 8-bit binary string  (e.g.  10 → "00001010")
 print "val: ", hex(x)   # works in mixed print lists
+print dec(n, 4)          # right-justified decimal in a field of 4 chars (e.g. 42 → "  42")
+print dec(n, width)      # width can be a variable or expression
 ```
 
 `hex(n)` and `bin(n)` are print-context functions; in expression context they evaluate to `n` unchanged.
+`dec(n, width)` pads with spaces on the left to fill `width` characters. If the number has more digits than `width`, it prints without padding (no truncation). In expression context it evaluates to `n` unchanged.
 
 ### REU (RAM Expansion Unit)
 
@@ -762,7 +778,46 @@ Paths are relative to the current working directory.
 `include` inlines the parsed statements of another source file. Constants defined in the
 included file are visible after the include point.
 
-### Data / Read
+### NMI Handler
+
+```basic
+nmi my_nmi               # set NMI vector $0318/$0319 to handler sub or address
+nmi $C800                # fixed address
+
+sub my_nmi()
+  # ... NMI work here ...
+  nmi_exit               # JMP $FE47 — proper NMI exit (restores A/X/Y + RTI)
+end
+```
+
+`nmi handler` writes the handler address to the NMI soft vector (`$0318`/`$0319`) with SEI/CLI. The hardware NMI vector `$FFFA` points to the KERNAL NMI routine which branches through `$0318`. The handler **must** end with `nmi_exit` (emits `JMP $FE47`). Forward references supported.
+
+### CIA1 Timer IRQ
+
+```basic
+cia_timer 19656, my_handler   # CIA1 timer A: period 19656 cycles (~50 Hz PAL)
+cia_timer period, handler      # period can be a word variable or expression
+```
+
+Sets up CIA1 timer A as a periodic IRQ via the BASIC soft vector (`$0314`/`$0315`):
+1. SEI
+2. `$DC0D = $7F` — disable all CIA1 IRQs
+3. Load 16-bit period lo→`$DC04`, hi→`$DC05`
+4. Write handler lo/hi → `$0314`/`$0315`
+5. `$DC0D = $81` — enable CIA1 timer A IRQ
+6. `$DC0E = $01` — start timer A continuous
+7. CLI
+
+The handler must end with `irq_exit` (or `sys $EA81`) and should ACK the CIA1 IRQ:
+```basic
+sub my_handler()
+  poke $DC0D, $01      # ACK CIA1 timer A IRQ
+  # ... work ...
+  irq_exit             # JMP $EA81: restore A/X/Y + RTI
+end
+```
+
+PAL timing: clock = 985 248 Hz. Period for 50 Hz ≈ 19 705 cycles (`$4CC9`). Forward references supported.
 
 ```basic
 data 1, 2, 3, 255        # constant byte table (compiled inline, after all code)

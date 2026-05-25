@@ -17,6 +17,7 @@ pub enum Expr {
     Cos(Box<Expr>),   // cos(angle) — same as sin with +64 offset
     HexFmt(Box<Expr>), // hex(n) — in print: shows value as 2-digit uppercase hex
     BinFmt(Box<Expr>), // bin(n) — in print: shows value as 8-bit binary string
+    DecFmt(Box<Expr>, Box<Expr>), // dec(n, width) — in print: right-justified decimal
     Peek(Box<Expr>),
     Rnd,
     RndN(Box<Expr>),         // rnd(n) — random 0..n-1 (rnd() mod n)

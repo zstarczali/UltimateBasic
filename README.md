@@ -263,6 +263,7 @@ screen 5, 3, 42, 7       # char 42 at col 5, row 3, color 7 (writes color RAM $D
 screen x, y, ch, col     # all four arguments as variables
 
 display on               # re-enable VIC display ($D011 DEN bit)
+display off              # blank display
 
 cursor 20, 10            # move cursor to col 20, row 10 (KERNAL PLOT $FFF0)
 cursor x, y              # column from variable x (0–39), row from y (0–24)
@@ -270,8 +271,15 @@ cursor x, y              # column from variable x (0–39), row from y (0–24)
 print at 20, 10, "HELLO" # cursor(20,10) + print in one statement
 print at x, y, "Score:", score  # any mix of exprs
 print at 0, 0            # position only (no text)
-display off              # blank display
+
+scroll x 3               # set horizontal fine scroll: $D016 bits 0-2 = 3 (0-7)
+scroll y 2               # set vertical fine scroll:   $D011 bits 0-2 = 2 (0-7)
+scroll x n               # value can be a variable or expression (masked to bits 0-2)
 ```
+
+`scroll x n` writes `(n AND 7)` into bits 0-2 of `$D016` (preserving bits 3-7).
+`scroll y n` writes `(n AND 7)` into bits 0-2 of `$D011` (preserving bits 3-7).
+Useful for smooth hardware scrolling: decrement each frame from 7 down to 0, shift screen RAM, reset to 7.
 
 `screen col, row, char [, color]` writes directly to screen RAM (`$0400 + row*40 + col`) and
 optionally to color RAM (`$D800 + row*40 + col`). Constant col/row: address computed at compile time.
@@ -497,7 +505,22 @@ print bin(n)             # print as 8-bit binary string
 var n = len(msg)         # length of null-terminated string var (0–255)
 var c = asc(msg)         # PETSCII code of first character (0 if empty)
 var c = asc("A")         # compile-time: constant PETSCII code
+var n = val(s)           # runtime: parse decimal PETSCII string → 8-bit int (e.g. "042" → 42)
+var c = msg[i]           # string character at index i: PETSCII code of msg[i]
 ```
+
+### Number formatting
+
+```basic
+print hex(n)             # print as 2-digit uppercase hex
+print bin(n)             # print as 8-bit binary string
+print dec(n, 4)          # right-justified decimal in a field of 4 chars (e.g. 42 → "  42")
+print dec(n, width)      # width can also be a variable
+```
+
+`dec(n, width)` pads the number on the left with spaces to fill `width` characters.
+If the number has more digits than `width`, it is printed without padding (no truncation).
+In non-print contexts `dec(n, w)` evaluates to `n` unchanged (same as `hex`/`bin`).
 
 ### REU (RAM Expansion Unit)
 
@@ -568,6 +591,47 @@ end
 ```
 
 Forward references are supported (`irq my_handler` before the sub is defined).
+
+### NMI handler
+
+```basic
+nmi my_nmi               # set NMI vector $0318/$0319 to handler sub or address
+
+sub my_nmi()
+  # ... NMI work here ...
+  nmi_exit               # JMP $FE47 — proper NMI exit (restores A/X/Y + RTI)
+end
+```
+
+`nmi handler` writes the handler address to the NMI soft vector (`$0318`/`$0319`). The hardware NMI vector at `$FFFA` points to the KERNAL NMI routine which branches through `$0318`. The handler **must** end with `nmi_exit` (emits `JMP $FE47`) — using plain `RTI` will corrupt the stack. Forward references supported.
+
+### CIA1 timer IRQ
+
+```basic
+cia_timer 19656, my_handler   # CIA1 timer A: fires every 19656 cycles (~50 Hz PAL)
+cia_timer period, handler      # period can be a variable or expression
+```
+
+Sets up CIA1 timer A as a periodic IRQ source via the BASIC soft vector (`$0314`/`$0315`):
+1. SEI — disable interrupts
+2. `$DC0D = $7F` — disable all CIA1 IRQs
+3. Load 16-bit period lo→`$DC04`, hi→`$DC05`
+4. Write handler address to `$0314`/`$0315`
+5. `$DC0D = $81` — enable CIA1 timer A IRQ
+6. `$DC0E = $01` — start timer A in continuous mode
+7. CLI — re-enable interrupts
+
+The handler must end with `irq_exit` (or `sys $EA81`) and should ACK the CIA1 IRQ:
+
+```basic
+sub my_handler()
+  poke $DC0D, $01      # ACK CIA1 timer A IRQ (read also clears it)
+  # ... work here ...
+  irq_exit             # JMP $EA81: restore A/X/Y + RTI
+end
+```
+
+PAL timing: clock = 985 248 Hz. Period for 50 Hz = 985 248 / 50 = 19 705 cycles ≈ `$4CC9`. Forward references supported.
 
 ### Compile-time file embedding
 

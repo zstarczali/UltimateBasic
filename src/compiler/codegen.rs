@@ -1254,6 +1254,11 @@ impl Codegen {
                 let inner = inner.clone();
                 self.eval_expr(&inner);
             }
+            Expr::DecFmt(inner, _) => {
+                // In non-print context, evaluate the inner expression (pass-through)
+                let inner = inner.clone();
+                self.eval_expr(&inner);
+            }
             Expr::Spc(inner) | Expr::Tab(inner) => {
                 // In non-print context, evaluate the inner expression only
                 let inner = inner.clone();
@@ -3515,6 +3520,81 @@ impl Codegen {
                 let patch = self.code.len();
                 self.emit16(0x0000);
                 self.bin_helper_patches.push(patch);
+            }
+            Expr::DecFmt(inner, width_expr) => {
+                // dec(n, width): right-justified decimal in a field of `width` chars.
+                // Computes spaces = max(0, width - digit_count), prints spaces then n.
+                let inner = inner.clone();
+                let width_expr = width_expr.clone();
+
+                let t_val   = self.tmp_zp; self.tmp_zp += 1;
+                let t_width = self.tmp_zp; self.tmp_zp += 1;
+
+                // eval n → t_val
+                self.eval_expr(&inner);
+                self.emit(0x85); self.emit(t_val);
+
+                // eval width → t_width
+                self.eval_expr(&width_expr);
+                self.emit(0x85); self.emit(t_width);
+
+                // Branch on digit count to compute spaces = t_width - digit_count
+                self.emit(0xA5); self.emit(t_val);       // LDA t_val
+                self.emit(0xC9); self.emit(100);          // CMP #100
+                self.emit(0x90);                           // BCC not3
+                let bcc_not3 = self.code.len(); self.emit(0x00);
+                // >= 100: 3 digits → spaces = t_width - 3
+                self.emit(0xA5); self.emit(t_width);     // LDA t_width
+                self.emit(0x38);                           // SEC
+                self.emit(0xE9); self.emit(3);            // SBC #3
+                self.emit(0x4C);                           // JMP do_spaces
+                let jmp_do1 = self.code.len(); self.emit16(0x0000);
+
+                let not3 = self.current_addr();
+                self.patch_bxx(bcc_not3, not3);
+                self.emit(0xC9); self.emit(10);           // CMP #10
+                self.emit(0x90);                           // BCC not2
+                let bcc_not2 = self.code.len(); self.emit(0x00);
+                // >= 10: 2 digits → spaces = t_width - 2
+                self.emit(0xA5); self.emit(t_width);     // LDA t_width
+                self.emit(0x38);                           // SEC
+                self.emit(0xE9); self.emit(2);            // SBC #2
+                self.emit(0x4C);                           // JMP do_spaces
+                let jmp_do2 = self.code.len(); self.emit16(0x0000);
+
+                let not2 = self.current_addr();
+                self.patch_bxx(bcc_not2, not2);
+                // < 10: 1 digit → spaces = t_width - 1
+                self.emit(0xA5); self.emit(t_width);     // LDA t_width
+                self.emit(0x38);                           // SEC
+                self.emit(0xE9); self.emit(1);            // SBC #1
+                // fall through to do_spaces
+
+                let do_spaces = self.current_addr();
+                self.patch_abs(jmp_do1, do_spaces);
+                self.patch_abs(jmp_do2, do_spaces);
+
+                // A = spaces to print; carry clear = underflow (width < digits)
+                self.emit(0x90);                           // BCC no_spaces
+                let bcc_no_spc = self.code.len(); self.emit(0x00);
+                self.emit(0xF0);                           // BEQ no_spaces
+                let beq_no_spc = self.code.len(); self.emit(0x00);
+                // print A space characters
+                self.emit(0xAA);                           // TAX
+                self.emit(0xA9); self.emit(0x20);         // LDA #' '
+                let spc_loop = self.current_addr();
+                self.emit(0x20); self.emit16(CHROUT);     // JSR CHROUT
+                self.emit(0xCA);                           // DEX
+                self.emit(0xD0);                           // BNE spc_loop
+                let bne_spc = self.code.len(); self.emit(0x00);
+                self.patch_bxx(bne_spc, spc_loop);
+
+                let no_spaces = self.current_addr();
+                self.patch_bxx(bcc_no_spc, no_spaces);
+                self.patch_bxx(beq_no_spc, no_spaces);
+
+                // print decimal value (leading-zero suppression)
+                self.print_decimal(t_val);
             }
             Expr::Spc(n) => {
                 // spc(n): print n space characters ($20)

@@ -1608,6 +1608,15 @@ impl Parser {
                 if self.peek() == &Token::RParen { self.advance(); }
                 Expr::Val(Box::new(arg))
             }
+            Token::Dec => {
+                // dec(n, width) — right-justified decimal in print context
+                if self.peek() == &Token::LParen { self.advance(); }
+                let n = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let width = self.parse_expr();
+                if self.peek() == &Token::RParen { self.advance(); }
+                Expr::DecFmt(Box::new(n), Box::new(width))
+            }
             _ => Expr::Number(0),
         }
     }
