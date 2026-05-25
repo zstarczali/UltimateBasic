@@ -35,6 +35,8 @@ pub enum Expr {
     Spc(Box<Expr>),              // spc(n) — in print: print n spaces
     Tab(Box<Expr>),              // tab(n) — in print: move cursor to column n
     Val(Box<Expr>),              // val(s) — runtime PETSCII decimal string → 8-bit int
+    FixedLit(u16),               // Q8.8 fixed-point literal (e.g. 3.5 → hi=3, lo=128)
+    FixedToInt(Box<Expr>),       // int(f) — extract integer part (hi byte) of a float variable
 }
 
 #[derive(Debug, Clone)]

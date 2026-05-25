@@ -25,17 +25,21 @@ ultimate-basic build demo.ub --d64 disk.d64
 ```basic
 var x = 10               # 8-bit integer (default)
 var ptr: word = $0400    # 16-bit — two zero-page bytes, usable as 16-bit address
+var f: float = 3.5       # Q8.8 fixed-point — hi byte = integer, lo byte = fraction
 var msg = "HELLO"        # string variable (pointer to inline PETSCII data)
 var s: string = "TEXT"   # string with explicit type
 var scores = array(10)   # byte array, 10 elements stored at $C000+
 var times  = array_word(8) # word array, 8 word elements stored at $C000+
-const BORDER = $D020     # compile-time constant (substituted inline, no ZP slot)
+const BORDER_ADDR = $D020 # compile-time constant (substituted inline, no ZP slot)
 ```
+
+Keywords and identifiers are **case-insensitive**: `PRINT`, `Print`, and `print` are all valid.
 
 | Type | Width | Notes |
 |---|---|---|
 | `int` | 8-bit | default for numeric literals |
 | `word` | 16-bit | two ZP bytes; can be used as address in `poke`/`peek` |
+| `float` | 16-bit Q8.8 | hi byte = integer part (0–255), lo byte = fractional part |
 | `string` | pointer | ZP pair → null-terminated PETSCII in code segment |
 | `array(N)` | N bytes | byte elements; lives at `$C000+`, not in ZP |
 | `array_word(N)` | N×2 bytes | word (16-bit) elements; lives at `$C000+`, not in ZP |
@@ -482,6 +486,35 @@ input "Score: ", score   # prompt + int input
 `input` uses KERNAL BASIN (`$FFCF`) for blocking, echoed line input with DEL support.
 - **Int var**: accepts only `0`–`9`, max 3 chars; converts to 8-bit value on CR.
 - **String var**: accepts up to 30 chars; stores as null-terminated string; ZP pair updated.
+
+### Float / Fixed-Point
+
+`float` variables use Q8.8 fixed-point format: the high byte is the integer part (0–255)
+and the low byte is the fractional part (0/256 … 255/256).
+
+```basic
+var f: float = 3.5       # 3.5 → hi=3, lo=128 (= 0x0380)
+var g: float = 0         # integer 0 is promoted to 0.0 automatically
+
+f = 1.5                  # Q8.8 literal assignment
+f = f + 1.5              # 16-bit Q8.8 arithmetic (result: 3.0)
+f = f + g                # float + float
+
+var n = int(f)           # extract integer part (hi byte) → 8-bit int
+print f                  # prints as "N.DD" (e.g. 3.5 → "3.50", 1.25 → "1.25")
+```
+
+| Operation | Example | Notes |
+|---|---|---|
+| Literal | `3.5`, `0.25`, `1.0` | parsed as Q8.8 at compile time |
+| Integer promotion | `f = 5` | stores 5.0 (hi=5, lo=0) |
+| Add/sub | `f + 1.5`, `f - g` | 16-bit Q8.8 arithmetic |
+| Extract int | `int(f)` | returns hi byte as 8-bit int |
+| Print | `print f` | format "N.DD", always 2 fractional digits |
+
+**Caveat:** Arithmetic overflow wraps at 255.255 (no saturation). Multiplication and
+division of two float variables are not yet supported — use `int()` + integer arithmetic
+for those cases.
 
 ### Math functions
 

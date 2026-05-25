@@ -174,7 +174,11 @@ impl Parser {
     fn advance(&mut self) -> Token {
         let t = self.tokens.get(self.pos).cloned().unwrap_or(Token::Eof);
         self.pos += 1;
-        if matches!(t, Token::Newline) { self.line += 1; }
+        if matches!(t, Token::Newline) {
+            self.line += 1;
+        } else if let Token::AsmSource(_, n) = &t {
+            self.line += n; // count newlines inside asm { } blocks
+        }
         t
     }
 
@@ -700,7 +704,7 @@ impl Parser {
                 };
                 Some(Stmt::AsmBytes(bytes))
             }
-            Token::AsmSource(src) => {
+            Token::AsmSource(src, _) => {
                 // asm { ... } block: raw source captured by the lexer, assembled at codegen time
                 let src = src.clone();
                 self.advance();
@@ -1410,7 +1414,19 @@ impl Parser {
         match self.advance() {
             Token::Number(n)    => Expr::Number(n),
             Token::Addr(a)      => Expr::Number(a as i16),
+            Token::FixedLit(v)  => Expr::FixedLit(v),
             Token::StringLit(s) => Expr::StringLit(s),
+            Token::Int => {
+                // int(expr) — extract integer part (hi byte) of a float variable
+                if self.peek() == &Token::LParen {
+                    self.advance(); // consume '('
+                    let e = self.parse_expr();
+                    if self.peek() == &Token::RParen { self.advance(); }
+                    Expr::FixedToInt(Box::new(e))
+                } else {
+                    Expr::Number(0) // 'int' without '(' in expression context is a no-op
+                }
+            }
             Token::Ident(n) => {
                 if let Some(&v) = self.consts.get(&n) {
                     Expr::Number(v)
@@ -1990,13 +2006,13 @@ mod tests {
     // ── New features: const, label, goto, poke, peek, rnd, abs, min, max, sgn ──
 
     #[test] fn const_stmt() {
-        let stmts = parse("const SCREEN = $0400");
-        assert!(matches!(&stmts[0], Stmt::Const(name, Expr::Number(0x0400)) if name == "SCREEN"));
+        let stmts = parse("const SCRADDR = $0400");
+        assert!(matches!(&stmts[0], Stmt::Const(name, Expr::Number(0x0400)) if name == "scraddr"));
     }
 
     #[test] fn const_stmt_decimal() {
         let stmts = parse("const SIZE = 100");
-        assert!(matches!(&stmts[0], Stmt::Const(name, Expr::Number(100)) if name == "SIZE"));
+        assert!(matches!(&stmts[0], Stmt::Const(name, Expr::Number(100)) if name == "size"));
     }
 
     #[test] fn label_stmt() {

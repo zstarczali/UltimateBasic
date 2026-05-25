@@ -103,12 +103,17 @@ the C64 with no ROM overlay when no cartridge is present.
 ```basic
 var x = 10               # 8-bit integer (default)
 var ptr: word = $0400    # 16-bit (two ZP bytes, lo/hi)
+var f: float = 3.5       # Q8.8 fixed-point (hi=integer, lo=fraction)
 var msg = "HELLO"        # string (inferred from literal)
 var s: string = "TEXT"   # string (explicit type)
 var scores = array(10)   # byte array, 10 elements at $C000+
 var times  = array_word(8) # word array, 8 word elements at $C000+
-const SCREEN = $0400     # compile-time constant (substituted inline)
+const SCRADDR = $0400    # compile-time constant (substituted inline)
 ```
+
+All keywords and identifiers are **case-insensitive**. The lexer lowercases everything;
+constant names that match a language keyword (e.g. `SCREEN`, `BORDER`) will be tokenised
+as that keyword — use non-keyword names like `SCRADDR`, `BORDER_ADDR`.
 
 **Types**
 
@@ -116,6 +121,7 @@ const SCREEN = $0400     # compile-time constant (substituted inline)
 |---|---|---|
 | `int` | 8-bit | default for numeric vars |
 | `word` | 16-bit | two ZP bytes; usable as address in `poke`/`peek` |
+| `float` | 16-bit Q8.8 | hi byte = integer part (0–255), lo byte = fraction |
 | `string` | pointer | ZP pair → null-terminated PETSCII in code segment |
 | `array(N)` | N bytes | byte elements; lives at `$C000+`, not ZP |
 | `array_word(N)` | N×2 bytes | word (16-bit) elements; lives at `$C000+`, not ZP |
@@ -529,6 +535,26 @@ var c = msg[i]           # string index: PETSCII code of character at index i (L
 `asc(s)` loads the first byte of the string via `(ptr),Y` with Y=0. Both accept string literals (compile-time constant) or string variables (runtime).
 `val(s)` iterates the null-terminated string accumulating `result = result*10 + digit` for each `'0'`–`'9'` PETSCII byte; stops at null or non-digit. Returns 8-bit result.
 `s[i]` for a string variable loads the byte at index `i`: constant index emits `LDY #i; LDA (ptr),Y`; variable index evaluates `i` into A then `TAY; LDA (ptr),Y`.
+
+### Float / Fixed-Point (Q8.8)
+
+```basic
+var f: float = 3.5       # hi=3, lo=128 (= 0x0380); prints as "3.50"
+var g: float = 0         # integer literal promoted to 0.0 (hi=0, lo=0)
+
+f = 1.5                  # literal Q8.8 assignment
+f = f + 1.5              # 16-bit Q8.8 addition
+
+var n = int(f)           # extract integer part (hi byte) → 8-bit int
+print f                  # prints as "N.DD" (always 2 fractional digits)
+```
+
+- Q8.8 format: `hi_byte = integer_part`, `lo_byte = frac * 256` (rounded)
+- Integer assignment (`f = 5`) stores `hi=5, lo=0` (= 5.0) automatically
+- `int(f)` emits `LDA zp+1` (hi byte)
+- `print f` calls `print_fixed(zp)`: prints hi via `print_decimal`, then `.`, then `(lo*100)>>8` as 2-digit zero-padded decimal via Russian Peasant multiply
+- Arithmetic uses the same 16-bit path as `word` vars (`eval_expr_word` / `gen_word_assign`)
+- No float multiplication or division between two float vars (not implemented)
 
 ### Math Functions
 

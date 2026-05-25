@@ -1614,12 +1614,12 @@ fn undefined_label_reports_error() {
 #[test]
 fn full_new_features_program() {
     let src = "
-const BORDER = $D020
+const BORDER_ADDR = $D020
 var x = rnd()
 var a = abs(x - 128)
 var m = min(a, 50)
 var v = peek($D012)
-poke BORDER, 2
+poke BORDER_ADDR, 2
 
 label start:
   x = rnd()
@@ -1636,10 +1636,10 @@ print \"X=\", x
 #[test]
 fn poke_expression_address_compiles() {
     let src = "
-const SCREEN = $0400
+const SCRADDR = $0400
 var idx = 0
 var c = 1
-poke SCREEN + idx, c
+poke SCRADDR + idx, c
 ";
     let res = compile(src, &CompileOptions { basic_stub: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
