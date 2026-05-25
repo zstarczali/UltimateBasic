@@ -1660,6 +1660,27 @@ impl Codegen {
         }
     }
 
+    /// Returns true if `expr` contains at least one FixedLit (float) node.
+    fn contains_fixed_lit(expr: &Expr) -> bool {
+        match expr {
+            Expr::FixedLit(_) => true,
+            Expr::BinOp(l, _, r) => Self::contains_fixed_lit(l) || Self::contains_fixed_lit(r),
+            Expr::Var(_) => false,
+            _ => false,
+        }
+    }
+
+    /// Returns true if `expr` is Q8.8 (float) — is a FixedLit or is a float-typed variable,
+    /// or is a BinOp where either operand is Q8.8.
+    fn is_float_like(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::FixedLit(_) => true,
+            Expr::Var(n) => matches!(self.var_types.get(n), Some(VarType::Float)),
+            Expr::BinOp(l, _, r) => self.is_float_like(l) || self.is_float_like(r),
+            _ => false,
+        }
+    }
+
     /// Evaluate `expr` as a 16-bit result, storing lo-byte at ZP `lo`, hi-byte at `lo+1`.
     /// Handles: Number, Var (int/word), BinOp Add/Sub.  All others fall back to 8-bit, hi=0.
     fn eval_expr_word(&mut self, expr: &Expr, lo: u8, hi: u8) {
@@ -1742,32 +1763,109 @@ impl Codegen {
                 self.emit(0xA5); self.emit(lo); self.emit(0x45); self.emit(tmp_lo); self.emit(0x85); self.emit(lo);
                 self.emit(0xA5); self.emit(hi); self.emit(0x45); self.emit(tmp_hi); self.emit(0x85); self.emit(hi);
             }
-            // 16×8 multiply: l as 16-bit multiplicand, lo byte of r as 8-bit multiplier
+            // Multiply: dispatch based on whether operands are Q8.8 (float-like) or integers.
+            //   float × float : 16×16 Russian Peasant, take bits 8-23 → Q8.8 result
+            //   int   × float : 16×8 with mc=float(Q8.8), mr=int (swap operands)
+            //   float × int   : 16×8 with mc=float(Q8.8), mr=int  (standard)
+            //   word  × int   : 16×8 (standard; same as float × int path)
             Expr::BinOp(l, BinOp::Mul, r) => {
-                let mc_lo = self.tmp_zp; self.tmp_zp += 1;
-                let mc_hi = self.tmp_zp; self.tmp_zp += 1;
-                let mr    = self.tmp_zp; self.tmp_zp += 1;
-                let (l, r) = (l.clone(), r.clone());
-                self.eval_expr_word(&l, mc_lo, mc_hi);
-                self.eval_expr(&r);                        // 8-bit multiplier
-                self.emit(0x85); self.emit(mr);
-                self.emit(0xA9); self.emit(0x00);
-                self.emit(0x85); self.emit(lo);
-                self.emit(0x85); self.emit(hi);
-                self.emit(0xA2); self.emit(0x08);          // LDX #8
-                let loop_top = self.current_addr();
-                self.emit(0x46); self.emit(mr);            // LSR mr
-                self.emit(0x90); let bcc = self.code.len(); self.emit(0x00); // BCC skip
-                self.emit(0x18);                           // CLC
-                self.emit(0xA5); self.emit(lo);  self.emit(0x65); self.emit(mc_lo); self.emit(0x85); self.emit(lo);
-                self.emit(0xA5); self.emit(hi);  self.emit(0x65); self.emit(mc_hi); self.emit(0x85); self.emit(hi);
-                let skip = self.current_addr();
-                self.patch_bxx(bcc, skip);
-                self.emit(0x06); self.emit(mc_lo);         // ASL mc_lo
-                self.emit(0x26); self.emit(mc_hi);         // ROL mc_hi
-                self.emit(0xCA);                           // DEX
-                self.emit(0xD0); let bne = self.code.len(); self.emit(0x00);
-                self.patch_bxx(bne, loop_top);
+                let l_is_float = self.is_float_like(l);
+                let r_is_float = self.is_float_like(r);
+                if l_is_float && r_is_float {
+                    // Q8.8 × Q8.8: 16×16 Russian Peasant, result = (mc_raw × mr_raw) >> 8
+                    // Uses 8 ZP temp bytes.
+                    let mc_lo  = self.tmp_zp; self.tmp_zp += 1;
+                    let mc_hi  = self.tmp_zp; self.tmp_zp += 1;
+                    let mc_ext = self.tmp_zp; self.tmp_zp += 1;
+                    let mr_lo  = self.tmp_zp; self.tmp_zp += 1;
+                    let mr_hi  = self.tmp_zp; self.tmp_zp += 1;
+                    let r0     = self.tmp_zp; self.tmp_zp += 1;
+                    let r1     = self.tmp_zp; self.tmp_zp += 1;
+                    let r2     = self.tmp_zp; self.tmp_zp += 1;
+                    let (l, r) = (l.clone(), r.clone());
+                    self.eval_expr_word(&l, mc_lo, mc_hi);
+                    self.emit(0xA9); self.emit(0x00); self.emit(0x85); self.emit(mc_ext); // mc_ext = 0
+                    self.eval_expr_word(&r, mr_lo, mr_hi);
+                    self.emit(0xA9); self.emit(0x00);
+                    self.emit(0x85); self.emit(r0);
+                    self.emit(0x85); self.emit(r1);
+                    self.emit(0x85); self.emit(r2);
+                    self.emit(0xA2); self.emit(0x10); // LDX #16
+                    let loop_top = self.current_addr();
+                    // Shift mr right; carry = bit0 of original mr_lo (the bit to test)
+                    self.emit(0x46); self.emit(mr_hi); // LSR mr_hi (bit0 → carry)
+                    self.emit(0x66); self.emit(mr_lo); // ROR mr_lo (carry→bit7; old bit0→carry)
+                    self.emit(0x90); let bcc = self.code.len(); self.emit(0x00); // BCC no_add
+                    // Add mc (24-bit) to result r (24-bit), with carry chain
+                    self.emit(0x18); // CLC
+                    self.emit(0xA5); self.emit(r0); self.emit(0x65); self.emit(mc_lo); self.emit(0x85); self.emit(r0);
+                    self.emit(0xA5); self.emit(r1); self.emit(0x65); self.emit(mc_hi); self.emit(0x85); self.emit(r1);
+                    self.emit(0xA5); self.emit(r2); self.emit(0x65); self.emit(mc_ext); self.emit(0x85); self.emit(r2);
+                    let no_add = self.current_addr();
+                    self.patch_bxx(bcc, no_add);
+                    // Shift mc left (24-bit)
+                    self.emit(0x06); self.emit(mc_lo);  // ASL mc_lo
+                    self.emit(0x26); self.emit(mc_hi);  // ROL mc_hi
+                    self.emit(0x26); self.emit(mc_ext); // ROL mc_ext
+                    self.emit(0xCA);                    // DEX
+                    self.emit(0xD0); let bne = self.code.len(); self.emit(0x00); // BNE loop
+                    self.patch_bxx(bne, loop_top);
+                    // Q8.8 result is in bits 8-23 of the 32-bit product: lo=r1, hi=r2
+                    self.emit(0xA5); self.emit(r1); self.emit(0x85); self.emit(lo);
+                    self.emit(0xA5); self.emit(r2); self.emit(0x85); self.emit(hi);
+                } else if !l_is_float && r_is_float {
+                    // int × Q8.8: swap — mc=right (Q8.8, 16-bit), mr=left (int, 8-bit)
+                    let mc_lo = self.tmp_zp; self.tmp_zp += 1;
+                    let mc_hi = self.tmp_zp; self.tmp_zp += 1;
+                    let mr    = self.tmp_zp; self.tmp_zp += 1;
+                    let (l, r) = (l.clone(), r.clone());
+                    self.eval_expr_word(&r, mc_lo, mc_hi); // float operand as 16-bit mc
+                    self.eval_expr(&l);                    // integer operand as 8-bit mr
+                    self.emit(0x85); self.emit(mr);
+                    self.emit(0xA9); self.emit(0x00);
+                    self.emit(0x85); self.emit(lo);
+                    self.emit(0x85); self.emit(hi);
+                    self.emit(0xA2); self.emit(0x08);      // LDX #8
+                    let loop_top = self.current_addr();
+                    self.emit(0x46); self.emit(mr);        // LSR mr
+                    self.emit(0x90); let bcc = self.code.len(); self.emit(0x00); // BCC skip
+                    self.emit(0x18);                       // CLC
+                    self.emit(0xA5); self.emit(lo); self.emit(0x65); self.emit(mc_lo); self.emit(0x85); self.emit(lo);
+                    self.emit(0xA5); self.emit(hi); self.emit(0x65); self.emit(mc_hi); self.emit(0x85); self.emit(hi);
+                    let skip = self.current_addr();
+                    self.patch_bxx(bcc, skip);
+                    self.emit(0x06); self.emit(mc_lo);     // ASL mc_lo
+                    self.emit(0x26); self.emit(mc_hi);     // ROL mc_hi
+                    self.emit(0xCA);                       // DEX
+                    self.emit(0xD0); let bne = self.code.len(); self.emit(0x00);
+                    self.patch_bxx(bne, loop_top);
+                } else {
+                    // Q8.8 × int (or word × int): 16×8, l as 16-bit mc, r as 8-bit multiplier
+                    let mc_lo = self.tmp_zp; self.tmp_zp += 1;
+                    let mc_hi = self.tmp_zp; self.tmp_zp += 1;
+                    let mr    = self.tmp_zp; self.tmp_zp += 1;
+                    let (l, r) = (l.clone(), r.clone());
+                    self.eval_expr_word(&l, mc_lo, mc_hi);
+                    self.eval_expr(&r);                    // 8-bit multiplier
+                    self.emit(0x85); self.emit(mr);
+                    self.emit(0xA9); self.emit(0x00);
+                    self.emit(0x85); self.emit(lo);
+                    self.emit(0x85); self.emit(hi);
+                    self.emit(0xA2); self.emit(0x08);      // LDX #8
+                    let loop_top = self.current_addr();
+                    self.emit(0x46); self.emit(mr);        // LSR mr
+                    self.emit(0x90); let bcc = self.code.len(); self.emit(0x00); // BCC skip
+                    self.emit(0x18);                       // CLC
+                    self.emit(0xA5); self.emit(lo);  self.emit(0x65); self.emit(mc_lo); self.emit(0x85); self.emit(lo);
+                    self.emit(0xA5); self.emit(hi);  self.emit(0x65); self.emit(mc_hi); self.emit(0x85); self.emit(hi);
+                    let skip = self.current_addr();
+                    self.patch_bxx(bcc, skip);
+                    self.emit(0x06); self.emit(mc_lo);     // ASL mc_lo
+                    self.emit(0x26); self.emit(mc_hi);     // ROL mc_hi
+                    self.emit(0xCA);                       // DEX
+                    self.emit(0xD0); let bne = self.code.len(); self.emit(0x00);
+                    self.patch_bxx(bne, loop_top);
+                }
             }
             Expr::BinOp(l, BinOp::Shl, r) => {
                 let l = l.clone();
@@ -1824,6 +1922,41 @@ impl Codegen {
                         self.patch_bxx(beq_done, done);
                     }
                 }
+            }
+            // 16÷8 division: 16-bit dividend / 8-bit divisor → 16-bit quotient.
+            // For Q8.8 / int: treats Q8.8 raw bits as 16-bit integer, divides by r (integer).
+            // Example: Q8.8(7.0) = 0x0700 / 2 = 0x0380 = Q8.8(3.5) ✓
+            // For Q8.8 / Q8.8: eval_expr(r) returns hi byte (integer part), so divisor is
+            // the integer part of the right operand (approximate — avoids 24÷16 complexity).
+            Expr::BinOp(l, BinOp::Div, r) => {
+                let dlo = self.tmp_zp; self.tmp_zp += 1;
+                let dhi = self.tmp_zp; self.tmp_zp += 1;
+                let div = self.tmp_zp; self.tmp_zp += 1;
+                let rem = self.tmp_zp; self.tmp_zp += 1;
+                let (l, r) = (l.clone(), r.clone());
+                self.eval_expr_word(&l, dlo, dhi);    // 16-bit dividend
+                self.eval_expr(&r);                    // 8-bit divisor
+                self.emit(0x85); self.emit(div);
+                self.emit(0xA9); self.emit(0x00); self.emit(0x85); self.emit(rem); // rem = 0
+                self.emit(0xA2); self.emit(0x10);      // LDX #16
+                let loop_top = self.current_addr();
+                self.emit(0x06); self.emit(dlo);       // ASL dlo (bit7 → carry)
+                self.emit(0x26); self.emit(dhi);       // ROL dhi (carry → bit0; bit7 → carry)
+                self.emit(0x26); self.emit(rem);       // ROL rem (carry from dhi's MSB)
+                self.emit(0x38);                       // SEC
+                self.emit(0xA5); self.emit(rem);       // LDA rem
+                self.emit(0xE5); self.emit(div);       // SBC div
+                self.emit(0x90); let bcc = self.code.len(); self.emit(0x00); // BCC skip
+                self.emit(0x85); self.emit(rem);       // rem = rem - div (subtraction succeeded)
+                self.emit(0xE6); self.emit(dlo);       // INC dlo (set quotient bit)
+                let skip = self.current_addr();
+                self.patch_bxx(bcc, skip);
+                self.emit(0xCA);                       // DEX
+                self.emit(0xD0); let bne = self.code.len(); self.emit(0x00); // BNE loop
+                self.patch_bxx(bne, loop_top);
+                // Quotient is in dlo/dhi
+                self.emit(0xA5); self.emit(dlo); self.emit(0x85); self.emit(lo);
+                self.emit(0xA5); self.emit(dhi); self.emit(0x85); self.emit(hi);
             }
             Expr::FixedLit(v) => {
                 let v = *v;
@@ -4582,6 +4715,11 @@ impl Codegen {
                                 self.emit(0xA9); self.emit(*n as u8);    // LDA #n
                                 self.emit(0x85); self.emit(zp + 1);      // STA hi
                             }
+                            _ if self.is_float_like(&expr) => {
+                                // Float-typed expression (involves float var or FixedLit):
+                                // use 16-bit eval_expr_word which handles Q8.8 mul/div/add/sub
+                                self.eval_expr_word(&expr, zp, zp + 1);
+                            }
                             _ => {
                                 if !self.gen_word_assign(zp, &expr) {
                                     // Fallback: 8-bit expr → store as integer part, lo = 0
@@ -4632,10 +4770,19 @@ impl Codegen {
                                 self.emit(0x85); self.emit(zp);
                             }
                         } else if self.can_be_word_result(expr) {
-                            // Expression involves word variables — auto-promote to word
-                            self.var_types.insert(name.clone(), VarType::Word);
-                            let expr = expr.clone();
-                            self.eval_expr_word(&expr, zp, zp + 1);
+                            if Self::contains_fixed_lit(expr) {
+                                // Expression contains float literals — auto-promote to float
+                                self.var_types.insert(name.clone(), VarType::Float);
+                                let expr = expr.clone();
+                                if !self.gen_word_assign(zp, &expr) {
+                                    self.eval_expr_word(&expr, zp, zp + 1);
+                                }
+                            } else {
+                                // Expression involves word variables — auto-promote to word
+                                self.var_types.insert(name.clone(), VarType::Word);
+                                let expr = expr.clone();
+                                self.eval_expr_word(&expr, zp, zp + 1);
+                            }
                         } else {
                             let expr = expr.clone();
                             self.eval_expr(&expr);
@@ -7078,6 +7225,7 @@ impl Codegen {
             .map(|(name, &zp_addr)| {
                 let type_str = match self.var_types.get(name) {
                     Some(VarType::Word) => "word",
+                    Some(VarType::Float) => "float",
                     Some(VarType::Str) => "string",
                     Some(VarType::Array) => "array",
                     Some(VarType::WordArray) => "word_array",

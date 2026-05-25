@@ -3,12 +3,8 @@
 ##      tenprint.ub                                                                   ##
 ########################################################################################
 
-rem goto tenprint2
+goto tenprint2
 
-var dd = 3.5+78.4
-print dd
-var ll=getch()
-bye
 
 # tenprint.ub — a simple maze generator using the "tenprint" algorithm; press a key to exit
 
@@ -46,3 +42,4 @@ if col == 40 then
   ptr = $07C0
 end
 goto tenprint22
+
