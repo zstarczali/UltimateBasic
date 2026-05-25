@@ -25,17 +25,21 @@ ultimate-basic build demo.ub --d64 disk.d64
 ```basic
 var x = 10               # 8-bit integer (default)
 var ptr: word = $0400    # 16-bit — two zero-page bytes, usable as 16-bit address
+var f: float = 3.5       # Q8.8 fixed-point — hi byte = integer, lo byte = fraction
 var msg = "HELLO"        # string variable (pointer to inline PETSCII data)
 var s: string = "TEXT"   # string with explicit type
 var scores = array(10)   # byte array, 10 elements stored at $C000+
 var times  = array_word(8) # word array, 8 word elements stored at $C000+
-const BORDER = $D020     # compile-time constant (substituted inline, no ZP slot)
+const BORDER_ADDR = $D020 # compile-time constant (substituted inline, no ZP slot)
 ```
+
+Keywords and identifiers are **case-insensitive**: `PRINT`, `Print`, and `print` are all valid.
 
 | Type | Width | Notes |
 |---|---|---|
 | `int` | 8-bit | default for numeric literals |
 | `word` | 16-bit | two ZP bytes; can be used as address in `poke`/`peek` |
+| `float` | 16-bit Q8.8 | hi byte = integer part (0–255), lo byte = fractional part |
 | `string` | pointer | ZP pair → null-terminated PETSCII in code segment |
 | `array(N)` | N bytes | byte elements; lives at `$C000+`, not in ZP |
 | `array_word(N)` | N×2 bytes | word (16-bit) elements; lives at `$C000+`, not in ZP |
@@ -263,6 +267,7 @@ screen 5, 3, 42, 7       # char 42 at col 5, row 3, color 7 (writes color RAM $D
 screen x, y, ch, col     # all four arguments as variables
 
 display on               # re-enable VIC display ($D011 DEN bit)
+display off              # blank display
 
 cursor 20, 10            # move cursor to col 20, row 10 (KERNAL PLOT $FFF0)
 cursor x, y              # column from variable x (0–39), row from y (0–24)
@@ -270,11 +275,47 @@ cursor x, y              # column from variable x (0–39), row from y (0–24)
 print at 20, 10, "HELLO" # cursor(20,10) + print in one statement
 print at x, y, "Score:", score  # any mix of exprs
 print at 0, 0            # position only (no text)
-display off              # blank display
+
+scroll x 3               # set horizontal fine scroll: $D016 bits 0-2 = 3 (0-7)
+scroll y 2               # set vertical fine scroll:   $D011 bits 0-2 = 2 (0-7)
+scroll x n               # value can be a variable or expression (masked to bits 0-2)
 ```
+
+`scroll x n` writes `(n AND 7)` into bits 0-2 of `$D016` (preserving bits 3-7).
+`scroll y n` writes `(n AND 7)` into bits 0-2 of `$D011` (preserving bits 3-7).
+Useful for smooth hardware scrolling: decrement each frame from 7 down to 0, shift screen RAM, reset to 7.
 
 `screen col, row, char [, color]` writes directly to screen RAM (`$0400 + row*40 + col`) and
 optionally to color RAM (`$D800 + row*40 + col`). Constant col/row: address computed at compile time.
+
+### Ultimate 64 — CPU Speed
+
+```basic
+speed 4              # set CPU to 4 MHz  (reads $D031, updates bits 0-3, writes back)
+speed 48             # 48 MHz  (maximum speed on U64)
+speed max            # same as speed 48  (alias)
+speed off            # back to 1 MHz  (alias for speed 1)
+
+badlines on          # enable badline timing  ($D031 bit 7 = 0, default C64 behaviour)
+badlines off         # disable badline timing ($D031 bit 7 = 1, more CPU cycles)
+
+var t = turbo()      # 1 if turbo is active (bits 0-3 of $D031 != 0), 0 if at 1 MHz
+```
+
+Available MHz values: `1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 20, 24, 32, 40, 48`.
+Constant values are rounded down to the nearest available speed at compile time.
+Variable values are treated as a raw speed index (0–15) and OR'd into bits 0-3 of `$D031`.
+
+| $D031 index | MHz (U64) | MHz (U64 Elite-II) |
+|---|---|---|
+| 0 | 1 | 1 |
+| 3 | 4 | 4 |
+| 6 | 8 | 10 |
+| 11 | 20 | 24 |
+| 15 | 48 | 64 |
+
+Requires **U64 Turbo Control** set to `U64 Turbo Registers` or `Turbo Enable Bit` in the U64 config menu.
+On a regular C64 or emulator without the register, the `poke` to `$D031` is silently ignored.
 
 ### Keyboard
 
@@ -475,6 +516,35 @@ input "Score: ", score   # prompt + int input
 - **Int var**: accepts only `0`–`9`, max 3 chars; converts to 8-bit value on CR.
 - **String var**: accepts up to 30 chars; stores as null-terminated string; ZP pair updated.
 
+### Float / Fixed-Point
+
+`float` variables use Q8.8 fixed-point format: the high byte is the integer part (0–255)
+and the low byte is the fractional part (0/256 … 255/256).
+
+```basic
+var f: float = 3.5       # 3.5 → hi=3, lo=128 (= 0x0380)
+var g: float = 0         # integer 0 is promoted to 0.0 automatically
+
+f = 1.5                  # Q8.8 literal assignment
+f = f + 1.5              # 16-bit Q8.8 arithmetic (result: 3.0)
+f = f + g                # float + float
+
+var n = int(f)           # extract integer part (hi byte) → 8-bit int
+print f                  # prints as "N.DD" (e.g. 3.5 → "3.50", 1.25 → "1.25")
+```
+
+| Operation | Example | Notes |
+|---|---|---|
+| Literal | `3.5`, `0.25`, `1.0` | parsed as Q8.8 at compile time |
+| Integer promotion | `f = 5` | stores 5.0 (hi=5, lo=0) |
+| Add/sub | `f + 1.5`, `f - g` | 16-bit Q8.8 arithmetic |
+| Extract int | `int(f)` | returns hi byte as 8-bit int |
+| Print | `print f` | format "N.DD", always 2 fractional digits |
+
+**Caveat:** Arithmetic overflow wraps at 255.255 (no saturation). Multiplication and
+division of two float variables are not yet supported — use `int()` + integer arithmetic
+for those cases.
+
 ### Math functions
 
 ```basic
@@ -497,7 +567,22 @@ print bin(n)             # print as 8-bit binary string
 var n = len(msg)         # length of null-terminated string var (0–255)
 var c = asc(msg)         # PETSCII code of first character (0 if empty)
 var c = asc("A")         # compile-time: constant PETSCII code
+var n = val(s)           # runtime: parse decimal PETSCII string → 8-bit int (e.g. "042" → 42)
+var c = msg[i]           # string character at index i: PETSCII code of msg[i]
 ```
+
+### Number formatting
+
+```basic
+print hex(n)             # print as 2-digit uppercase hex
+print bin(n)             # print as 8-bit binary string
+print dec(n, 4)          # right-justified decimal in a field of 4 chars (e.g. 42 → "  42")
+print dec(n, width)      # width can also be a variable
+```
+
+`dec(n, width)` pads the number on the left with spaces to fill `width` characters.
+If the number has more digits than `width`, it is printed without padding (no truncation).
+In non-print contexts `dec(n, w)` evaluates to `n` unchanged (same as `hex`/`bin`).
 
 ### REU (RAM Expansion Unit)
 
@@ -568,6 +653,47 @@ end
 ```
 
 Forward references are supported (`irq my_handler` before the sub is defined).
+
+### NMI handler
+
+```basic
+nmi my_nmi               # set NMI vector $0318/$0319 to handler sub or address
+
+sub my_nmi()
+  # ... NMI work here ...
+  nmi_exit               # JMP $FE47 — proper NMI exit (restores A/X/Y + RTI)
+end
+```
+
+`nmi handler` writes the handler address to the NMI soft vector (`$0318`/`$0319`). The hardware NMI vector at `$FFFA` points to the KERNAL NMI routine which branches through `$0318`. The handler **must** end with `nmi_exit` (emits `JMP $FE47`) — using plain `RTI` will corrupt the stack. Forward references supported.
+
+### CIA1 timer IRQ
+
+```basic
+cia_timer 19656, my_handler   # CIA1 timer A: fires every 19656 cycles (~50 Hz PAL)
+cia_timer period, handler      # period can be a variable or expression
+```
+
+Sets up CIA1 timer A as a periodic IRQ source via the BASIC soft vector (`$0314`/`$0315`):
+1. SEI — disable interrupts
+2. `$DC0D = $7F` — disable all CIA1 IRQs
+3. Load 16-bit period lo→`$DC04`, hi→`$DC05`
+4. Write handler address to `$0314`/`$0315`
+5. `$DC0D = $81` — enable CIA1 timer A IRQ
+6. `$DC0E = $01` — start timer A in continuous mode
+7. CLI — re-enable interrupts
+
+The handler must end with `irq_exit` (or `sys $EA81`) and should ACK the CIA1 IRQ:
+
+```basic
+sub my_handler()
+  poke $DC0D, $01      # ACK CIA1 timer A IRQ (read also clears it)
+  # ... work here ...
+  irq_exit             # JMP $EA81: restore A/X/Y + RTI
+end
+```
+
+PAL timing: clock = 985 248 Hz. Period for 50 Hz = 985 248 / 50 = 19 705 cycles ≈ `$4CC9`. Forward references supported.
 
 ### Compile-time file embedding
 

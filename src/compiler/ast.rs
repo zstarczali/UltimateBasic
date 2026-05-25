@@ -9,6 +9,7 @@ pub enum Expr {
     Inkey,    // inkey() — non-blocking $FFE4; 0 = no key, else PETSCII code
     Waitkey,  // waitkey() — CIA1 matrix direct scan; blocks until any key; works without CIA1 timer IRQ
     ReuPresent,  // reu_present() — 1 if REU detected, 0 otherwise
+    Turbo,       // turbo() — 1 if U64 turbo active (bits 0-3 of $D031 != 0), else 0
     Joy(u8),  // joy(1) or joy(2) — read joystick port, returns inverted bits 0-4
     MouseX,   // mouse_x()  — SID $D419 POT X register (0-255)
     MouseY,   // mouse_y()  — SID $D41A POT Y register (0-255)
@@ -17,6 +18,7 @@ pub enum Expr {
     Cos(Box<Expr>),   // cos(angle) — same as sin with +64 offset
     HexFmt(Box<Expr>), // hex(n) — in print: shows value as 2-digit uppercase hex
     BinFmt(Box<Expr>), // bin(n) — in print: shows value as 8-bit binary string
+    DecFmt(Box<Expr>, Box<Expr>), // dec(n, width) — in print: right-justified decimal
     Peek(Box<Expr>),
     Rnd,
     RndN(Box<Expr>),         // rnd(n) — random 0..n-1 (rnd() mod n)
@@ -33,6 +35,9 @@ pub enum Expr {
     Peek16(Box<Expr>),           // peek16(addr) — read 16-bit word: lo at addr, hi at addr+1
     Spc(Box<Expr>),              // spc(n) — in print: print n spaces
     Tab(Box<Expr>),              // tab(n) — in print: move cursor to column n
+    Val(Box<Expr>),              // val(s) — runtime PETSCII decimal string → 8-bit int
+    FixedLit(u16),               // Q8.8 fixed-point literal (e.g. 3.5 → hi=3, lo=128)
+    FixedToInt(Box<Expr>),       // int(f) — extract integer part (hi byte) of a float variable
 }
 
 #[derive(Debug, Clone)]
@@ -160,4 +165,19 @@ pub enum Stmt {
     PrintHash { channel: Expr, args: Vec<Expr> },
     /// asm { ... } — raw 6502 assembly source assembled inline at the current code position
     AsmSource(String),
+    /// `nmi handler` — set NMI vector at $0318/$0319 (handler must end with nmi_exit / JMP $FE47)
+    Nmi { handler: Expr },
+    /// `nmi_exit` — JMP $FE47 (KERNAL NMI exit: restores A/X/Y + RTI)
+    NmiExit,
+    /// `cia_timer period, handler` — CIA1 timer A IRQ every `period` cycles; handler at $0314/$0315
+    CiaTimer { period: Expr, handler: Expr },
+    /// `scroll x n` — set $D016 bits 0-2 for horizontal fine scroll (0-7 pixels)
+    ScrollX(Expr),
+    /// `scroll y n` — set $D011 bits 0-2 for vertical fine scroll (0-7 pixels)
+    ScrollY(Expr),
+    /// `speed N` — set U64 CPU speed; N in MHz for constants, raw index (0-15) for variables
+    /// Writes bits 0-3 of $D031 (U64 Turbo Control register), preserving bit 7 (badlines).
+    Speed(Expr),
+    /// `badlines on/off` — enable/disable badline timing via bit 7 of $D031
+    Badlines(bool),
 }

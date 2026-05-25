@@ -1614,12 +1614,12 @@ fn undefined_label_reports_error() {
 #[test]
 fn full_new_features_program() {
     let src = "
-const BORDER = $D020
+const BORDER_ADDR = $D020
 var x = rnd()
 var a = abs(x - 128)
 var m = min(a, 50)
 var v = peek($D012)
-poke BORDER, 2
+poke BORDER_ADDR, 2
 
 label start:
   x = rnd()
@@ -1636,10 +1636,10 @@ print \"X=\", x
 #[test]
 fn poke_expression_address_compiles() {
     let src = "
-const SCREEN = $0400
+const SCRADDR = $0400
 var idx = 0
 var c = 1
-poke SCREEN + idx, c
+poke SCRADDR + idx, c
 ";
     let res = compile(src, &CompileOptions { basic_stub: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
@@ -3394,6 +3394,58 @@ fn graphics_on_block_emits_correct_d018() {
         "graphics on block should emit LDA #$1A; STA $D018 ($A9 $1A $8D $18 $D0) to set screen@$0400 and charset@$2800");
 }
 
+// ─── U64 Speed ───────────────────────────────────────────────────────────────
+
+#[test]
+fn speed_constant_compiles() {
+    // speed 4 → index 3; expect LDA $D031, AND #$F0, ORA #3, STA $D031
+    let prg = compile_raw("speed 4");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(6).any(|w| w == &[0xAD, 0x31, 0xD0, 0x29, 0xF0, 0x09]),
+        "speed 4 should emit LDA $D031, AND #$F0, ORA #... sequence");
+    // ORA byte should be 3 (index for 4 MHz)
+    let pos = bytes.windows(6).position(|w| w == &[0xAD, 0x31, 0xD0, 0x29, 0xF0, 0x09]).unwrap();
+    assert_eq!(bytes[pos + 6], 0x03, "speed 4 should OR index 3 into $D031");
+}
+
+#[test]
+fn speed_max_compiles() {
+    // speed max → index 15
+    let prg = compile_raw("speed max");
+    let bytes = &prg[2..];
+    let pos = bytes.windows(6).position(|w| w == &[0xAD, 0x31, 0xD0, 0x29, 0xF0, 0x09]);
+    assert!(pos.is_some(), "speed max should emit LDA $D031, AND #$F0, ORA #...");
+    assert_eq!(bytes[pos.unwrap() + 6], 0x0F, "speed max should OR index 15");
+}
+
+#[test]
+fn speed_off_compiles() {
+    // speed off → index 0; expect LDA $D031, AND #$F0, STA $D031 (no ORA for index 0)
+    let prg = compile_raw("speed off");
+    let bytes = &prg[2..];
+    // LDA $D031 (AD 31 D0), AND #$F0 (29 F0), STA $D031 (8D 31 D0)
+    assert!(bytes.windows(8).any(|w| w == &[0xAD, 0x31, 0xD0, 0x29, 0xF0, 0x8D, 0x31, 0xD0]),
+        "speed off should emit LDA $D031, AND #$F0, STA $D031 with no ORA");
+}
+
+#[test]
+fn badlines_off_compiles() {
+    // badlines off → ORA #$80 into $D031 (set bit 7)
+    let prg = compile_raw("badlines off");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(8).any(|w| w == &[0xAD, 0x31, 0xD0, 0x09, 0x80, 0x8D, 0x31, 0xD0]),
+        "badlines off should emit LDA $D031, ORA #$80, STA $D031");
+}
+
+#[test]
+fn badlines_on_compiles() {
+    // badlines on → AND #$7F into $D031 (clear bit 7)
+    let prg = compile_raw("badlines on");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(8).any(|w| w == &[0xAD, 0x31, 0xD0, 0x29, 0x7F, 0x8D, 0x31, 0xD0]),
+        "badlines on should emit LDA $D031, AND #$7F, STA $D031");
+}
+
 #[test]
 #[ignore = "plot4 / graphics on block removed"]
 fn graphics_on_block_sets_vic_bank_0() {
@@ -3401,6 +3453,81 @@ fn graphics_on_block_sets_vic_bank_0() {
     let bytes = &prg[2..];
     assert!(bytes.windows(10).any(|w| w == &[0xAD, 0x00, 0xDD, 0x29, 0xFC, 0x09, 0x03, 0x8D, 0x00, 0xDD]),
         "graphics on block should emit LDA $DD00; AND #$FC; ORA #$03; STA $DD00 to select VIC bank 0");
+}
+
+#[test]
+fn turbo_compiles() {
+    // turbo() → LDA $D031, AND #$0F, BEQ +2, LDA #1
+    let prg = compile_raw("var t = turbo()");
+    let bytes = &prg[2..];
+    // LDA $D031 (AD 31 D0), AND #$0F (29 0F), BEQ +2 (F0 02), LDA #1 (A9 01)
+    assert!(bytes.windows(8).any(|w| w == &[0xAD, 0x31, 0xD0, 0x29, 0x0F, 0xF0, 0x02, 0xA9]),
+        "turbo() should emit LDA $D031; AND #$0F; BEQ +2; LDA #1 sequence");
+}
+
+#[test]
+fn float_expr_infers_float_type() {
+    // var dd = 3.5 + 78.4 — result should be stored as float and printed via float path.
+    // If dd were inferred as word, print would emit print_decimal (integer path).
+    // If dd is inferred as float, print emits print_fixed (float path, calls print_decimal twice).
+    // We test that print_fixed is emitted: it always prints a '.' via LDA #$2E; JSR $FFD2.
+    let prg = compile_raw("var dd = 3.5 + 78.4\nprint dd");
+    let bytes = &prg[2..];
+    // print_fixed emits LDA #$2E ('.'): A9 2E
+    assert!(bytes.windows(2).any(|w| w == &[0xA9, 0x2E]),
+        "var dd = 3.5 + 78.4 should infer float type and print via print_fixed (emits LDA #$2E for '.')");
+}
+
+#[test]
+fn float_mul_float_uses_16x16() {
+    // var f: float = 3.5; var g: float = f * 1.5
+    // Q8.8(3.5) = 0x0380, Q8.8(1.5) = 0x0180, product = Q8.8(5.25) = 0x0540
+    // 16×16 Russian Peasant uses LDX #16 (A2 10), while 16×8 uses LDX #8 (A2 08).
+    // The Mul code for float×float should emit LDX #16.
+    let prg = compile_raw("var f: float = 3.5\nvar g: float = f * 1.5");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(2).any(|w| w == &[0xA2, 0x10]),
+        "float * float should emit LDX #16 for 16×16 Russian Peasant");
+}
+
+#[test]
+fn float_mul_small_fraction_correct() {
+    // var g: float = 0.5 * 3.5 — tests int×float swap path (0.5 has integer part 0)
+    // Q8.8(0.5) = 0x0080, Q8.8(3.5) = 0x0380
+    // 16×16 >>8: (0x0080 × 0x0380) >> 8 = (128 × 896) >> 8 = 114688 >> 8 = 448 = 0x01C0 = Q8.8(1.75)
+    // The result is stored as float (inferred from FixedLit), so print_fixed path is used.
+    let prg = compile_raw("var g: float = 0.5 * 3.5\nprint g");
+    let bytes = &prg[2..];
+    // print_fixed emits LDA #$2E ('.'): A9 2E
+    assert!(bytes.windows(2).any(|w| w == &[0xA9, 0x2E]),
+        "0.5 * 3.5 should infer float type and print via print_fixed");
+    // Should use 16×16 path (LDX #16, not LDX #8)
+    assert!(bytes.windows(2).any(|w| w == &[0xA2, 0x10]),
+        "float × float should emit LDX #16 for 16×16 Russian Peasant");
+}
+
+#[test]
+fn float_div_int_compiles() {
+    // var f: float = 7.0; var g: float = f / 2
+    // Q8.8(7.0) = 0x0700 / 2 = 0x0380 = Q8.8(3.5)
+    // 16÷8 division uses LDX #16 (A2 10) and ROL rem (26 xx).
+    let prg = compile_raw("var f: float = 7.0\nvar g: float = f / 2");
+    let bytes = &prg[2..];
+    // The Div loop uses INC dlo (E6 xx) to set quotient bits — unique to the div routine.
+    assert!(bytes.windows(1).any(|w| w == &[0xE6]),
+        "float / int should emit INC dlo (E6) for quotient bit in long division");
+    // Uses LDX #16 for 16-iteration loop
+    assert!(bytes.windows(2).any(|w| w == &[0xA2, 0x10]),
+        "float / int should emit LDX #16");
+}
+
+#[test]
+fn float_div_result_is_float() {
+    // var g: float = 7.0 / 2 — result printed as float (has decimal point)
+    let prg = compile_raw("var g: float = 7.0 / 2\nprint g");
+    let bytes = &prg[2..];
+    assert!(bytes.windows(2).any(|w| w == &[0xA9, 0x2E]),
+        "float / int should print result via print_fixed (LDA #'.')");
 }
 
 #[test]

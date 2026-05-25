@@ -1,0 +1,22 @@
+scroll x 3
+scroll y 2
+
+sub my_nmi()
+  nmi_exit
+end
+
+sub my_timer()
+  poke $DC0D, $01    # ACK CIA1 timer IRQ
+  irq_exit
+end
+
+nmi my_nmi
+cia_timer 19655, my_timer
+
+var s = "042"
+var n = val(s)
+print n
+
+var msg = "HELLO"
+var c = msg[1]
+print c

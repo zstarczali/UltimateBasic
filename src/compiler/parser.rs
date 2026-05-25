@@ -174,7 +174,11 @@ impl Parser {
     fn advance(&mut self) -> Token {
         let t = self.tokens.get(self.pos).cloned().unwrap_or(Token::Eof);
         self.pos += 1;
-        if matches!(t, Token::Newline) { self.line += 1; }
+        if matches!(t, Token::Newline) {
+            self.line += 1;
+        } else if let Token::AsmSource(_, n) = &t {
+            self.line += n; // count newlines inside asm { } blocks
+        }
         t
     }
 
@@ -700,7 +704,7 @@ impl Parser {
                 };
                 Some(Stmt::AsmBytes(bytes))
             }
-            Token::AsmSource(src) => {
+            Token::AsmSource(src, _) => {
                 // asm { ... } block: raw source captured by the lexer, assembled at codegen time
                 let src = src.clone();
                 self.advance();
@@ -1066,6 +1070,60 @@ impl Parser {
                 self.expect_newline();
                 Some(Stmt::Irq { handler, line })
             }
+            Token::Nmi => {
+                self.advance();
+                let handler = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::Nmi { handler })
+            }
+            Token::NmiExit => {
+                self.advance();
+                self.expect_newline();
+                Some(Stmt::NmiExit)
+            }
+            Token::CiaTimer => {
+                self.advance();
+                let period = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let handler = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::CiaTimer { period, handler })
+            }
+            Token::Scroll => {
+                self.advance();
+                // next token is 'x' or 'y' as Ident
+                let dir = match self.peek().clone() {
+                    Token::Ident(ref s) if s == "x" => { self.advance(); 'x' }
+                    Token::Ident(ref s) if s == "y" => { self.advance(); 'y' }
+                    _ => 'x', // default
+                };
+                let val = self.parse_expr();
+                self.expect_newline();
+                if dir == 'x' { Some(Stmt::ScrollX(val)) } else { Some(Stmt::ScrollY(val)) }
+            }
+            Token::Speed => {
+                self.advance();
+                // speed max  → index 15 (fastest)
+                // speed off  → index 0 (1 MHz, = off turbo)
+                // speed N    → N in MHz for constants; raw index for variables
+                let expr = match self.peek() {
+                    Token::Max => { self.advance(); Expr::Number(48) } // 48+ MHz → index 15
+                    Token::Off => { self.advance(); Expr::Number(0) }  // 0 MHz → index 0 (1 MHz)
+                    _ => self.parse_expr(),
+                };
+                self.expect_newline();
+                Some(Stmt::Speed(expr))
+            }
+            Token::Badlines => {
+                self.advance();
+                let on = match self.peek() {
+                    Token::On  => { self.advance(); true  }
+                    Token::Off => { self.advance(); false }
+                    _ => true,
+                };
+                self.expect_newline();
+                Some(Stmt::Badlines(on))
+            }
             Token::Data => {
                 self.advance();
                 let mut items = vec![];
@@ -1379,7 +1437,19 @@ impl Parser {
         match self.advance() {
             Token::Number(n)    => Expr::Number(n),
             Token::Addr(a)      => Expr::Number(a as i16),
+            Token::FixedLit(v)  => Expr::FixedLit(v),
             Token::StringLit(s) => Expr::StringLit(s),
+            Token::Int => {
+                // int(expr) — extract integer part (hi byte) of a float variable
+                if self.peek() == &Token::LParen {
+                    self.advance(); // consume '('
+                    let e = self.parse_expr();
+                    if self.peek() == &Token::RParen { self.advance(); }
+                    Expr::FixedToInt(Box::new(e))
+                } else {
+                    Expr::Number(0) // 'int' without '(' in expression context is a no-op
+                }
+            }
             Token::Ident(n) => {
                 if let Some(&v) = self.consts.get(&n) {
                     Expr::Number(v)
@@ -1435,9 +1505,14 @@ impl Parser {
                 Expr::Asc(Box::new(arg))
             }
             Token::ReuDet => {
-                if self.peek() == &Token::LParen { self.advance(); } // skip (
-                if self.peek() == &Token::RParen { self.advance(); } // skip )
+                if self.peek() == &Token::LParen { self.advance(); }
+                if self.peek() == &Token::RParen { self.advance(); }
                 Expr::ReuPresent
+            }
+            Token::Turbo => {
+                if self.peek() == &Token::LParen { self.advance(); }
+                if self.peek() == &Token::RParen { self.advance(); }
+                Expr::Turbo
             }
             Token::SpriteHit => {
                 if self.peek() == &Token::LParen { self.advance(); }
@@ -1570,6 +1645,21 @@ impl Parser {
                 let n = self.parse_expr();
                 if self.peek() == &Token::RParen { self.advance(); }
                 Expr::Tab(Box::new(n))
+            }
+            Token::Val => {
+                if self.peek() == &Token::LParen { self.advance(); }
+                let arg = self.parse_expr();
+                if self.peek() == &Token::RParen { self.advance(); }
+                Expr::Val(Box::new(arg))
+            }
+            Token::Dec => {
+                // dec(n, width) — right-justified decimal in print context
+                if self.peek() == &Token::LParen { self.advance(); }
+                let n = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let width = self.parse_expr();
+                if self.peek() == &Token::RParen { self.advance(); }
+                Expr::DecFmt(Box::new(n), Box::new(width))
             }
             _ => Expr::Number(0),
         }
@@ -1944,13 +2034,13 @@ mod tests {
     // ── New features: const, label, goto, poke, peek, rnd, abs, min, max, sgn ──
 
     #[test] fn const_stmt() {
-        let stmts = parse("const SCREEN = $0400");
-        assert!(matches!(&stmts[0], Stmt::Const(name, Expr::Number(0x0400)) if name == "SCREEN"));
+        let stmts = parse("const SCRADDR = $0400");
+        assert!(matches!(&stmts[0], Stmt::Const(name, Expr::Number(0x0400)) if name == "scraddr"));
     }
 
     #[test] fn const_stmt_decimal() {
         let stmts = parse("const SIZE = 100");
-        assert!(matches!(&stmts[0], Stmt::Const(name, Expr::Number(100)) if name == "SIZE"));
+        assert!(matches!(&stmts[0], Stmt::Const(name, Expr::Number(100)) if name == "size"));
     }
 
     #[test] fn label_stmt() {

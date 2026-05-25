@@ -1,0 +1,10 @@
+var a = 42
+var b = 5
+var c = 200
+
+print dec(a, 6), "|"
+print dec(b, 6), "|"
+print dec(c, 6), "|"
+print dec(0, 4), "|"
+print dec(255, 3), "|"
+print dec(255, 2), "|"

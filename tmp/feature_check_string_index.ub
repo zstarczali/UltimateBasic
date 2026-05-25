@@ -1,0 +1,4 @@
+var s = "ABC"
+var i = 1
+var x = s[i]
+print x

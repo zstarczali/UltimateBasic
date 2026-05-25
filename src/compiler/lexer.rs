@@ -56,6 +56,7 @@ pub enum Token {
     Int,
     Str,
     Float,
+    FixedLit(u16), // Q8.8 fixed-point literal (e.g. 3.5 → 896 = 0x0380)
     Const,
     Label,
     Goto,
@@ -119,7 +120,7 @@ pub enum Token {
     Open,        // open channel, device, secondary [, "filename"]
     Close,       // close channel — CLOSE ($FFC3)
     PrintHash,   // print# channel, ... — CHKOUT + CHROUT + CLRCHN
-    AsmSource(String), // asm { ... } — raw assembly source captured verbatim
+    AsmSource(String, usize), // asm { ... } — raw source + number of embedded newlines
     Inc,         // inc var — INC zp
     Dec,         // dec var — DEC zp
     Screen,      // screen col, row, char [, color] — direct screen/color RAM poke
@@ -129,6 +130,14 @@ pub enum Token {
     Continue,    // continue — jump to next loop iteration
     Select,      // select expr / case val: / else: / end — multi-way branch
     Case,        // case val: — branch in select
+    Val,         // val(s) — runtime string→int conversion (PETSCII decimal string)
+    Nmi,         // nmi handler — NMI vector setup ($0318/$0319)
+    NmiExit,     // nmi_exit — JMP $FE47 (proper NMI handler exit)
+    CiaTimer,    // cia_timer period, handler — CIA1 timer A IRQ setup
+    Scroll,      // scroll x n / scroll y n — fine scroll ($D016/$D011 bits 0-2)
+    Speed,       // speed N / speed max / speed off — U64 CPU speed ($D031 bits 0-3)
+    Badlines,    // badlines on / badlines off  — U64 badline timing ($D031 bit 7)
+    Turbo,       // turbo() — 1 if U64 turbo is active (bits 0-3 of $D031 != 0), else 0
 
     // Operators
     Plus,
@@ -289,13 +298,21 @@ impl Lexer {
         while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
             s.push(self.advance().unwrap());
         }
-        // Consume optional fractional part (e.g. 22.3 → 22); C64 has no floats
+        // Check for fractional part → Q8.8 fixed-point literal (e.g. 3.5 → FixedLit(896))
         if self.peek() == Some('.') {
             if matches!(self.input.get(self.pos + 1), Some(c) if c.is_ascii_digit()) {
                 self.advance(); // consume '.'
+                let mut frac_s = String::new();
                 while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
-                    self.advance(); // discard fractional digits
+                    frac_s.push(self.advance().unwrap());
                 }
+                let int_part: u32 = s.parse().unwrap_or(0);
+                // Compute fractional byte: parse up to 8 significant decimal digits
+                // frac_byte = round(0.frac_digits × 256)
+                let frac_val: f64 = format!("0.{}", frac_s).parse().unwrap_or(0.0);
+                let frac_byte = (frac_val * 256.0).round() as u32;
+                let q88 = ((int_part & 0xFF) << 8) | (frac_byte & 0xFF);
+                return Token::FixedLit(q88 as u16);
             }
         }
         let val: u32 = s.parse().unwrap_or(0);
@@ -317,12 +334,14 @@ impl Lexer {
         while matches!(self.peek(), Some(c) if c.is_alphanumeric() || c == '_') {
             s.push(self.advance().unwrap());
         }
+        // Lowercase for case-insensitive keyword matching; also used for identifiers
+        let sl = s.to_ascii_lowercase();
         // Special: "chr$" — BASIC-style char-by-code function
-        if s == "chr" && self.peek() == Some('$') {
+        if sl == "chr" && self.peek() == Some('$') {
             self.advance();
             return Token::Chr;
         }
-        match s.as_str() {
+        match sl.as_str() {
             "print" => {
                 // print# (file print) — consume '#' immediately following with no space
                 if self.peek() == Some('#') {
@@ -345,6 +364,14 @@ impl Lexer {
             "continue" => Token::Continue,
             "select"   => Token::Select,
             "case"     => Token::Case,
+            "val"      => Token::Val,
+            "nmi"      => Token::Nmi,
+            "nmi_exit" => Token::NmiExit,
+            "cia_timer" => Token::CiaTimer,
+            "scroll"   => Token::Scroll,
+            "speed"    => Token::Speed,
+            "badlines" => Token::Badlines,
+            "turbo"    => Token::Turbo,
             // "print" is handled above in the match (before the string match block)
             "return"   => Token::Return,
             "call"     => Token::Call,
@@ -368,7 +395,9 @@ impl Lexer {
                             Some(c)     => { src.push(c); self.advance(); }
                         }
                     }
-                    Token::AsmSource(src)
+                    let nl_count = src.chars().filter(|&c| c == '\n').count();
+                    self.line += nl_count; // keep lexer line counter accurate
+                    Token::AsmSource(src, nl_count)
                 } else {
                     Token::Asm // fall through: asm $EA, $EA raw-byte form
                 }
@@ -470,10 +499,10 @@ impl Lexer {
             "tab"        => Token::Tab,
             "rem"        => {
                 while !matches!(self.peek(), None | Some('\n')) { self.advance(); }
-                if self.peek() == Some('\n') { self.advance(); }
+                if self.peek() == Some('\n') { self.advance(); self.line += 1; }
                 Token::Newline
             }
-            _            => Token::Ident(s),
+            _            => Token::Ident(sl),
         }
     }
 }
@@ -542,6 +571,9 @@ mod tests {
     #[test] fn kw_int()  { assert_eq!(tokenize("int")[0],  Token::Int); }
     #[test] fn kw_string(){assert_eq!(tokenize("string")[0],Token::Str);}
     #[test] fn kw_float(){ assert_eq!(tokenize("float")[0],Token::Float);}
+    #[test] fn kw_speed()   { assert_eq!(tokenize("speed")[0],   Token::Speed); }
+    #[test] fn kw_badlines(){ assert_eq!(tokenize("badlines")[0], Token::Badlines); }
+    #[test] fn kw_turbo()   { assert_eq!(tokenize("turbo")[0],    Token::Turbo); }
     #[test] fn kw_graphics(){assert_eq!(tokenize("graphics")[0],Token::Graphics);}
     #[test] fn kw_on()   { assert_eq!(tokenize("on")[0],   Token::On); }
     #[test] fn kw_off()  { assert_eq!(tokenize("off")[0],  Token::Off); }
@@ -723,7 +755,7 @@ mod tests {
     #[test] fn asm_block_tokens() {
         // asm { ... } is now captured as a single AsmSource token
         let tokens = tokenize("asm { $A9 $07 }");
-        assert!(matches!(&tokens[0], Token::AsmSource(s) if s.contains("$A9")),
+        assert!(matches!(&tokens[0], Token::AsmSource(s, _) if s.contains("$A9")),
             "asm block should produce AsmSource token, got {:?}", tokens);
         assert_eq!(tokens[1], Token::Eof);
     }
