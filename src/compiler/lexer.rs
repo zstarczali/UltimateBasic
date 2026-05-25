@@ -129,6 +129,11 @@ pub enum Token {
     Continue,    // continue — jump to next loop iteration
     Select,      // select expr / case val: / else: / end — multi-way branch
     Case,        // case val: — branch in select
+    Val,         // val(s) — runtime string→int conversion (PETSCII decimal string)
+    Nmi,         // nmi handler — NMI vector setup ($0318/$0319)
+    NmiExit,     // nmi_exit — JMP $FE47 (proper NMI handler exit)
+    CiaTimer,    // cia_timer period, handler — CIA1 timer A IRQ setup
+    Scroll,      // scroll x n / scroll y n — fine scroll ($D016/$D011 bits 0-2)
 
     // Operators
     Plus,
@@ -345,6 +350,11 @@ impl Lexer {
             "continue" => Token::Continue,
             "select"   => Token::Select,
             "case"     => Token::Case,
+            "val"      => Token::Val,
+            "nmi"      => Token::Nmi,
+            "nmi_exit" => Token::NmiExit,
+            "cia_timer" => Token::CiaTimer,
+            "scroll"   => Token::Scroll,
             // "print" is handled above in the match (before the string match block)
             "return"   => Token::Return,
             "call"     => Token::Call,

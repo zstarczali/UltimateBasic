@@ -33,6 +33,7 @@ pub enum Expr {
     Peek16(Box<Expr>),           // peek16(addr) — read 16-bit word: lo at addr, hi at addr+1
     Spc(Box<Expr>),              // spc(n) — in print: print n spaces
     Tab(Box<Expr>),              // tab(n) — in print: move cursor to column n
+    Val(Box<Expr>),              // val(s) — runtime PETSCII decimal string → 8-bit int
 }
 
 #[derive(Debug, Clone)]
@@ -160,4 +161,14 @@ pub enum Stmt {
     PrintHash { channel: Expr, args: Vec<Expr> },
     /// asm { ... } — raw 6502 assembly source assembled inline at the current code position
     AsmSource(String),
+    /// `nmi handler` — set NMI vector at $0318/$0319 (handler must end with nmi_exit / JMP $FE47)
+    Nmi { handler: Expr },
+    /// `nmi_exit` — JMP $FE47 (KERNAL NMI exit: restores A/X/Y + RTI)
+    NmiExit,
+    /// `cia_timer period, handler` — CIA1 timer A IRQ every `period` cycles; handler at $0314/$0315
+    CiaTimer { period: Expr, handler: Expr },
+    /// `scroll x n` — set $D016 bits 0-2 for horizontal fine scroll (0-7 pixels)
+    ScrollX(Expr),
+    /// `scroll y n` — set $D011 bits 0-2 for vertical fine scroll (0-7 pixels)
+    ScrollY(Expr),
 }

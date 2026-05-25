@@ -1066,6 +1066,37 @@ impl Parser {
                 self.expect_newline();
                 Some(Stmt::Irq { handler, line })
             }
+            Token::Nmi => {
+                self.advance();
+                let handler = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::Nmi { handler })
+            }
+            Token::NmiExit => {
+                self.advance();
+                self.expect_newline();
+                Some(Stmt::NmiExit)
+            }
+            Token::CiaTimer => {
+                self.advance();
+                let period = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let handler = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::CiaTimer { period, handler })
+            }
+            Token::Scroll => {
+                self.advance();
+                // next token is 'x' or 'y' as Ident
+                let dir = match self.peek().clone() {
+                    Token::Ident(ref s) if s == "x" => { self.advance(); 'x' }
+                    Token::Ident(ref s) if s == "y" => { self.advance(); 'y' }
+                    _ => 'x', // default
+                };
+                let val = self.parse_expr();
+                self.expect_newline();
+                if dir == 'x' { Some(Stmt::ScrollX(val)) } else { Some(Stmt::ScrollY(val)) }
+            }
             Token::Data => {
                 self.advance();
                 let mut items = vec![];
@@ -1570,6 +1601,12 @@ impl Parser {
                 let n = self.parse_expr();
                 if self.peek() == &Token::RParen { self.advance(); }
                 Expr::Tab(Box::new(n))
+            }
+            Token::Val => {
+                if self.peek() == &Token::LParen { self.advance(); }
+                let arg = self.parse_expr();
+                if self.peek() == &Token::RParen { self.advance(); }
+                Expr::Val(Box::new(arg))
             }
             _ => Expr::Number(0),
         }

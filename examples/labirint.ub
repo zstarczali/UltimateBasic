@@ -4,28 +4,28 @@ goto labirint
 var pos: word = $0400
 
 label tenprint:
-  poke pos, 205 + rnd(2)
-  inc pos
-  if pos == $07E8 then pos = $0400 end
-  goto tenprint
+poke pos, 205 + rnd(2)
+inc pos
+if pos == $07E8 then pos = $0400 end
+goto tenprint
 
 
 
-  
+
 label labirint
 cls
 var col = 0
-                                     
+
 var ptr: word = $0400
 
 label tenprint:
-  poke ptr, 77 + rnd(2)
-  inc ptr
-  inc col
-  if col == 40 then
-    col = 0
-    memcopy $0428, $0400, 960
-    fill $07C0, 40, 32
-    ptr = $07C0
-  end
-  goto tenprint
+poke ptr, 77 + rnd(2)
+inc ptr
+inc col
+if col == 40 then
+  col = 0
+  memcopy $0428, $0400, 960
+  fill $07C0, 40, 32
+  ptr = $07C0
+end
+goto tenprint
