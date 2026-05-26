@@ -47,6 +47,7 @@ pub enum Token {
     Shl,
     Shr,
     Wait,
+    Delay,
     Raster,
     Sound,
     Sprite,      // sprite id, x, y [, data_addr] / sprite on/off/color/multi
@@ -421,6 +422,7 @@ impl Lexer {
             "shl"        => Token::Shl,
             "shr"        => Token::Shr,
             "wait"       => Token::Wait,
+            "delay"      => Token::Delay,
             "raster"     => Token::Raster,
             "sound"      => Token::Sound,
             "int"        => Token::Int,

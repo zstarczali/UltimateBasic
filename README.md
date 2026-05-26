@@ -272,9 +272,9 @@ display off              # blank display
 cursor 20, 10            # move cursor to col 20, row 10 (KERNAL PLOT $FFF0)
 cursor x, y              # column from variable x (0–39), row from y (0–24)
 
-print at 20, 10, "HELLO" # cursor(20,10) + print in one statement
+print at 20, 10, "HELLO" # cursor(20,10) + print in one statement (no trailing newline)
 print at x, y, "Score:", score  # any mix of exprs
-print at 0, 0            # position only (no text)
+print at 0, 0            # position only (no text, no newline)
 
 scroll x 3               # set horizontal fine scroll: $D016 bits 0-2 = 3 (0-7)
 scroll y 2               # set vertical fine scroll:   $D011 bits 0-2 = 2 (0-7)
@@ -342,7 +342,11 @@ exit                     # alias for bye
 ```basic
 wait 50                  # wait 50 raster-line transitions (~3.2 ms)
 wait raster 100          # spin until $D012 == 100 (raster-split effects)
+delay 1                  # wait 1 PAL frame (1/50 s ≈ 20 ms)
+delay 20                 # wait 20 frames ≈ 0.4 s; n can be a variable (0–255)
 ```
+
+`delay N` counts N complete PAL frames using raster line 200 as the frame boundary.
 
 ### SID Sound
 

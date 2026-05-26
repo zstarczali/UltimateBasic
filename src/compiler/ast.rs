@@ -139,6 +139,7 @@ pub enum Stmt {
     Reu { op: ReuOp, c64_addr: Expr, reu_bank: Expr, reu_addr: Expr, length: Expr },
     // reu stash/fetch/swap c64_addr, bank, reu_addr, length — DMA transfer to/from REU
     Wait { raster_target: bool, value: Expr }, // wait N (raster lines) / wait raster N (specific line)
+    Delay(Expr),                                 // delay N — busy-wait N PAL frames (1 frame = 1/50 sec)
     Sound { channel: Expr, freq: Expr, duration: Expr }, // SID: sound ch, freq(16-bit), frames
     Sprite { id: Expr, x: Expr, y: Expr, data_addr: Option<Expr> },
     // sprite id, x, y [, data_addr] — VIC-II hardware sprite position + optional data pointer
