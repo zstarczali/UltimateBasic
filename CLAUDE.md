@@ -436,10 +436,13 @@ var mb = mouse_btn()     # mouse buttons: bit0=left (fire, $DC00 bit4), bit1=rig
 ```basic
 wait 50                  # wait 50 raster-line transitions (~3.2 ms at 1 MHz)
 wait raster 100          # spin until $D012 == 100 (raster line 100)
+delay 1                  # wait 1 PAL frame (1/50 s); delay 20 ≈ 0.4 s
+delay n                  # n can be a variable or expression (8-bit, 0–255)
 ```
 
 `wait N` counts N changes in `$D012`. Each change ≈ 1 raster line ≈ 64 cycles.
 `wait raster N` busy-polls until `$D012 == N`; useful for raster-split effects.
+`delay N` waits exactly N full PAL frames by watching raster line 200 as the frame boundary — each frame is ≈ 20 ms (50 Hz PAL). Uses 1 scratch ZP byte and a 14-byte inline loop.
 
 ### Exit
 
@@ -746,17 +749,19 @@ cursor 20, 10            # move cursor to column 20, row 10 (KERNAL PLOT $FFF0)
 cursor x, y              # column from variable x (0-39), row from y (0-24)
 ```
 
-Calls KERNAL PLOT ($FFF0) with carry set. PLOT expects X = row, Y = column.
-`cursor col, row` maps: col → Y register, row → X register.
+Calls KERNAL PLOT (`$FFF0`) with carry **clear** (C=0 = SET position; C=1 = READ position).
+PLOT expects X = row, Y = column. `cursor col, row` maps: col → Y register, row → X register.
 
 `print at col, row` combines cursor positioning and printing in one statement:
 
 ```basic
 print at 20, 10, "HELLO"          # move to col 20, row 10, then print
 print at x, y, "Score:", score    # any mix of exprs — same as print, but positioned
-print at 0, 0                     # move cursor only (no text, but still emits newline)
+print at 0, 0                     # move cursor only (no text, no newline)
 ```
 
+`print at` does **not** emit a trailing newline — the cursor is left at the end of the printed text.
+This avoids accidental screen scroll when printing at row 24 (the last visible row).
 `print col, row, "text"` without `at` still prints col and row **as values** (existing behaviour).
 
 ### Input
@@ -1055,7 +1060,8 @@ var n = str_to_int("42") # compile-time: Expr::Number(42)
 | `$E566` | KERNAL HOME (cursor reset) |
 | `$FFD2` | KERNAL CHROUT (output character) |
 | `$FFE4` | KERNAL GETIN (read key, no wait) |
-| `$FFF3` | KERNAL PLOT (get/set cursor position) |
+| `$FFF0` | KERNAL PLOT (get/set cursor position; C=0=SET, C=1=READ) |
+| `$FFF3` | KERNAL IOBASE (returns CIA1 base address $DC00 in X/Y) |
 
 ---
 

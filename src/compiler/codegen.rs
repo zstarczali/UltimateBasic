@@ -4838,7 +4838,8 @@ impl Codegen {
                 if !no_newline { self.print_newline(); }
             }
             Stmt::PrintAt { col, row, args } => {
-                // Cursor positioning (same as Stmt::Cursor): KERNAL PLOT $FFF0, carry set
+                // Cursor positioning: KERNAL PLOT $FFF0, carry CLEAR = set position
+                // (carry SET = read position — opposite! see tab() for reference)
                 let col = col.clone();
                 let row = row.clone();
                 let args = args.clone();
@@ -4848,13 +4849,14 @@ impl Codegen {
                 self.eval_expr(&col);
                 self.emit(0xA8);                      // TAY (col → Y)
                 self.emit(0xA6); self.emit(row_zp);  // LDX row_zp (row → X)
-                self.emit(0x38);                      // SEC
+                self.emit(0x18);                      // CLC (carry=0 → set cursor)
                 self.emit(0x20); self.emit16(0xFFF0); // JSR $FFF0 (KERNAL PLOT)
                 // Print arguments
                 for arg in &args {
                     self.print_single_arg(arg);
                 }
-                self.print_newline();
+                // No trailing newline — cursor stays at end of printed text.
+                // print at positions explicitly; newline at row 24 would scroll the screen.
             }
             Stmt::If(cond, then_body, else_body) => {
                 self.eval_expr(cond);
@@ -6159,6 +6161,38 @@ impl Codegen {
                     self.patch_bxx(bne_outer + 1, self.load_addr + outer_top as u16);
                 }
             }
+            Stmt::Delay(expr) => {
+                // delay N — busy-wait N PAL frames (50 Hz); uses raster line 200 ($C8)
+                // Algorithm:
+                //   eval N → A; if 0 skip; STA fc
+                //   outer: LDA $D012; CMP #$C8; BNE outer   (wait for line 200)
+                //   leave: LDA $D012; CMP #$C8; BEQ leave   (wait to leave line 200)
+                //          DEC fc; BNE outer
+                let expr = expr.clone();
+                let fc = self.tmp_zp; self.tmp_zp += 1;
+                self.eval_expr(&expr);
+                let beq_done = self.code.len();
+                self.emit(0xF0); self.emit(0x00);           // BEQ done (N=0 skip, patched)
+                self.emit(0x85); self.emit(fc);             // STA fc
+                let outer_top = self.code.len();
+                self.emit(0xAD); self.emit(0x12); self.emit(0xD0); // LDA $D012
+                self.emit(0xC9); self.emit(0xC8);           // CMP #$C8 (line 200)
+                let bne_outer = self.code.len();
+                self.emit(0xD0); self.emit(0x00);           // BNE outer_top (patched)
+                let leave_top = self.code.len();
+                self.emit(0xAD); self.emit(0x12); self.emit(0xD0); // LDA $D012
+                self.emit(0xC9); self.emit(0xC8);           // CMP #$C8
+                let beq_leave = self.code.len();
+                self.emit(0xF0); self.emit(0x00);           // BEQ leave_top (patched)
+                self.emit(0xC6); self.emit(fc);             // DEC fc
+                let bne_next = self.code.len();
+                self.emit(0xD0); self.emit(0x00);           // BNE outer_top (patched)
+                let done_addr = self.current_addr();
+                self.patch_bxx(beq_done  + 1, done_addr);
+                self.patch_bxx(bne_outer + 1, self.load_addr + outer_top as u16);
+                self.patch_bxx(beq_leave + 1, self.load_addr + leave_top as u16);
+                self.patch_bxx(bne_next  + 1, self.load_addr + outer_top as u16);
+            }
             Stmt::Sound { channel, freq, duration } => {
                 let channel  = channel.clone();
                 let freq     = freq.clone();
@@ -6532,7 +6566,7 @@ impl Codegen {
                 }
             }
             Stmt::Cursor { x, y } => {
-                // KERNAL PLOT ($FFF0): X = row (0-24), Y = col (0-39), carry set
+                // KERNAL PLOT ($FFF0): carry CLEAR = set position (X=row, Y=col)
                 // cursor x, y → col=x, row=y
                 let x = x.clone();
                 let y = y.clone();
@@ -6542,7 +6576,7 @@ impl Codegen {
                 self.eval_expr(&x);                  // evaluate col → A
                 self.emit(0xA8);                      // TAY (col → Y)
                 self.emit(0xA6); self.emit(row_zp);  // LDX row_zp (row → X)
-                self.emit(0x38);                      // SEC (carry=1 → set cursor)
+                self.emit(0x18);                      // CLC (carry=0 → set cursor)
                 self.emit(0x20); self.emit16(0xFFF0); // JSR $FFF0 (KERNAL PLOT)
             }
             Stmt::RepeatLoop(body, cond) => {

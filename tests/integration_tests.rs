@@ -1884,9 +1884,9 @@ fn print_at_positions_cursor_then_prints() {
     // Must call KERNAL PLOT: JSR $FFF0 = $20 $F0 $FF
     assert!(res.prg.windows(3).any(|w| w == [0x20, 0xF0, 0xFF]),
         "print at should emit JSR $FFF0 (KERNAL PLOT)");
-    // SEC = $38 must appear before the JSR $FFF0
+    // CLC = $18 must appear before the JSR $FFF0 (C=0 = SET cursor per KERNAL reference)
     let plot_pos = res.prg.windows(3).position(|w| w == [0x20, 0xF0, 0xFF]).unwrap();
-    assert!(res.prg[..plot_pos].contains(&0x38), "print at should set carry (SEC) before PLOT");
+    assert!(res.prg[..plot_pos].contains(&0x18), "print at should clear carry (CLC) before PLOT");
     // Must also call CHROUT: JSR $FFD2 = $20 $D2 $FF (for the string)
     assert!(res.prg.windows(3).any(|w| w == [0x20, 0xD2, 0xFF]),
         "print at should emit JSR $FFD2 (KERNAL CHROUT) for string output");
@@ -2655,13 +2655,13 @@ fn cursor_emits_kernal_plot() {
 
 #[test]
 fn cursor_emits_sec_before_plot() {
-    // SEC ($38) must appear before JSR $FFF0 to set cursor position mode
+    // CLC ($18) must appear before JSR $FFF0 to set cursor position (C=0 = SET per KERNAL ref)
     let prg = compile_raw("cursor 0, 0\n");
     let bytes = &prg[2..];
     let plot_pos = bytes.windows(3).position(|w| w == &[0x20, 0xF0, 0xFF]);
     assert!(plot_pos.is_some(), "cursor: JSR $FFF0 missing");
     let pos = plot_pos.unwrap();
-    assert!(bytes[..pos].contains(&0x38), "cursor: SEC must appear before JSR $FFF0");
+    assert!(bytes[..pos].contains(&0x18), "cursor: CLC must appear before JSR $FFF0");
 }
 
 #[test]

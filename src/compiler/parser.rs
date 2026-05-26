@@ -1158,6 +1158,12 @@ impl Parser {
                 self.expect_newline();
                 Some(Stmt::Wait { raster_target, value })
             }
+            Token::Delay => {
+                self.advance();
+                let value = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::Delay(value))
+            }
             Token::Sound => {
                 self.advance();
                 let channel = self.parse_expr();
