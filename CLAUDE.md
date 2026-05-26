@@ -7,9 +7,9 @@ A custom BASIC-like language compiler targeting the Commodore 64 and Commodore 6
 ```bash
 cargo build --release
 cargo test
-ultimate-basic build demo.ub -o demo.prg
-ultimate-basic build demo.ub --d64 disk.d64
-ultimate-basic build demo.ub --d64          # auto: demo.d64
+ub build demo.ub -o demo.prg
+ub build demo.ub --d64 disk.d64
+ub build demo.ub --d64          # auto: demo.d64
 ```
 
 ## Project Structure
@@ -1062,7 +1062,7 @@ var n = str_to_int("42") # compile-time: Expr::Number(42)
 ## CLI Reference
 
 ```
-ultimate-basic build <input.ub> [OPTIONS]
+ub build <input.ub> [OPTIONS]
 
   -o, --output <file>   Output .prg file (default: <input>.prg)
   -v, --verbose         Show full ZP layout + code hex dump after build
