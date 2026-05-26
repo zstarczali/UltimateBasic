@@ -3,6 +3,8 @@
 A modern BASIC-like language that compiles directly to 6502 machine code for the
 Commodore 64. Output: `.prg` files (VICE or real hardware) and `.d64` disk images.
 
+© 2026 Zsolt Tarczali
+
 ## Quick start
 
 ```bash
