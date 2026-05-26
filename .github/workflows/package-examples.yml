@@ -1,5 +1,8 @@
 name: Build and Publish UltimateBasic64
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 on:
   workflow_dispatch:
   push:
@@ -23,7 +26,7 @@ jobs:
         include:
           - id: windows-x64
             label: Windows x64
-            runner: windows-latest
+            runner: windows-2025-vs2026
             binary_name: ub.exe
           - id: windows-arm64
             label: Windows ARM64
@@ -56,7 +59,7 @@ jobs:
         shell: pwsh
         run: |
           $stagingDir = Join-Path $env:RUNNER_TEMP "ultimate-examples"
-          $archiveName = "ultimate-basic-examples-${{ matrix.id }}.zip"
+          $archiveName = "ultimate-basic-${{ matrix.id }}.zip"
           $archivePath = Join-Path $env:RUNNER_TEMP $archiveName
           $binaryPath = Join-Path "target/release" "${{ matrix.binary_name }}"
 
