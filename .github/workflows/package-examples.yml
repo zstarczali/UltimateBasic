@@ -1,0 +1,64 @@
+name: Package Examples
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "examples/**"
+      - "README.pdf"
+      - ".github/workflows/package-examples.yml"
+
+jobs:
+  zip-examples:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: windows-x64
+            label: Windows x64
+            runner: windows-latest
+          - id: windows-arm64
+            label: Windows ARM64
+            runner: windows-11-arm
+          - id: macos-x64
+            label: macOS Intel
+            runner: macos-15-intel
+          - id: macos-arm64
+            label: macOS Apple Silicon
+            runner: macos-latest
+
+    name: ${{ matrix.label }} package
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare package contents
+        shell: pwsh
+        run: |
+          $stagingDir = Join-Path $env:RUNNER_TEMP "ultimate-basic-examples"
+          $archiveName = "ultimate-basic-examples-${{ matrix.id }}.zip"
+          $archivePath = Join-Path $env:RUNNER_TEMP $archiveName
+
+          if (Test-Path $stagingDir) {
+            Remove-Item $stagingDir -Recurse -Force
+          }
+
+          if (Test-Path $archivePath) {
+            Remove-Item $archivePath -Force
+          }
+
+          New-Item -ItemType Directory -Path $stagingDir | Out-Null
+          Copy-Item -Path "examples" -Destination $stagingDir -Recurse
+          Copy-Item -Path "README.pdf" -Destination $stagingDir
+          Compress-Archive -Path (Join-Path $stagingDir "*") -DestinationPath $archivePath
+
+      - name: Upload ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ultimate-basic-examples-${{ matrix.id }}
+          path: ${{ runner.temp }}/ultimate-basic-examples-${{ matrix.id }}.zip
+          if-no-files-found: error
