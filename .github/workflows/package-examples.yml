@@ -1,4 +1,4 @@
-name: Create UltimateBasic
+name: Build and Publish UltimateBasic64
 
 on:
   workflow_dispatch:
@@ -55,7 +55,7 @@ jobs:
       - name: Prepare package contents
         shell: pwsh
         run: |
-          $stagingDir = Join-Path $env:RUNNER_TEMP "ultimate-basic-examples"
+          $stagingDir = Join-Path $env:RUNNER_TEMP "ultimate-examples"
           $archiveName = "ultimate-basic-examples-${{ matrix.id }}.zip"
           $archivePath = Join-Path $env:RUNNER_TEMP $archiveName
           $binaryPath = Join-Path "target/release" "${{ matrix.binary_name }}"
@@ -77,6 +77,6 @@ jobs:
       - name: Upload ZIP artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ultimate-basic-examples-${{ matrix.id }}
-          path: ${{ runner.temp }}/ultimate-basic-examples-${{ matrix.id }}.zip
+          name: ultimate-basic-${{ matrix.id }}
+          path: ${{ runner.temp }}/ultimate-basic-${{ matrix.id }}.zip
           if-no-files-found: error
