@@ -8,7 +8,7 @@
 # Controls:  any key = exit
 #
 # Build:
-#   ultimate-basic build examples/sid_music_demo.ub -o examples/sid_music_demo.prg
+#   ub build examples/sid_music_demo.ub -o examples/sid_music_demo.prg
 
 # ── Embed the SID file ────────────────────────────────────────────────────────
 # sid_init = init routine address (JSR with A = song number 0-based)

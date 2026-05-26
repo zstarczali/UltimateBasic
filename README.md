@@ -9,13 +9,13 @@ Commodore 64. Output: `.prg` files (VICE or real hardware) and `.d64` disk image
 cargo build --release
 
 # Compile to .prg (memory map printed on success)
-ultimate-basic build demo.ub -o demo.prg
+ub build demo.ub -o demo.prg
 
 # Verbose: also prints zero-page layout and hex dump
-ultimate-basic build demo.ub -v
+ub build demo.ub -v
 
 # Compile + create .d64 disk image
-ultimate-basic build demo.ub --d64 disk.d64
+ub build demo.ub --d64 disk.d64
 ```
 
 ## Language reference
@@ -855,7 +855,7 @@ scratch (reset per statement), `$FB` RNG seed.
 ## CLI reference
 
 ```
-ultimate-basic build <input.ub> [OPTIONS]
+ub build <input.ub> [OPTIONS]
 
   -o, --output <file>   Output .prg file (default: <input>.prg)
   -v, --verbose         Show zero-page layout and code hex dump
@@ -891,7 +891,7 @@ With `-v` the output additionally shows the internal ZP allocations and a full h
 ## Building
 
 ```bash
-cargo build --release    # binary: target/release/ultimate-basic
+cargo build --release    # binary: target/release/ub
 cargo test               # unit + integration tests
 ```
 

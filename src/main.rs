@@ -2,8 +2,8 @@
 // Compiles .ub files to .prg / .d64
 //
 // Usage:
-//   ultimate-basic build <input.ub> [--output <out.prg>] [--no-stub] [--d64 <disk.d64>]
-//   ultimate-basic --help
+//   ub build <input.ub> [--output <out.prg>] [--no-stub] [--d64 <disk.d64>]
+//   ub --help
 
 use std::env;
 use std::fs;
@@ -28,7 +28,7 @@ fn print_help() {
     println!("Commodore Ultimate Basic – C64 BASIC compiler");
     println!();
     println!("Usage:");
-    println!("  ultimate-basic build <input.ub> [OPTIONS]");
+    println!("  ub build <input.ub> [OPTIONS]");
     println!();
     println!("Options:");
     println!("  -o, --output <file>   Output .prg file (default: <input>.prg)");
@@ -38,7 +38,7 @@ fn print_help() {
     println!("  -h, --help             Show this help");
     println!();
     println!("Example:");
-    println!("  ultimate-basic build demo.ub -o demo.prg --d64 disk.d64");
+    println!("  ub build demo.ub -o demo.prg --d64 disk.d64");
 }
 
 fn cmd_build(args: &[String]) {
@@ -72,7 +72,7 @@ fn cmd_build(args: &[String]) {
 
     let input = input.unwrap_or_else(|| {
         eprintln!("Error: no input file specified.");
-        eprintln!("Usage: ultimate-basic build <input.ub> [OPTIONS]");
+        eprintln!("Usage: ub build <input.ub> [OPTIONS]");
         process::exit(1);
     });
 

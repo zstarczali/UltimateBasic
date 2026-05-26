@@ -1,11 +1,11 @@
 ############################################################################################
 ##                                                                                        ##
 ##    Ultimate BASIC (c) - a modern, self-hosting BASIC compiler for the Commodore 64     ##
-##      tenprint.ub                                                                       ##
+##                                                                                        ##
+##    tenprint.ub — 5 implementations of the classic TENPRINT maze; choose at startup     ##
 ##                                                                                        ##
 ############################################################################################
 
-# tenprint.ub — 5 implementations of the classic TENPRINT maze; choose at startup
 
 
 label menu_start
