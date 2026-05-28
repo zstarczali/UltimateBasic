@@ -18,6 +18,9 @@ ub build demo.ub -v
 
 # Compile + create .d64 disk image
 ub build demo.ub --d64 disk.d64
+
+# Compile + create .d64 with extra files embedded
+ub build demo.ub --d64 disk.d64 --add music.prg --add loader.prg
 ```
 
 ## Language reference
@@ -868,8 +871,14 @@ ub build <input.ub> [OPTIONS]
   --no-stub             Skip the BASIC SYS stub (code loads at $0801)
   --d64 [file]          Also produce a .d64 disk image;
                           without a filename defaults to <output>.d64
+  --add <file>          Add an extra file to the .d64 disk image;
+                          may be repeated for multiple files
   -h, --help            Show help
 ```
+
+`--add` requires `--d64`. The compiled `.ub` program is always the first file on the
+disk; each `--add` file is appended after it. File names on the disk are derived from
+the source file stem, uppercased (e.g. `music.prg` → `MUSIC`).
 
 After a successful build the compiler always prints a memory map:
 

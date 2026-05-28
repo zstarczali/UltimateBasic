@@ -10,6 +10,7 @@ cargo test
 ub build demo.ub -o demo.prg
 ub build demo.ub --d64 disk.d64
 ub build demo.ub --d64          # auto: demo.d64
+ub build demo.ub --d64 disk.d64 --add music.prg --add loader.prg
 ```
 
 ## Project Structure
@@ -1075,6 +1076,8 @@ ub build <input.ub> [OPTIONS]
   --no-stub             Skip the BASIC SYS stub (code loads at $0801)
   --d64 [file]          Also produce a .d64 disk image;
                           without a filename defaults to <output>.d64
+  --add <file>          Add an extra file to the .d64 disk image;
+                          may be repeated for multiple files
   -h, --help            Show help
 ```
 
