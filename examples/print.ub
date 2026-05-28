@@ -1,6 +1,0 @@
-cls fast
-
-print at 7, 10, "   A "
-print at 7, 12, "   B "
-
-

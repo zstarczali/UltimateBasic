@@ -6,6 +6,7 @@ gcls
 
 color bg     0
 color border 0
+color text  14
 
 # Top and bottom border lines  (x: 0..199)
 for x = 0 to 199
@@ -28,6 +29,7 @@ next
 for i = 0 to 199
   plot 199 - i, i
 next
+display on
 
 # Wait for keypress, restore text mode and return cleanly to BASIC
 var k = getch()

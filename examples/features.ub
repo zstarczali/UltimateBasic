@@ -2,15 +2,15 @@
 # const, label/goto, poke/peek, rnd, abs, min, max, sgn
 
 # Konstansok
-const BORDER = $D020
-const BG = $D021
-const RASTER = $D012
+const _BORDER = $D020
+const _BG = $D021
+const _RASTER = $D012
 
 # Valtozok
 var x = 20
 var y = 12
 var score = 0
-var color = 1
+var _color = 1
 var dx = 0
 var dy = 0
 var sg = 0
@@ -45,35 +45,35 @@ label main_loop
   # SPACE = pontszerzes + random szin
   if key == 32 then
     score = score + rnd()
-    color = rnd()
-    color = color and 15
-    poke BORDER, color
-    print "  PONT: ", score, "  SZIN: ", color
+    _color = rnd()
+    _color = _color and 15
+    poke _BORDER, _color
+    print "  PONT: ", score, "  SZIN: ", _color
   end
 
   # Szam billentyuk: hatter szin
   if key == 49 then
-    poke BG, 0
+    poke _BG, 0
     print "  HATTER: fekete"
   end
 
   if key == 50 then
-    poke BG, 1
+    poke _BG, 1
     print "  HATTER: feher"
   end
 
   if key == 51 then
-    poke BG, 2
+    poke _BG, 2
     print "  HATTER: piros"
   end
 
   if key == 52 then
-    poke BG, 6
+    poke _BG, 6
     print "  HATTER: kek"
   end
 
   if key == 53 then
-    poke BG, 5
+    poke _BG, 5
     print "  HATTER: zold"
   end
 

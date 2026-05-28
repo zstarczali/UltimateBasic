@@ -34,11 +34,13 @@ fn print_help() {
     println!("  -o, --output <file>   Output .prg file (default: <input>.prg)");
     println!("  -v, --verbose         Show full ZP layout and code hex dump");
     println!("  --no-stub              Omit BASIC SYS stub (raw machine code at $0801)");
-    println!("  --d64 <file>           Also produce a .d64 disk image");
+    println!("  --d64 [file]           Also produce a .d64 disk image (default: <output>.d64)");
+    println!("  --add <file>           Add extra file(s) to the .d64 image (repeatable)");
     println!("  -h, --help             Show this help");
     println!();
-    println!("Example:");
+    println!("Examples:");
     println!("  ub build demo.ub -o demo.prg --d64 disk.d64");
+    println!("  ub build game.ub --d64 --add music.prg --add levels.prg");
 }
 
 fn cmd_build(args: &[String]) {
@@ -47,6 +49,7 @@ fn cmd_build(args: &[String]) {
     let mut basic_stub = true;
     let mut verbose = false;
     let mut d64_out: Option<PathBuf> = None;
+    let mut extra_files: Vec<PathBuf> = Vec::new();
 
     let mut i = 2;
     while i < args.len() {
@@ -62,6 +65,15 @@ fn cmd_build(args: &[String]) {
                     d64_out = Some(PathBuf::from(&args[i]));
                 } else {
                     d64_out = Some(PathBuf::new()); // sentinel: resolved below
+                }
+            }
+            "--add" => {
+                i += 1;
+                if i < args.len() {
+                    extra_files.push(PathBuf::from(&args[i]));
+                } else {
+                    eprintln!("Error: --add requires a file argument");
+                    process::exit(1);
                 }
             }
             a if !a.starts_with('-') && input.is_none() => input = Some(a.to_string().into()),
@@ -119,7 +131,26 @@ fn cmd_build(args: &[String]) {
         } else {
             d64_path
         };
-        make_d64(&d64_final, "ULTIMATE BASIC", &result.prg);
+        let prog_name = output_path.file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_uppercase();
+        let mut d64_files: Vec<(String, Vec<u8>)> = vec![(prog_name, result.prg.clone())];
+        for f in &extra_files {
+            match fs::read(f) {
+                Ok(data) => {
+                    let name = f.file_stem()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_uppercase();
+                    d64_files.push((name, data));
+                }
+                Err(e) => eprintln!("Warning: --add {}: {e}", f.display()),
+            }
+        }
+        let refs: Vec<(&str, &[u8])> =
+            d64_files.iter().map(|(n, d)| (n.as_str(), d.as_slice())).collect();
+        make_d64(&d64_final, "ULTIMATE BASIC", &refs);
     }
 }
 
@@ -204,64 +235,155 @@ fn print_hex_dump(start_addr: u16, bytes: &[u8]) {
     }
 }
 
-/// Minimal D64 disk image with a single PRG file.
-fn make_d64(path: &PathBuf, _label: &str, prg: &[u8]) {
-    let total_blocks = 683;
-    let bytes_per_block = 256;
-    let mut disk = vec![0u8; total_blocks * bytes_per_block];
-
-    // BAM: track 18, sector 0
-    let bam_off = (18 - 1) * 21 * bytes_per_block;
-    disk[bam_off] = 18;     // directory track
-    disk[bam_off + 1] = 1;  // directory sector
-    disk[bam_off + 2] = 0x41; // 'A' DOS version
-
-    // Fill BAM: track 1-17 (21 sectors), 18 (19 sectors with dir), 19+ free
-    for t in 0..17 {
-        let p = bam_off + 144 + t * 4;
-        disk[p] = 21; disk[p+1] = 0xFF; disk[p+2] = 0xFF; disk[p+3] = 0x1F;
+/// Build a D64 disk image containing one or more PRG files.
+/// `files` is a list of (display_name, raw_bytes) pairs.
+fn make_d64(path: &PathBuf, disk_name: &str, files: &[(&str, &[u8])]) {
+    // Sectors per track for a standard 1541 disk
+    fn sectors_for_track(t: usize) -> usize {
+        match t {
+            1..=17  => 21,
+            18..=24 => 19,
+            25..=30 => 18,
+            _       => 17, // 31..=35
+        }
     }
+    // Byte offset of sector s (0-based) on track t (1-based) in the D64 image
+    fn sec_off(t: usize, s: usize) -> usize {
+        let mut off = 0usize;
+        for i in 1..t { off += sectors_for_track(i); }
+        (off + s) * 256
+    }
+
+    // Standard 35-track 1541: 683 sectors, 174 848 bytes total
+    let mut disk = vec![0u8; 683 * 256];
+
+    // === Allocate data sectors for each file (track 17 down to 1) ===
+    let mut alloc_track = 17usize;
+    let mut alloc_sec   = 0usize;
+    let mut file_sectors: Vec<Vec<(usize, usize)>> = Vec::new();
+    for (_name, data) in files.iter() {
+        let n_secs = ((data.len() + 253) / 254).max(1);
+        let mut dsec: Vec<(usize, usize)> = Vec::with_capacity(n_secs);
+        for _ in 0..n_secs {
+            dsec.push((alloc_track, alloc_sec));
+            alloc_sec += 1;
+            if alloc_sec >= sectors_for_track(alloc_track) {
+                alloc_sec = 0;
+                if alloc_track > 1 { alloc_track -= 1; }
+                else { eprintln!("D64 error: disk full"); break; }
+            }
+        }
+        file_sectors.push(dsec);
+    }
+
+    // === Write file data into allocated sectors ===
+    for (fi, (_name, data)) in files.iter().enumerate() {
+        let dsec = &file_sectors[fi];
+        let n_secs = dsec.len();
+        let mut po = 0usize;
+        for (i, &(t, s)) in dsec.iter().enumerate() {
+            let o = sec_off(t, s);
+            if i + 1 < n_secs {
+                let (nt, ns) = dsec[i + 1];
+                disk[o    ] = nt as u8;
+                disk[o + 1] = ns as u8;
+                disk[o + 2..o + 256].copy_from_slice(&data[po..po + 254]);
+                po += 254;
+            } else {
+                let n = data.len() - po;
+                disk[o    ] = 0;
+                disk[o + 1] = (n + 1) as u8; // 1-based offset of last data byte
+                disk[o + 2..o + 2 + n].copy_from_slice(&data[po..]);
+            }
+        }
+    }
+
+    // === BAM block: track 18, sector 0 ===
+    // [0]=dir track, [1]=dir sector, [2]=DOS ver,
+    // [4..8F]=BAM entries (4 bytes each for tracks 1-35),
+    // [90..9F]=disk name, [A0..A4]=disk ID + DOS type
+    let bam = sec_off(18, 0);
+    disk[bam    ] = 18;    // first dir track
+    disk[bam + 1] = 1;     // first dir sector
+    disk[bam + 2] = 0x41;  // DOS version 'A'
+
+    // BAM entries — all-free initially
+    for t in 1usize..=35 {
+        let nsec = sectors_for_track(t) as u8;
+        let (b1, b2, b3): (u8, u8, u8) = match nsec {
+            21 => (0xFF, 0xFF, 0x1F),
+            19 => (0xFF, 0xFF, 0x07),
+            18 => (0xFF, 0xFF, 0x03),
+            _  => (0xFF, 0xFF, 0x01), // 17
+        };
+        let p = bam + 4 + (t - 1) * 4;
+        disk[p    ] = nsec;
+        disk[p + 1] = b1;
+        disk[p + 2] = b2;
+        disk[p + 3] = b3;
+    }
+
+    // Number of directory sectors needed on track 18 (8 entries per sector)
+    let n_dir_secs = ((files.len() + 7) / 8).max(1);
+
+    // Mark track 18: sector 0 (BAM) + sectors 1..=n_dir_secs (directory) used
     {
-        let p = bam_off + 144 + 17 * 4;
-        disk[p] = 19; disk[p+1] = 0xFC; disk[p+2] = 0xFF; disk[p+3] = 0x07;
+        let used = 1 + n_dir_secs;
+        let p = bam + 4 + 17 * 4; // track 18 BAM entry
+        disk[p] -= used as u8;
+        for s in 0..used {
+            disk[p + 1 + s / 8] &= !(1u8 << (s % 8));
+        }
     }
-    for t in 18..35 {
-        let p = bam_off + 144 + t * 4;
-        let n = if t < 24 { 19 } else if t < 30 { 18 } else { 17 };
-        let mask = if t < 24 { 0x07 } else if t < 30 { 0x03 } else { 0x01 };
-        disk[p] = n; disk[p+1] = 0xFF; disk[p+2] = 0xFF; disk[p+3] = mask;
-    }
-
-    // Directory: track 18, sector 1
-    let dir_off = (18 - 1) * 21 * bytes_per_block + bytes_per_block;
-    let sectors = ((prg.len() + 253) / 254).max(1);
-
-    disk[dir_off] = 0x82;      // PRG, closed
-    disk[dir_off + 1] = 17;    // first track
-    disk[dir_off + 2] = 0;     // first sector
-    let name = b"DEMO";
-    for (i, &b) in name.iter().enumerate() { disk[dir_off + 3 + i] = b; }
-    for i in name.len()..16 { disk[dir_off + 3 + i] = 0xA0; }
-    disk[dir_off + 28] = sectors as u8;
-    disk[dir_off + 29] = (sectors >> 8) as u8;
-
-    // Write PRG data starting at track 17, sector 0
-    const SEC_PER_TRACK: usize = 21;
-    let _data_off = (17 - 1) * SEC_PER_TRACK * bytes_per_block;
-    let mut po = 0usize;
-    for s in 0..sectors {
-        let track: usize = if s < SEC_PER_TRACK { 17 } else { 16 };
-        let sector: usize = if s < SEC_PER_TRACK { s } else { s - SEC_PER_TRACK };
-        let so = (track - 1) * SEC_PER_TRACK * bytes_per_block + sector * bytes_per_block;
-
-        disk[so] = if s + 1 < sectors { track as u8 } else { 0 };
-        disk[so + 1] = if s + 1 < sectors { (sector + 1) as u8 } else { 0 };
-
-        let n = (prg.len() - po).min(254);
-        disk[so + 2..so + 2 + n].copy_from_slice(&prg[po..po + n]);
-        po += n;
+    // Mark all file data sectors as used
+    for dsec in &file_sectors {
+        for &(t, s) in dsec {
+            let p = bam + 4 + (t - 1) * 4;
+            disk[p    ] -= 1;
+            disk[p + 1 + s / 8] &= !(1u8 << (s % 8));
+        }
     }
 
-    fs::write(path, &disk).unwrap_or_else(|e| eprintln!("D64: {e}"));
-    println!("  D64  -> {}", path.display());
+    // Disk name (16 bytes, padded 0xA0) at bam+0x90
+    let dn: Vec<u8> = disk_name.bytes().take(16).map(|b| b.to_ascii_uppercase()).collect();
+    for i in 0..16 { disk[bam + 0x90 + i] = dn.get(i).copied().unwrap_or(0xA0); }
+    disk[bam + 0xA0] = b'U';  // disk ID
+    disk[bam + 0xA1] = b'B';
+    disk[bam + 0xA2] = 0xA0;
+    disk[bam + 0xA3] = 0x32;  // '2'
+    disk[bam + 0xA4] = 0x41;  // 'A'
+    for i in 5..=10usize { disk[bam + 0xA0 + i] = 0xA0; }
+
+    // === Directory sectors: track 18, sectors 1 … n_dir_secs ===
+    // Each sector: bytes 0-1 = chain link, then 8 x 30-byte entries
+    for ds in 0..n_dir_secs {
+        let dir = sec_off(18, ds + 1);
+        if ds + 1 < n_dir_secs {
+            disk[dir    ] = 18;
+            disk[dir + 1] = (ds + 2) as u8;
+        } else {
+            disk[dir    ] = 0;
+            disk[dir + 1] = 0xFF;
+        }
+        for ei in 0..8usize {
+            let fi = ds * 8 + ei;
+            if fi >= files.len() { break; }
+            let (name, _data) = &files[fi];
+            let dsec = &file_sectors[fi];
+            let n_secs = dsec.len();
+            let de = dir + 2 + ei * 30;
+            disk[de    ] = 0x82;              // PRG, closed
+            disk[de + 1] = dsec[0].0 as u8;  // first data track
+            disk[de + 2] = dsec[0].1 as u8;  // first data sector
+            let pn: Vec<u8> = name.bytes().take(16)
+                .map(|b| b.to_ascii_uppercase()).collect();
+            for i in 0..16 { disk[de + 3 + i] = pn.get(i).copied().unwrap_or(0xA0); }
+            disk[de + 28] = n_secs as u8;
+            disk[de + 29] = (n_secs >> 8) as u8;
+        }
+    }
+
+    fs::write(path, &disk).unwrap_or_else(|e| eprintln!("D64 write error: {e}"));
+    println!("  D64  -> {} ({} file{})",
+        path.display(), files.len(), if files.len() == 1 { "" } else { "s" });
 }

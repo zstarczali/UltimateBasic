@@ -50,17 +50,17 @@ poke $07FD, pg
 poke $07FE, pg
 poke $07FF, pg
 
-poke $D010, 0   ; all X MSBs = 0  (all sprites X < 256)
+poke $D010, 0   # all X MSBs = 0  (all sprites X < 256)
 
 # ── sprite colours (each sprite keeps its colour across all 3 rings) ─────────
-sprite color 0, 1   ; white
-sprite color 1, 10  ; light red
-sprite color 2, 3   ; cyan
-sprite color 3, 4   ; purple
-sprite color 4, 5   ; green
-sprite color 5, 6   ; blue
-sprite color 6, 7   ; yellow
-sprite color 7, 14  ; light blue
+sprite color 0, 1   # white
+sprite color 1, 10  # light red
+sprite color 2, 3   # cyan
+sprite color 3, 4   # purple
+sprite color 4, 5   # green
+sprite color 5, 6   # blue
+sprite color 6, 7   # yellow
+sprite color 7, 14  # light blue
 
 sprite on 0
 sprite on 1
