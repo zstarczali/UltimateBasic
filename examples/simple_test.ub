@@ -36,9 +36,9 @@ var name=""
 print "hello"
 print "world"
 
-input "Mi a neved? ", name: print
-print "viszlat, " + name
+input "what's your name? ", name: print
+print "goodbye, " + name
 print
 
-label tenprint
-print chr$(205.5+rnd(2)); : goto tenprint
+rem label tenprint
+rem print chr$(205.5+rnd(2)); : goto tenprint

@@ -14,7 +14,7 @@
 # Q = quit
 
 
-inlude "sprite_data.ub"
+include "sprite_data.ub"
 
 # ── sprite shape: filled lozenge / ball (21 rows × 3 bytes = 63 bytes) ─────
 sprdef 0
