@@ -43,6 +43,8 @@ pub enum Token {
     And,
     Or,
     Not,
+    Bnot,   // bnot x — bitwise NOT: x XOR 255 (complement all bits)
+    Clamp,  // clamp(val, lo, hi) — clamp val to [lo, hi] range
     Xor,
     Shl,
     Shr,
@@ -53,7 +55,22 @@ pub enum Token {
     Sprite,      // sprite id, x, y [, data_addr] / sprite on/off/color/multi
     SpriteHit,   // sprhit()   — $D01E sprite-sprite collision
     SpriteBgHit, // sprbghit() — $D01F sprite-background collision
+    SpriteX,     // sprite_x(id) — read sprite X position ($D000 + id*2)
+    SpriteY,     // sprite_y(id) — read sprite Y position ($D001 + id*2)
+    SpriteFrame, // sprite_frame id, addr — update sprite pointer $07F8+id = addr>>6
+    Times,       // times N ... end — counted loop (N iterations), alias for loop N
     Sprdef,      // sprdef id ... end — align+embed sprite data, init $07F8+id
+    Gosub,       // gosub label — JSR to a label (complement to 'return')
+    Chardef,     // chardef id ... end — inline 8-byte charset definition (VIC char data)
+    Charset,     // charset addr — set charset RAM base address (default $3800)
+    Mplot,       // mplot x, y, color — multicolor bitmap pixel (2-bit color, 160×200)
+    Music,       // music play/stop/pause/resume — SID music control via CIA1 timer IRQ
+    Play,        // play — sub-keyword for music play [song]
+    Stop,        // stop — sub-keyword for music stop
+    Pause,       // pause — sub-keyword for music pause
+    Resume,      // resume — sub-keyword for music resume
+    OnErr,       // onerr goto label — install KERNAL IERROR handler ($0300/$0301)
+    StrN,        // str$(n) — convert 8-bit integer to 3-digit decimal string pointer
     Int,
     Str,
     Float,
@@ -342,6 +359,11 @@ impl Lexer {
             self.advance();
             return Token::Chr;
         }
+        // Special: "str$" — integer to string conversion
+        if sl == "str" && self.peek() == Some('$') {
+            self.advance();
+            return Token::StrN;
+        }
         match sl.as_str() {
             "print" => {
                 // print# (file print) — consume '#' immediately following with no space
@@ -418,6 +440,8 @@ impl Lexer {
             "and"        => Token::And,
             "or"         => Token::Or,
             "not"        => Token::Not,
+            "bnot"       => Token::Bnot,
+            "clamp"      => Token::Clamp,
             "xor"        => Token::Xor,
             "shl"        => Token::Shl,
             "shr"        => Token::Shr,
@@ -493,7 +517,21 @@ impl Lexer {
             "sprite"     => Token::Sprite,
             "sprhit"     => Token::SpriteHit,
             "sprbghit"   => Token::SpriteBgHit,
-            "sprdef"     => Token::Sprdef,
+            "sprite_x"     => Token::SpriteX,
+            "sprite_y"     => Token::SpriteY,
+            "sprite_frame" => Token::SpriteFrame,
+            "times"        => Token::Times,
+            "sprdef"       => Token::Sprdef,
+            "gosub"        => Token::Gosub,
+            "chardef"      => Token::Chardef,
+            "charset"      => Token::Charset,
+            "mplot"        => Token::Mplot,
+            "music"        => Token::Music,
+            "play"         => Token::Play,
+            "stop"         => Token::Stop,
+            "pause"        => Token::Pause,
+            "resume"       => Token::Resume,
+            "onerr"        => Token::OnErr,
             "inc"        => Token::Inc,
             "dec"        => Token::Dec,
             "screen"     => Token::Screen,

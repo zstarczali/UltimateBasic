@@ -600,6 +600,17 @@ impl Parser {
                 let body = self.parse_body();
                 Some(Stmt::WhileLoop(cond, body))
             }
+            Token::Times => {
+                // times N ... end — counted loop (alias for loop N ... end)
+                self.advance();
+                let count = if let Token::Number(n) = self.peek().clone() {
+                    self.advance();
+                    n.clamp(0, 255) as u8
+                } else { 0 };
+                self.expect_newline();
+                let body = self.parse_body();
+                Some(Stmt::Loop(count, body))
+            }
             Token::Break => {
                 self.advance();
                 self.expect_newline();
@@ -720,6 +731,17 @@ impl Parser {
             }
             Token::Color => {
                 self.advance();
+                // color screen col, row, c — write color byte to $D800 + row*40 + col
+                if self.peek() == &Token::Screen {
+                    self.advance(); // consume 'screen'
+                    let col = self.parse_expr();
+                    if self.peek() == &Token::Comma { self.advance(); }
+                    let row = self.parse_expr();
+                    if self.peek() == &Token::Comma { self.advance(); }
+                    let color = self.parse_expr();
+                    self.expect_newline();
+                    return Some(Stmt::ColorScreen { col, row, color });
+                }
                 let target = match self.peek() {
                     Token::Text   => { self.advance(); ColorTarget::Text   }
                     Token::Border => { self.advance(); ColorTarget::Border }
@@ -785,6 +807,103 @@ impl Parser {
                 let line = self.line;
                 self.expect_newline();
                 Some(Stmt::Goto(name, line))
+            }
+            Token::Gosub => {
+                self.advance();
+                let name = if let Token::Ident(n) = self.advance() { n } else { return None; };
+                let line = self.line;
+                self.expect_newline();
+                Some(Stmt::Gosub(name, line))
+            }
+            Token::Chardef => {
+                self.advance();
+                let id = match self.parse_expr() {
+                    Expr::Number(n) => n as u8,
+                    _ => panic!("chardef: id must be a constant"),
+                };
+                self.expect_newline();
+                // bytes: newline-separated / comma-separated constants until 'end'
+                let mut bytes: Vec<u8> = Vec::new();
+                loop {
+                    while self.peek() == &Token::Newline { self.advance(); }
+                    if self.peek() == &Token::End { self.advance(); break; }
+                    match self.parse_expr() {
+                        Expr::Number(n) => bytes.push(n as u8),
+                        _ => panic!("chardef: byte values must be constants"),
+                    }
+                    if self.peek() == &Token::Comma { self.advance(); }
+                }
+                self.expect_newline();
+                Some(Stmt::Chardef { id, bytes })
+            }
+            Token::Charset => {
+                self.advance();
+                let addr = match self.parse_expr() {
+                    Expr::Number(n) => n as u16,
+                    _ => panic!("charset: address must be a constant"),
+                };
+                self.expect_newline();
+                Some(Stmt::CharsetBase(addr))
+            }
+            Token::SpriteFrame => {
+                self.advance();
+                let id = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let addr = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::SpriteFrame { id, addr })
+            }
+            Token::Mplot => {
+                self.advance();
+                let x = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let y = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let color = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::Mplot { x, y, color })
+            }
+            Token::Music => {
+                self.advance();
+                match self.peek().clone() {
+                    Token::Play => {
+                        self.advance();
+                        let song = match self.peek() {
+                            Token::Newline | Token::Eof => Expr::Number(0),
+                            _ => self.parse_expr(),
+                        };
+                        self.expect_newline();
+                        Some(Stmt::MusicPlay(song))
+                    }
+                    Token::Stop => {
+                        self.advance();
+                        self.expect_newline();
+                        Some(Stmt::MusicStop)
+                    }
+                    Token::Pause => {
+                        self.advance();
+                        self.expect_newline();
+                        Some(Stmt::MusicPause)
+                    }
+                    Token::Resume => {
+                        self.advance();
+                        self.expect_newline();
+                        Some(Stmt::MusicResume)
+                    }
+                    _ => {
+                        self.expect_newline();
+                        None
+                    }
+                }
+            }
+            Token::OnErr => {
+                self.advance();
+                // Optional 'goto' keyword
+                if self.peek() == &Token::Goto { self.advance(); }
+                let name = if let Token::Ident(n) = self.advance() { n } else { return None; };
+                let line = self.line;
+                self.expect_newline();
+                Some(Stmt::OnErrGoto(name, line))
             }
             Token::Poke => {
                 self.advance();
@@ -934,6 +1053,11 @@ impl Parser {
                         self.expect_newline();
                         Some(Stmt::SidStop)
                     }
+                    Token::Stop => {
+                        self.advance();
+                        self.expect_newline();
+                        Some(Stmt::SidStop)
+                    }
                     _ => {
                         self.errors.push("sid: expected 'volume N' or 'stop'".to_string());
                         self.expect_newline();
@@ -1028,6 +1152,20 @@ impl Parser {
             }
             Token::Fill => {
                 self.advance();
+                // fill screen val — fill screen RAM $0400-$07FF with val
+                if self.peek() == &Token::Screen {
+                    self.advance();
+                    let val = self.parse_expr();
+                    self.expect_newline();
+                    return Some(Stmt::FillScreen(val));
+                }
+                // fill color val — fill color RAM $D800-$DBFF with val
+                if self.peek() == &Token::Color {
+                    self.advance();
+                    let val = self.parse_expr();
+                    self.expect_newline();
+                    return Some(Stmt::FillColor(val));
+                }
                 let addr = self.parse_expr();
                 if self.peek() == &Token::Comma { self.advance(); }
                 let len = self.parse_expr();
@@ -1152,6 +1290,14 @@ impl Parser {
             }
             Token::Wait => {
                 self.advance();
+                // wait key — blocking wait until a key is pressed (KERNAL $FFE4 loop)
+                if let Token::Ident(k) = self.peek().clone() {
+                    if k == "key" {
+                        self.advance(); // consume 'key'
+                        self.expect_newline();
+                        return Some(Stmt::WaitGetch);
+                    }
+                }
                 let raster_target = matches!(self.peek(), Token::Raster);
                 if raster_target { self.advance(); } // consume 'raster'
                 let value = self.parse_expr();
@@ -1530,6 +1676,20 @@ impl Parser {
                 if self.peek() == &Token::RParen { self.advance(); }
                 Expr::SpriteBgHit
             }
+            Token::SpriteX => {
+                // sprite_x(id) — read sprite X position: $D000 + id*2
+                if self.peek() == &Token::LParen { self.advance(); }
+                let id = self.parse_expr();
+                if self.peek() == &Token::RParen { self.advance(); }
+                Expr::SpriteX(Box::new(id))
+            }
+            Token::SpriteY => {
+                // sprite_y(id) — read sprite Y position: $D001 + id*2
+                if self.peek() == &Token::LParen { self.advance(); }
+                let id = self.parse_expr();
+                if self.peek() == &Token::RParen { self.advance(); }
+                Expr::SpriteY(Box::new(id))
+            }
             Token::Joy => {
                 if self.peek() == &Token::LParen { self.advance(); } // skip (
                 let port = match self.advance() {
@@ -1604,6 +1764,22 @@ impl Parser {
                 if self.peek() == &Token::RParen { self.advance(); }
                 Expr::Max(Box::new(a), Box::new(b))
             }
+            Token::Bnot => {
+                // bnot x — bitwise NOT: x XOR 255 (complement all 8 bits)
+                let e = self.parse_primary();
+                Expr::BinOp(Box::new(e), BinOp::Xor, Box::new(Expr::Number(255)))
+            }
+            Token::Clamp => {
+                // clamp(val, lo, hi) — clamp val to [lo, hi] range (8-bit unsigned)
+                if self.peek() == &Token::LParen { self.advance(); }
+                let val = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let lo = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let hi = self.parse_expr();
+                if self.peek() == &Token::RParen { self.advance(); }
+                Expr::Clamp(Box::new(val), Box::new(lo), Box::new(hi))
+            }
             Token::Sgn => {
                 if self.peek() == &Token::LParen { self.advance(); }
                 let arg = self.parse_expr();
@@ -1615,6 +1791,12 @@ impl Parser {
                 let arg = self.parse_expr();
                 if self.peek() == &Token::RParen { self.advance(); }
                 Expr::ChrStr(Box::new(arg))
+            }
+            Token::StrN => {
+                if self.peek() == &Token::LParen { self.advance(); }
+                let arg = self.parse_expr();
+                if self.peek() == &Token::RParen { self.advance(); }
+                Expr::StrN(Box::new(arg))
             }
             Token::Sin => {
                 if self.peek() == &Token::LParen { self.advance(); }

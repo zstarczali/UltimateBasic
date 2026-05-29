@@ -123,7 +123,7 @@ checksum = "756daf9b1013ebe47a8776667b466417e2d4c5679d441c26230efd9ef78692db"
 
 [[package]]
 name = "ultimate-basic"
-version = "1.2.0"
+version = "1.4.0"
 dependencies = [
  "winresource",
 ]
