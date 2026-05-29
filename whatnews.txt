@@ -1,0 +1,84 @@
+Ultimate Basic v1.4.0 – Release Notes
+======================================
+
+New language features
+---------------------
+
+Variables & types
+  - float type (Q8.8 fixed-point): var f: float = 3.5 / int(f) / print f ("N.DD")
+  - array_word(N): 16-bit word arrays at $C000+
+  - Compound assignments: and=  or=  xor=  shl=  shr=
+  - Full 16-bit arithmetic on word vars: * / mod shl shr and or xor
+  - inc/dec carry-aware for word variables
+
+Control flow
+  - for/next with optional step and continue
+  - repeat/until (do-while)
+  - select/case/else
+  - gosub label / return
+  - continue / break in all loop types
+
+Print & formatting
+  - spc(n), tab(n) in print
+  - print at col, row, ...  (no trailing newline)
+  - hex(n), bin(n), dec(n, width)
+  - numstr var, addr  (8-bit int → 3-digit decimal string)
+
+Math & string functions
+  - sin(angle), cos(angle)  (0–255 lookup table)
+  - rnd(n)  (rnd() mod n)
+  - min, max, abs, sgn
+  - val(s)  (decimal string → 8-bit int)
+  - s[i]  (string character by index)
+
+Screen & display
+  - screen col, row, char [, color]  (direct screen/color RAM write)
+  - display on / display off  (VIC DEN bit, independent of mode)
+  - scroll x n / scroll y n  (hardware fine-scroll registers)
+  - cursor col, row
+
+Bitmap graphics
+  - graphics on multi  (multicolor bitmap 160×200, 4 colours/cell)
+  - mplot x, y, color  (multicolor pixel; requires graphics on multi)
+  - plot erase, plot xor, line, paint
+
+Sprites & charset
+  - sprite_frame id, addr  (update data pointer at runtime)
+  - sprdef id...end  (inline 63-byte shape + auto pointer; binary literals)
+  - sprite multicolor / expand x/y / priority
+  - charset base / chardef id...end  (custom character definitions)
+
+SID & music
+  - sid volume N / sid stop
+  - load sid "file.sid" [, addr]  (compile-time embed; defines sid_init/sid_play)
+  - music play [N]  (CIA1 timer A 50 Hz IRQ + wrapper; auto-installs handler)
+  - music stop / pause / resume
+
+Interrupts & timing
+  - nmi handler / nmi_exit
+  - cia_timer period, handler
+  - irq_exit  (JMP $EA81)
+  - delay N  (N PAL frames)
+  - wait raster N
+
+Error handling
+  - onerr goto label  (KERNAL I/O error vector $0300/$0301; forward refs OK)
+
+Memory & I/O
+  - peek16 / poke16  (16-bit little-endian)
+  - fill, memcopy, drawmem
+  - reu stash / fetch / swap + reu_present()
+  - load / save / open / close / print# / input
+  - data / read
+
+Ultimate 64
+  - speed N / speed max / speed off
+  - badlines on / off
+  - turbo()
+
+CLI
+---
+  - Binary renamed from ultimate-basic to ub
+  - --d64 [file]  produce .d64 disk image
+  - --add <file>  add extra files to .d64 (repeatable)
+  - -v / --verbose  zero-page layout + hex dump

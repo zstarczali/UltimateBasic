@@ -69,6 +69,7 @@ v = a xor b              # bitwise XOR
 m = x shl 3              # shift left
 n = x shr 2              # shift right
 r = x mod 40             # 8-bit modulo (remainder); SEC/SBC/BCS loop
+b = bnot x               # bitwise NOT: x XOR 255 (complement all 8 bits)
 ```
 
 Comparisons: `==`  `!=`  `<`  `>`  `<=`  `>=`  (return 1/0)
@@ -154,6 +155,10 @@ loop 5               # counted loop (5 iterations)
   print "HI"
 end
 
+times 5              # alias for loop N ... end
+  print "HI"
+end
+
 loop                 # infinite loop
   x = x + 1
   if x == 5 then continue end  # skip to next iteration
@@ -191,6 +196,18 @@ label main_loop
 ```
 
 Forward `goto` (label defined later) is fully supported.
+
+`gosub label` / `return` jump to a label and return back (JSR / RTS at machine code level).
+The label must be a `label name` statement, not a `sub` — it has no parameters and shares the
+same zero-page scope. `gosub` supports forward references (label defined after `gosub`).
+
+```basic
+gosub draw_border
+...
+label draw_border
+  # ... draw something ...
+  return               # RTS — returns to the instruction after gosub
+```
 
 ### Subroutines
 
@@ -251,6 +268,7 @@ plot xor x, y            # toggle pixel (EOR mask) — flicker-free animation
 circle x, y, r           # midpoint circle centered at (x, y) with radius r; clips off-screen points
 line x1, y1, x2, y2      # Bresenham line from (x1,y1) to (x2,y2); x: 0-255, y: 0-199
 paint x, y               # 4-connected flood fill from (x, y); fills clear pixels bounded by set ones
+mplot x, y, color        # set multicolor pixel (x: 0-159, y: 0-199, color: 0-3); requires graphics on multi
 ```
 
 Both `graphics on` variants blank the display (`LDA $D011 / AND #$EF / STA $D011`) while
@@ -327,6 +345,8 @@ On a regular C64 or emulator without the register, the `poke` to `$D031` is sile
 ```basic
 var key = getch()        # busy-wait on $FFE4 until key; returns PETSCII code
 var k   = inkey()        # non-blocking: returns PETSCII code, or 0 if no key pressed
+waitkey                  # wait until any key is pressed (CIA1 matrix scan; works during IRQ)
+var k   = waitkey()      # same but returns raw $DC01 column bits (0 bit = key pressed)
 var j = joy(2)           # read joystick port 2; returns inverted bits 0-4
 var j = joy(1)           # read joystick port 1
                          # bit0=up(1) bit1=down(2) bit2=left(4) bit3=right(8) bit4=fire(16)
@@ -372,6 +392,30 @@ Master volume `$D418` always set to `$0F`.
 `sid volume N` writes N to `$D418`. Bits 0-3 = volume (0-15), bits 4-7 = filter mode.
 `sid stop` emits a 10-byte zero-fill loop — faster than 25 individual pokes.
 
+### Music playback
+
+`music play/stop/pause/resume` is a high-level alternative to the manual `sys sid_init` / `cia_timer` setup.
+Requires a prior `load sid` statement (defines `sid_init` / `sid_play`).
+
+```basic
+load sid "tune.sid"         # embed SID file (defines sid_init / sid_play)
+
+music play                  # initialise sub-tune 0 + start CIA1 50 Hz IRQ
+music play 1                # start from sub-tune 1 (song number 0-based)
+music stop                  # stop playback + zero all 25 SID registers ($D400-$D418)
+music pause                 # disable CIA1 timer A IRQ (music freezes, SID unchanged)
+music resume                # re-enable CIA1 timer A IRQ (continues from pause point)
+```
+
+| Statement | Effect |
+|---|---|
+| `music play [n]` | call `sid_init(n)`, configure CIA1 timer A at 19 656 cycles (~50 Hz PAL), install IRQ wrapper |
+| `music stop` | disable CIA1 IRQ + zero all 25 SID registers |
+| `music pause` | disable CIA1 IRQ (SID output remains frozen) |
+| `music resume` | re-enable CIA1 IRQ (continues from pause point) |
+
+The IRQ wrapper (emitted once at the end of the program) does: ACK CIA1 timer A → `JSR sid_play` → `JMP $EA81`.
+
 ### Sprites
 
 ```basic
@@ -390,6 +434,10 @@ sprite priority 0, on    # behind background ($D01B |= bit0)
 sprite priority 0, off   # in front of background ($D01B &= ~bit0)
 var h = sprite_hit()     # sprite–sprite collision ($D01E, cleared on read)
 var b = sprite_bg_hit()  # sprite–background collision ($D01F, cleared on read)
+var x = sprite_x(0)      # read sprite 0 X position (lo byte, $D000)
+var y = sprite_y(0)      # read sprite 0 Y position ($D001)
+sprite_frame 0, $2000    # set sprite 0 data pointer only: $07F8+id = $2000>>6
+                         # (does NOT change X/Y position)
 ```
 
 X supports full 9-bit range (0–319): use a `word` variable for runtime values > 255.
@@ -417,6 +465,32 @@ var pg = peek($07F8)   # pointer set by sprdef 0
 poke $07F9, pg         # copy to sprites 1–7
 ```
 
+### Custom charset
+
+```basic
+charset $3800            # set base address for chardef (default $3800)
+
+chardef 65               # redefine character 65 ('A')
+  $18,$3C,$66,$7E,$66,$66,$66,$00
+end
+
+chardef 66               # fewer than 8 bytes are zero-padded
+  $7C,$66,$7C,$66,$7C
+end
+```
+
+`charset base` sets the destination address used by all subsequent `chardef` statements.
+`chardef id ... end` embeds 8 bytes inline in the code segment (preceded by a `JMP` to
+skip over them), then copies them to `charset_base + id*8` at runtime.
+Values must be compile-time constants; use `%` for binary literals (`%00011000`).
+
+To activate a custom charset in VIC-II, set the character generator address via `$D018`:
+```basic
+charset $3800
+chardef 1  $FF,$81,$81,$81,$81,$81,$81,$FF  end  # box border
+poke $D018, $1A     # screen at $0400, charset at $3800 (bank 0)
+```
+
 ### Memory
 
 ```basic
@@ -433,15 +507,6 @@ poke16 ptr, w                 # word var as address; word var as value
 `peek16(addr)` reads two consecutive bytes (lo, hi) as a `word`. `poke16` writes lo then hi.
 
 ### Disk I/O
-
-```basic
-load "PROGRAM"           # KERNAL LOAD: loads file from device 8 to its native address
-load "DATA", $C000       # loads file to a specific address
-load "DATA", ptr         # addr from word variable
-
-save "DATA", $C000, 4096 # KERNAL SAVE from $C000, 4096 bytes → device 8
-save "PROG", start, len  # addr and len from word/int variables
-```
 
 ```basic
 load "PROGRAM"           # KERNAL LOAD: loads file from device 8 to its native address
@@ -565,6 +630,7 @@ var r = rnd()            # LCG pseudo-random 0-255; seed from raster line
 var r = rnd(10)          # LCG pseudo-random 0-9 (rnd() mod n; result 0..n-1)
 var s = sin(angle)       # sine: angle 0-255 (full circle), returns 0-255 (center=128)
 var c = cos(angle)       # cosine = sin(angle+64)
+var v = clamp(x, 0, 39)  # 8-bit unsigned clamp: result = max(lo, min(hi, val))
 
 print hex(n)             # print as 2-digit uppercase hex
 print bin(n)             # print as 8-bit binary string
@@ -578,6 +644,8 @@ var c = asc(msg)         # PETSCII code of first character (0 if empty)
 var c = asc("A")         # compile-time: constant PETSCII code
 var n = val(s)           # runtime: parse decimal PETSCII string → 8-bit int (e.g. "042" → 42)
 var c = msg[i]           # string character at index i: PETSCII code of msg[i]
+msg[i] = c               # write PETSCII byte c to string at index i — STA (ptr),Y
+msg[0] = 72              # constant index → LDY #0; STA (ptr),Y
 ```
 
 ### Number formatting
@@ -597,6 +665,7 @@ In non-print contexts `dec(n, w)` evaluates to `n` unchanged (same as `hex`/`bin
 
 ```basic
 var ok = reu_present()   # 1 if REU detected, 0 if not (write/read test on $DF04)
+var ok = reudet()        # alias for reu_present()
 
 reu stash c64addr, bank, reu_addr, len  # copy C64 → REU
 reu fetch c64addr, bank, reu_addr, len  # copy REU → C64
@@ -622,6 +691,9 @@ Requires a real REU or VICE: **Settings → Hardware → RAM Expansion Module**.
 ### Memory utilities
 
 ```basic
+fill screen 32           # fill screen RAM $0400–$07FF with value 32 (space char)
+fill color 1             # fill color RAM $D800–$DBFF with value 1 (white)
+
 fill $0400, 1000, 32     # fill 1000 bytes starting at $0400 with value 32
 fill addr, 256, 0        # addr can be word var
 fill ptr, len_word, val  # all operands can be expressions / word vars
@@ -703,6 +775,22 @@ end
 ```
 
 PAL timing: clock = 985 248 Hz. Period for 50 Hz = 985 248 / 50 = 19 705 cycles ≈ `$4CC9`. Forward references supported.
+
+### Error handling
+
+```basic
+onerr goto err_handler   # set KERNAL I/O error vector ($0300/$0301) to a label
+
+...
+
+label err_handler
+  print "I/O ERROR"
+  bye
+```
+
+`onerr goto label` writes the label address (lo, hi) to KERNAL locations `$0300` and `$0301`.
+When a KERNAL I/O error occurs (e.g. a failed `load` or `open`) the KERNAL executes `JMP ($0300)`,
+which branches to the label. Forward references (label defined after `onerr goto`) are supported.
 
 ### Compile-time file embedding
 
@@ -826,7 +914,19 @@ reference each other freely. See `examples/raster_irq_demo.ub`.
 ```basic
 numstr score, $0340      # writes "042\0" at $0340 (always 3 digits, zero-padded)
 var n = str_to_int("42") # compile-time: Expr::Number(42)
+
+print str$(score)                # print 8-bit int as 3-digit decimal string ("000"–"255")
+print "Score: " + str$(score)   # usable in string concat print context
+var s: string = str$(n)          # assign str$() result to a string var (shared static buffer)
 ```
+
+`str$(n)` converts an 8-bit value to a 3-character decimal string (always 3 digits with leading
+zeros, e.g. `5` → `"005"`, `42` → `"042"`, `255` → `"255"`) followed by a null terminator.
+The result pointer is stored in a permanent ZP pair allocated at compile time.
+
+> **Note:** `str$(n)` uses a single shared 4-byte static buffer. Calling `str$(n)` again
+> overwrites the previous result. For concurrent display of multiple values, use `numstr`
+> to write to separate absolute addresses.
 
 ## Examples
 
@@ -921,5 +1021,7 @@ cargo test               # unit + integration tests
 | `rnd()` / `rnd(n)` | Simple LCG, not cryptographic; period = 256 |
 | `abs()` / `sgn()` / `min()` / `max()` | 8-bit values only; `abs`/`sgn` treat values as signed (bit 7 = negative → `abs` two's-complements, `sgn` returns `$FF`); `min`/`max` are unsigned (0–255) |
 | `plot` | Out-of-range pixels are silently clipped (Y ≥ 200 or X ≥ 320 → no-op) |
+| `mplot` | No bounds checking — x must be 0–159, y must be 0–199 |
 | `chr$` | No PETSCII↔ASCII mapping — n is passed as-is to CHROUT |
-| Error reporting | Compile-time only; no runtime error handling |
+| `music play` | Requires `load sid`; only one CIA1 wrapper is emitted (last `music play` wins) |
+| Error reporting | Compile-time only; `onerr goto` handles KERNAL I/O errors at runtime |

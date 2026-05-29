@@ -418,6 +418,8 @@ pub struct Codegen {
     sub_params: HashMap<String, Vec<u8>>,   // sub_name → [zp_addr per param]
     labels: HashMap<String, u16>,
     goto_patches: Vec<(usize, String, usize)>,
+    gosub_patches: Vec<(usize, String, usize)>,  // (code_pos, label_name, src_line) for gosub forward refs
+    charset_base: u16,                            // base address for chardef data (default $3800)
     perm_zp: u8,
     tmp_zp: u8,
     break_patches: Vec<Vec<usize>>,
@@ -453,6 +455,15 @@ pub struct Codegen {
     paint_stack_addr: Option<u16>,     // 512-byte stack for paint flood-fill ($C000 area)
     paint_patches: Vec<usize>,         // JSR targets to patch to paint_helper
     sid: Option<SidData>,              // pending SID music to embed at end of output
+    sid_init_addr: Option<u16>,        // init address from last load sid (for music play)
+    sid_play_addr: Option<u16>,        // play address from last load sid (for music play)
+    mplot_zp: Option<u8>,              // base of 7-byte ZP block for mplot (multicolor pixel) helper
+    mplot_patches: Vec<usize>,         // JSR targets to patch to mplot_helper
+    music_wrap_patches: Vec<(usize, usize)>, // (lo_pos, hi_pos) in music play setup code
+    onerr_patches: Vec<(usize, usize, String, usize)>, // (lo_pos, hi_pos, label, src_line)
+    strn_zp: Option<u8>,               // 2-byte ZP ptr pair for str$() result (lo=strn_zp, hi=strn_zp+1)
+    strn_tmp_zp: Option<u8>,           // 1-byte perm ZP working scratch for strn_helper digit extraction
+    strn_helper_patches: Vec<usize>,   // code positions of JSR targets to patch to strn_helper
 }
 
 /// Carry SID metadata through pre_scan → compile().
@@ -473,6 +484,8 @@ impl Codegen {
             sub_params: HashMap::new(),
             labels: HashMap::new(),
             goto_patches: vec![],
+            gosub_patches: vec![],
+            charset_base: 0x3800,
             perm_zp: ZP_BASE,
             tmp_zp: TMP_BASE,
             break_patches: vec![],
@@ -508,6 +521,15 @@ impl Codegen {
             paint_stack_addr: None,
             paint_patches: vec![],
             sid: None,
+            sid_init_addr: None,
+            sid_play_addr: None,
+            mplot_zp: None,
+            mplot_patches: vec![],
+            music_wrap_patches: vec![],
+            onerr_patches: vec![],
+            strn_zp: None,
+            strn_tmp_zp: None,
+            strn_helper_patches: vec![],
         }
     }
 
@@ -551,6 +573,76 @@ impl Codegen {
                 }
                 _ => {}
             }
+        }
+        false
+    }
+
+    /// Recursively check whether any Mplot statement exists anywhere in the AST.
+    fn has_mplot_stmt(stmts: &[Stmt]) -> bool {
+        for stmt in stmts {
+            match stmt {
+                Stmt::Mplot { .. } => return true,
+                Stmt::SubDef(_, _, body) => if Self::has_mplot_stmt(body) { return true; }
+                Stmt::If(_, then_b, else_b) => {
+                    if Self::has_mplot_stmt(then_b) { return true; }
+                    if let Some(eb) = else_b { if Self::has_mplot_stmt(eb) { return true; } }
+                }
+                Stmt::ForLoop { body, .. } | Stmt::Loop(_, body) | Stmt::WhileLoop(_, body) => {
+                    if Self::has_mplot_stmt(body) { return true; }
+                }
+                Stmt::RepeatLoop(body, _) => {
+                    if Self::has_mplot_stmt(body) { return true; }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// Recursively check whether any Expr::StrN exists in an expression tree.
+    fn expr_has_strn(expr: &Expr) -> bool {
+        match expr {
+            Expr::StrN(_) => true,
+            Expr::BinOp(l, _, r) => Self::expr_has_strn(l) || Self::expr_has_strn(r),
+            Expr::Not(e) | Expr::Abs(e) | Expr::Sgn(e)
+            | Expr::StrLen(e) | Expr::Asc(e) | Expr::ChrStr(e) | Expr::Sin(e) | Expr::Cos(e)
+            | Expr::HexFmt(e) | Expr::BinFmt(e) | Expr::FixedToInt(e) | Expr::Peek(e)
+            | Expr::Peek16(e) | Expr::Spc(e) | Expr::Tab(e) | Expr::Val(e)
+            | Expr::SpriteX(e) | Expr::SpriteY(e) | Expr::RndN(e) => Self::expr_has_strn(e),
+            Expr::DecFmt(e, w) => Self::expr_has_strn(e) || Self::expr_has_strn(w),
+            Expr::Min(a, b) | Expr::Max(a, b) => Self::expr_has_strn(a) || Self::expr_has_strn(b),
+            Expr::Clamp(a, b, c) => Self::expr_has_strn(a) || Self::expr_has_strn(b) || Self::expr_has_strn(c),
+            _ => false,
+        }
+    }
+
+    /// Recursively check whether any Expr::StrN exists anywhere in the AST.
+    fn has_strn_expr(stmts: &[Stmt]) -> bool {
+        for stmt in stmts {
+            let found = match stmt {
+                Stmt::Print { args, .. } | Stmt::PrintAt { args, .. } => {
+                    args.iter().any(|a| Self::expr_has_strn(a))
+                }
+                Stmt::Assign(_, e) => Self::expr_has_strn(e),
+                Stmt::VarDecl { expr, .. } => Self::expr_has_strn(expr),
+                Stmt::SubDef(_, _, body) => Self::has_strn_expr(body),
+                Stmt::If(cond, then_b, else_b) => {
+                    Self::expr_has_strn(cond)
+                        || Self::has_strn_expr(then_b)
+                        || else_b.as_ref().map(|b| Self::has_strn_expr(b)).unwrap_or(false)
+                }
+                Stmt::ForLoop { body, .. } | Stmt::Loop(_, body) | Stmt::WhileLoop(_, body) => {
+                    Self::has_strn_expr(body)
+                }
+                Stmt::RepeatLoop(body, _) => Self::has_strn_expr(body),
+                Stmt::Select { expr, cases, else_body } => {
+                    Self::expr_has_strn(expr)
+                        || cases.iter().any(|(_, b)| Self::has_strn_expr(b))
+                        || else_body.as_ref().map(|b| Self::has_strn_expr(b)).unwrap_or(false)
+                }
+                _ => false,
+            };
+            if found { return true; }
         }
         false
     }
@@ -694,6 +786,21 @@ impl Codegen {
             self.line_zp = Some(zp);
         }
 
+        // Reserve 7 ZP bytes for the mplot helper (x, y, color, scratch_a, ptr_lo, ptr_hi, scratch_b).
+        if Self::has_mplot_stmt(stmts) {
+            let zp = self.perm_zp;
+            self.perm_zp += 7;
+            self.mplot_zp = Some(zp);
+        }
+
+        // Reserve 3 ZP bytes for str$(): 2-byte ptr pair + 1 scratch byte for digit extraction.
+        if Self::has_strn_expr(stmts) {
+            let zp = self.perm_zp;
+            self.perm_zp += 3; // lo=zp, hi=zp+1, scratch=zp+2
+            self.strn_zp = Some(zp);
+            self.strn_tmp_zp = Some(zp + 2);
+        }
+
         // Reserve 2 ZP bytes for the data pointer (lo/hi) if data/read is used.
         if Self::has_data_or_read(stmts) {
             let zp = self.perm_zp;
@@ -742,9 +849,11 @@ impl Codegen {
                     self.word_arrays.insert(name.clone());
                     self.array_ptr += size * 2;
                 }
-                Stmt::LoadSid { load_addr, data, .. } => {
+                Stmt::LoadSid { load_addr, init_addr, play_addr, data, .. } => {
                     // Store SID info; the actual bytes are embedded at the very end of compile().
                     // If multiple `load sid` statements exist, the last one wins.
+                    self.sid_init_addr = Some(*init_addr);
+                    self.sid_play_addr = Some(*play_addr);
                     self.sid = Some(SidData {
                         load_addr: *load_addr,
                         data: data.clone(),
@@ -983,6 +1092,49 @@ impl Codegen {
                 // Read $D01F — sprite-background collision register (cleared on read).
                 self.emit(0xAD); self.emit16(0xD01F);
             }
+            Expr::SpriteX(id_expr) => {
+                // sprite_x(id) — LDA $D000 + id*2 (sprite X low byte)
+                match id_expr.as_ref() {
+                    Expr::Number(n) => {
+                        let addr = 0xD000u16.wrapping_add((*n as u16) * 2);
+                        self.emit(0xAD); self.emit16(addr); // LDA $D0xx
+                    }
+                    _ => {
+                        let ptr = self.tmp_zp; self.tmp_zp += 2;
+                        self.emit(0xA9); self.emit(0x00);       // LDA #$00
+                        self.emit(0x85); self.emit(ptr);         // STA ptr_lo = base $00
+                        self.emit(0xA9); self.emit(0xD0);       // LDA #$D0
+                        self.emit(0x85); self.emit(ptr + 1);     // STA ptr_hi = $D0
+                        let id = id_expr.clone();
+                        self.eval_expr(&id);                     // A = id
+                        self.emit(0x0A);                         // ASL A (×2 stride)
+                        self.emit(0xA8);                         // TAY
+                        self.emit(0xB1); self.emit(ptr);         // LDA (ptr),Y → $D000 + id*2
+                    }
+                }
+            }
+            Expr::SpriteY(id_expr) => {
+                // sprite_y(id) — LDA $D001 + id*2 (sprite Y register)
+                match id_expr.as_ref() {
+                    Expr::Number(n) => {
+                        let addr = 0xD001u16.wrapping_add((*n as u16) * 2);
+                        self.emit(0xAD); self.emit16(addr); // LDA $D0xx
+                    }
+                    _ => {
+                        let ptr = self.tmp_zp; self.tmp_zp += 2;
+                        self.emit(0xA9); self.emit(0x00);       // LDA #$00
+                        self.emit(0x85); self.emit(ptr);         // STA ptr_lo
+                        self.emit(0xA9); self.emit(0xD0);       // LDA #$D0
+                        self.emit(0x85); self.emit(ptr + 1);     // STA ptr_hi = $D0
+                        let id = id_expr.clone();
+                        self.eval_expr(&id);                     // A = id
+                        self.emit(0x0A);                         // ASL A (×2 stride)
+                        self.emit(0xA8);                         // TAY
+                        self.emit(0xC8);                         // INY (+1 for Y byte)
+                        self.emit(0xB1); self.emit(ptr);         // LDA (ptr),Y → $D001 + id*2
+                    }
+                }
+            }
             Expr::Joy(port) => {
                 // CIA1 joystick: port 2 = $DC00, port 1 = $DC01; bits 0-4 active-low.
                 // Return inverted lower 5 bits: bit0=up, bit1=down, bit2=left, bit3=right, bit4=fire.
@@ -1122,6 +1274,16 @@ impl Codegen {
                 let inner = inner.clone();
                 self.eval_expr(&inner);
             }
+            Expr::StrN(inner) => {
+                // str$(n): evaluate n → A, then JSR strn_helper.
+                // After the call, strn_zp/strn_zp+1 point to a 4-byte buffer holding "NNN\0".
+                let inner = inner.clone();
+                self.eval_expr(&inner);
+                self.emit(0x20); // JSR strn_helper (address patched in post-code)
+                let patch = self.code.len();
+                self.emit16(0x0000);
+                self.strn_helper_patches.push(patch);
+            }
             Expr::Rnd => {
                 // LCG: seed = seed*5 + 1 mod 256  (full period, Hull-Dobell)
                 // Seed at $FE – documented free ZP byte on the C64.
@@ -1214,6 +1376,35 @@ impl Codegen {
                 let skip = self.code.len(); self.emit16(0x0000);
                 let end = self.current_addr();
                 self.patch_abs(skip, end);
+            }
+            Expr::Clamp(val_e, lo_e, hi_e) => {
+                // clamp(val, lo, hi) — 8-bit unsigned clamp, result in A
+                // Algorithm (12 bytes of clamp logic after evaluating val):
+                //   CMP tmp_lo  (carry set if A >= lo)
+                //   BCS step2   (skip if A >= lo)
+                //   LDA tmp_lo  (A < lo: return lo)
+                //   step2:
+                //   CMP tmp_hi  (carry set if A >= hi)
+                //   BCC done    (A < hi: keep A)
+                //   LDA tmp_hi  (A >= hi: return hi, handles A==hi and A>hi)
+                //   done:
+                let (val_e, lo_e, hi_e) = (val_e.clone(), lo_e.clone(), hi_e.clone());
+                let tmp_lo = self.tmp_zp; self.tmp_zp += 1;
+                let tmp_hi = self.tmp_zp; self.tmp_zp += 1;
+                self.eval_expr(&lo_e);
+                self.emit(0x85); self.emit(tmp_lo); // STA tmp_lo
+                self.eval_expr(&hi_e);
+                self.emit(0x85); self.emit(tmp_hi); // STA tmp_hi
+                self.eval_expr(&val_e);              // A = val
+                // if A < lo → A = lo
+                self.emit(0xC5); self.emit(tmp_lo); // CMP tmp_lo
+                self.emit(0xB0); self.emit(0x02);   // BCS step2 (+2)
+                self.emit(0xA5); self.emit(tmp_lo); // LDA tmp_lo
+                // step2: if A > hi → A = hi
+                self.emit(0xC5); self.emit(tmp_hi); // CMP tmp_hi
+                self.emit(0x90); self.emit(0x02);   // BCC done (+2)
+                self.emit(0xA5); self.emit(tmp_hi); // LDA tmp_hi
+                // done: A has the clamped value
             }
             Expr::Sgn(expr) => {
                 // Returns: 0 = zero, 1 = positive (1-127), $FF = negative (128-255)
@@ -2604,6 +2795,203 @@ impl Codegen {
         self.emit(0x60);                       // RTS
     }
 
+    /// Multicolor bitmap pixel helper.
+    ///
+    /// ZP layout (7 bytes, base = mplot_zp):
+    ///   +0 = x (0–159)   +1 = y (0–199)   +2 = color (0–3)
+    ///   +3 = scratch_a   +4 = ptr_lo       +5 = ptr_hi   +6 = scratch_b
+    ///
+    /// Address formula: $2000 + (y>>3)*320 + (x>>2)*8 + (y&7)
+    ///   same row calc as hires; column offset = (x>>2)<<3 (with possible carry for x≥128)
+    /// Emit the str$(n) helper subroutine + 4-byte result buffer.
+    /// Input:  A = 8-bit value (0–255)
+    /// Output: strn_zp/strn_zp+1 point to "NNN\0" (3 decimal digits + null, overwritten in-place)
+    /// Returns the address of the helper entry point.
+    fn emit_strn_helper(&mut self) -> u16 {
+        let strn_tmp = self.strn_tmp_zp.expect("strn_tmp_zp not allocated");
+        let strn_zp  = self.strn_zp.expect("strn_zp not allocated");
+        let helper_addr = self.current_addr();
+
+        // Save input value
+        self.emit(0x85); self.emit(strn_tmp);       // STA strn_tmp
+
+        // --- hundreds digit ---
+        self.emit(0xA9); self.emit(0x30);            // LDA #'0'
+        self.emit(0x8D); let p0 = self.code.len(); self.emit16(0x0000); // STA buf+0 (patch)
+        let h_loop = self.current_addr();
+        self.emit(0xA5); self.emit(strn_tmp);        // LDA strn_tmp
+        self.emit(0xC9); self.emit(100);             // CMP #100
+        self.emit(0x90); let h_bcc = self.code.len(); self.emit(0x00); // BCC h_done
+        self.emit(0x38);                              // SEC
+        self.emit(0xE9); self.emit(100);             // SBC #100
+        self.emit(0x85); self.emit(strn_tmp);        // STA strn_tmp
+        self.emit(0xEE); let p0b = self.code.len(); self.emit16(0x0000); // INC buf+0 (patch)
+        self.emit(0x4C); self.emit16(h_loop);        // JMP h_loop
+        let h_done = self.current_addr();
+        self.patch_bxx(h_bcc, h_done);
+
+        // --- tens digit ---
+        self.emit(0xA9); self.emit(0x30);            // LDA #'0'
+        self.emit(0x8D); let p1 = self.code.len(); self.emit16(0x0000); // STA buf+1 (patch)
+        let t_loop = self.current_addr();
+        self.emit(0xA5); self.emit(strn_tmp);        // LDA strn_tmp
+        self.emit(0xC9); self.emit(10);              // CMP #10
+        self.emit(0x90); let t_bcc = self.code.len(); self.emit(0x00); // BCC t_done
+        self.emit(0x38);                              // SEC
+        self.emit(0xE9); self.emit(10);              // SBC #10
+        self.emit(0x85); self.emit(strn_tmp);        // STA strn_tmp
+        self.emit(0xEE); let p1b = self.code.len(); self.emit16(0x0000); // INC buf+1 (patch)
+        self.emit(0x4C); self.emit16(t_loop);        // JMP t_loop
+        let t_done = self.current_addr();
+        self.patch_bxx(t_bcc, t_done);
+
+        // --- ones digit ---
+        self.emit(0xA5); self.emit(strn_tmp);        // LDA strn_tmp (remainder 0-9)
+        self.emit(0x09); self.emit(0x30);            // ORA #'0'  (add ASCII offset)
+        self.emit(0x8D); let p2 = self.code.len(); self.emit16(0x0000); // STA buf+2 (patch)
+
+        // --- null terminator ---
+        self.emit(0xA9); self.emit(0x00);            // LDA #0
+        self.emit(0x8D); let p3 = self.code.len(); self.emit16(0x0000); // STA buf+3 (patch)
+
+        // --- set ZP ptr to buf ---
+        self.emit(0xA9); let plo = self.code.len(); self.emit(0x00); // LDA #<buf (patch)
+        self.emit(0x85); self.emit(strn_zp);         // STA strn_zp
+        self.emit(0xA9); let phi = self.code.len(); self.emit(0x00); // LDA #>buf (patch)
+        self.emit(0x85); self.emit(strn_zp + 1);     // STA strn_zp+1
+
+        self.emit(0x60); // RTS
+
+        // 4-byte result buffer — overwritten at runtime with "NNN\0"
+        let buf_addr = self.current_addr();
+        self.emit(0x30); self.emit(0x30); self.emit(0x30); self.emit(0x00); // "000\0"
+
+        // Patch all absolute address references inside the helper
+        let buf0 = buf_addr;
+        let buf1 = buf_addr + 1;
+        let buf2 = buf_addr + 2;
+        let buf3 = buf_addr + 3;
+
+        for &pos in &[p0, p0b] {
+            self.code[pos]     = buf0 as u8;
+            self.code[pos + 1] = (buf0 >> 8) as u8;
+        }
+        for &pos in &[p1, p1b] {
+            self.code[pos]     = buf1 as u8;
+            self.code[pos + 1] = (buf1 >> 8) as u8;
+        }
+        self.code[p2]     = buf2 as u8;
+        self.code[p2 + 1] = (buf2 >> 8) as u8;
+        self.code[p3]     = buf3 as u8;
+        self.code[p3 + 1] = (buf3 >> 8) as u8;
+        self.code[plo]    = buf0 as u8;
+        self.code[phi]    = (buf0 >> 8) as u8;
+
+        helper_addr
+    }
+
+    fn emit_mplot_helper(&mut self) {
+        let zp = match self.mplot_zp { Some(z) => z, None => return };
+
+        // ── Step 1: b = y >> 3 ───────────────────────────────────────────
+        self.emit(0xA5); self.emit(zp + 1);   // LDA y
+        self.emit(0x4A); self.emit(0x4A); self.emit(0x4A); // LSR×3 → b
+        self.emit(0x85); self.emit(zp + 3);   // STA b (scratch_a)
+
+        // ── Step 2: ptr_lo = b<<6 ────────────────────────────────────────
+        self.emit(0x0A); self.emit(0x0A); self.emit(0x0A);
+        self.emit(0x0A); self.emit(0x0A); self.emit(0x0A); // ASL×6
+        self.emit(0x85); self.emit(zp + 4);   // STA ptr_lo
+
+        // ── Step 3: ptr_hi = b + (b>>2) + $20 ───────────────────────────
+        self.emit(0xA5); self.emit(zp + 3);   // LDA b
+        self.emit(0x4A); self.emit(0x4A);     // LSR×2 → b>>2
+        self.emit(0x18);                       // CLC
+        self.emit(0x65); self.emit(zp + 3);   // ADC b
+        self.emit(0x69); self.emit(0x20);     // ADC #$20
+        self.emit(0x85); self.emit(zp + 5);   // STA ptr_hi
+
+        // ── Step 4: column offset = (x>>2)<<3, split lo + carry ─────────
+        // (x>>2) = 0–39; (x>>2)<<3 = 0–312, overflows byte for x≥128
+        self.emit(0xA5); self.emit(zp + 0);   // LDA x
+        self.emit(0x4A); self.emit(0x4A);     // LSR×2 → x>>2
+        self.emit(0x0A); self.emit(0x0A); self.emit(0x0A); // ASL×3 → (x>>2)<<3; carry=1 if x≥128
+        self.emit(0x85); self.emit(zp + 3);   // STA col_lo (scratch_a)
+        self.emit(0xA9); self.emit(0x00);     // LDA #0 (no effect on carry)
+        self.emit(0x69); self.emit(0x00);     // ADC #0 → A = carry (0 or 1)
+        self.emit(0x85); self.emit(zp + 6);   // STA col_hi (scratch_b)
+        // ptr_lo += col_lo; ptr_hi += col_hi + carry
+        self.emit(0xA5); self.emit(zp + 4);   // LDA ptr_lo
+        self.emit(0x18);                       // CLC
+        self.emit(0x65); self.emit(zp + 3);   // ADC col_lo
+        self.emit(0x85); self.emit(zp + 4);   // STA ptr_lo
+        self.emit(0xA5); self.emit(zp + 5);   // LDA ptr_hi
+        self.emit(0x65); self.emit(zp + 6);   // ADC col_hi (+ carry from above)
+        self.emit(0x85); self.emit(zp + 5);   // STA ptr_hi
+
+        // ── Step 5: ptr_lo += y & 7 ──────────────────────────────────────
+        self.emit(0xA5); self.emit(zp + 1);   // LDA y
+        self.emit(0x29); self.emit(0x07);     // AND #$07
+        self.emit(0x18);                       // CLC
+        self.emit(0x65); self.emit(zp + 4);   // ADC ptr_lo
+        self.emit(0x85); self.emit(zp + 4);   // STA ptr_lo
+        self.emit(0x90);                       // BCC skip_y7
+        let bcc_y7 = self.code.len(); self.emit(0x00);
+        self.emit(0xE6); self.emit(zp + 5);   // INC ptr_hi
+        self.patch_bxx(bcc_y7, self.current_addr()); // skip_y7:
+
+        // ── Step 6: pair = x & 3 ─────────────────────────────────────────
+        self.emit(0xA5); self.emit(zp + 0);   // LDA x
+        self.emit(0x29); self.emit(0x03);     // AND #$03 → pair (0–3)
+        self.emit(0x85); self.emit(zp + 3);   // STA pair (scratch_a)
+
+        // ── Step 7: shift_count = (3 - pair) * 2  (→ 6, 4, 2, or 0) ────
+        self.emit(0xA9); self.emit(0x03);     // LDA #3
+        self.emit(0x38);                       // SEC
+        self.emit(0xE5); self.emit(zp + 3);   // SBC pair
+        self.emit(0x0A);                       // ASL → ×2
+        self.emit(0x85); self.emit(zp + 6);   // STA shift_count (scratch_b)
+
+        // ── Step 8: and_mask = ~($03 << shift_count) ─────────────────────
+        self.emit(0xA9); self.emit(0x03);     // LDA #$03
+        self.emit(0xA6); self.emit(zp + 6);   // LDX shift_count
+        self.emit(0xF0);                       // BEQ skip_msk
+        let beq_msk = self.code.len(); self.emit(0x00);
+        let msk_loop = self.current_addr();
+        self.emit(0x0A);                       // ASL
+        self.emit(0xCA);                       // DEX
+        self.emit(0xD0);                       // BNE msk_loop
+        let bne_msk = self.code.len(); self.emit(0x00);
+        self.patch_bxx(bne_msk, msk_loop);
+        self.patch_bxx(beq_msk, self.current_addr()); // skip_msk:
+        self.emit(0x49); self.emit(0xFF);     // EOR #$FF → and_mask
+        self.emit(0x85); self.emit(zp + 3);   // STA and_mask (scratch_a)
+
+        // ── Step 9: set_bits = (color & 3) << shift_count ────────────────
+        self.emit(0xA5); self.emit(zp + 2);   // LDA color
+        self.emit(0x29); self.emit(0x03);     // AND #$03
+        self.emit(0xA6); self.emit(zp + 6);   // LDX shift_count
+        self.emit(0xF0);                       // BEQ skip_clr
+        let beq_clr = self.code.len(); self.emit(0x00);
+        let clr_loop = self.current_addr();
+        self.emit(0x0A);                       // ASL
+        self.emit(0xCA);                       // DEX
+        self.emit(0xD0);                       // BNE clr_loop
+        let bne_clr = self.code.len(); self.emit(0x00);
+        self.patch_bxx(bne_clr, clr_loop);
+        self.patch_bxx(beq_clr, self.current_addr()); // skip_clr:
+        // A = set_bits
+
+        // ── Step 10: Read-Modify-Write the pixel byte ────────────────────
+        self.emit(0x85); self.emit(zp + 6);   // STA set_bits (scratch_b)
+        self.emit(0xA0); self.emit(0x00);     // LDY #0
+        self.emit(0xB1); self.emit(zp + 4);   // LDA (ptr_lo),Y
+        self.emit(0x25); self.emit(zp + 3);   // AND and_mask
+        self.emit(0x05); self.emit(zp + 6);   // ORA set_bits
+        self.emit(0x91); self.emit(zp + 4);   // STA (ptr_lo),Y
+        self.emit(0x60);                       // RTS
+    }
+
     // Plot-erase helper: computes pixel address/mask identically to emit_plot_helper,
     // then clears (AND ~mask) the pixel instead of setting it.
     fn emit_plot_erase_helper(&mut self) {
@@ -3736,6 +4124,7 @@ impl Codegen {
         match expr {
             Expr::StringLit(_) => true,
             Expr::ChrStr(_)    => true,
+            Expr::StrN(_)      => true,
             Expr::Var(name)    => matches!(self.var_types.get(name), Some(VarType::Str)),
             Expr::BinOp(l, BinOp::Add, r) =>
                 self.is_string_expr(l) || self.is_string_expr(r),
@@ -3761,6 +4150,14 @@ impl Codegen {
                 let inner = inner.clone();
                 self.eval_expr(&inner);
                 self.emit(0x20); self.emit16(CHROUT); // JSR CHROUT
+            }
+            Expr::StrN(_) => {
+                // str$(n): run strn_helper (sets strn_zp ptr), then print via ptr
+                let arg = arg.clone();
+                self.eval_expr(&arg); // JSR strn_helper; strn_zp points to "NNN\0"
+                if let Some(ptr) = self.strn_zp {
+                    self.print_str_via_ptr(ptr);
+                }
             }
             Expr::HexFmt(inner) => {
                 // hex(n): print value as 2-digit uppercase hexadecimal
@@ -5279,6 +5676,16 @@ impl Codegen {
                 let beq_off = self.code.len(); self.emit(0x00);
                 self.patch_bxx(beq_off, loop_addr);
             }
+            Stmt::WaitGetch => {
+                // Blocking wait until a keypress: JSR $FFE4 (GETIN); CMP #0; BEQ loop
+                // 7 bytes: 20 E4 FF  C9 00  F0 F9
+                let loop_addr = self.current_addr();
+                self.emit(0x20); self.emit(0xE4); self.emit(0xFF); // JSR $FFE4
+                self.emit(0xC9); self.emit(0x00);                   // CMP #$00
+                self.emit(0xF0);                                     // BEQ loop
+                let beq_off = self.code.len(); self.emit(0x00);
+                self.patch_bxx(beq_off, loop_addr);
+            }
             Stmt::SidStop => {
                 // Zero all 25 SID registers ($D400–$D418): LDX #24; LDA #0; loop: STA $D400,X; DEX; BPL loop
                 self.emit(0xA2); self.emit(0x18); // LDX #$18  (24)
@@ -5399,6 +5806,29 @@ impl Codegen {
                 }
             }
             Stmt::ArraySet(arr_name, idx_expr, val_expr) => {
+                // String character write: s[i] = c — STA (ptr),Y into inline string buffer
+                if matches!(self.var_types.get(arr_name.as_str()), Some(VarType::Str)) {
+                    if let Some(ptr) = self.var_addr(arr_name) {
+                        let val = val_expr.clone();
+                        let idx = idx_expr.clone();
+                        let tmp_val = self.tmp_zp; self.tmp_zp += 1;
+                        self.eval_expr(&val);
+                        self.emit(0x85); self.emit(tmp_val); // STA tmp_val
+                        match &idx {
+                            Expr::Number(n) => {
+                                self.emit(0xA0); self.emit(*n as u8); // LDY #n
+                                self.emit(0xA5); self.emit(tmp_val);  // LDA tmp_val
+                                self.emit(0x91); self.emit(ptr);       // STA (ptr),Y
+                            }
+                            _ => {
+                                self.eval_expr(&idx);
+                                self.emit(0xA8);                       // TAY
+                                self.emit(0xA5); self.emit(tmp_val);  // LDA tmp_val
+                                self.emit(0x91); self.emit(ptr);       // STA (ptr),Y
+                            }
+                        }
+                    }
+                } else {
                 let base = self.arrays.get(arr_name).copied().unwrap_or(0xC000);
                 let is_word_arr = self.word_arrays.contains(arr_name.as_str());
                 if is_word_arr {
@@ -5464,6 +5894,7 @@ impl Codegen {
                         }
                     }
                 }
+                } // end string else
             }
             Stmt::Plot(x_expr, y_expr) => {
                 if let Some(zp) = self.plot_zp {
@@ -5825,6 +6256,237 @@ impl Codegen {
                 let bne_part = self.code.len(); self.emit(0x00);
                 self.patch_bxx(bne_part, part_top);
                 self.patch_bxx(beq_part + 1, self.current_addr());
+            }
+            Stmt::FillScreen(val_expr) => {
+                // fill screen RAM $0400-$07FF (4 × 256 = 1024 bytes) with val
+                // LDA #val; LDX #0; loop: STA $0400,X / $0500,X / $0600,X / $0700,X; INX; BNE loop
+                let val = val_expr.clone();
+                self.eval_expr(&val);                                        // A = fill value
+                self.emit(0xA2); self.emit(0x00);                            // LDX #0
+                let loop_top = self.current_addr();
+                self.emit(0x9D); self.emit(0x00); self.emit(0x04);           // STA $0400,X
+                self.emit(0x9D); self.emit(0x00); self.emit(0x05);           // STA $0500,X
+                self.emit(0x9D); self.emit(0x00); self.emit(0x06);           // STA $0600,X
+                self.emit(0x9D); self.emit(0x00); self.emit(0x07);           // STA $0700,X
+                self.emit(0xE8);                                              // INX
+                self.emit(0xD0); let bne = self.code.len(); self.emit(0x00);
+                self.patch_bxx(bne, loop_top);
+            }
+            Stmt::FillColor(val_expr) => {
+                // fill color RAM $D800-$DBFF (4 × 256 = 1024 bytes) with val
+                // LDA #val; LDX #0; loop: STA $D800,X / $D900,X / $DA00,X / $DB00,X; INX; BNE loop
+                let val = val_expr.clone();
+                self.eval_expr(&val);                                        // A = fill value
+                self.emit(0xA2); self.emit(0x00);                            // LDX #0
+                let loop_top = self.current_addr();
+                self.emit(0x9D); self.emit(0x00); self.emit(0xD8);           // STA $D800,X
+                self.emit(0x9D); self.emit(0x00); self.emit(0xD9);           // STA $D900,X
+                self.emit(0x9D); self.emit(0x00); self.emit(0xDA);           // STA $DA00,X
+                self.emit(0x9D); self.emit(0x00); self.emit(0xDB);           // STA $DB00,X
+                self.emit(0xE8);                                              // INX
+                self.emit(0xD0); let bne = self.code.len(); self.emit(0x00);
+                self.patch_bxx(bne, loop_top);
+            }
+
+            Stmt::Gosub(name, src_line) => {
+                // JSR label — same as Goto but emits $20 (JSR) instead of $4C (JMP)
+                self.emit(0x20); // JSR
+                if let Some(&addr) = self.labels.get(name) {
+                    self.emit16(addr);
+                } else {
+                    let pos = self.code.len();
+                    self.emit16(0x0000);
+                    self.gosub_patches.push((pos, name.clone(), *src_line));
+                }
+            }
+
+            Stmt::SpriteFrame { id, addr } => {
+                // Compute addr >> 6 into A, then store at $07F8+id (or $07F8,X for var id)
+                let id = id.clone();
+                let addr = addr.clone();
+
+                // Step 1: compute addr >> 6 → A
+                match &addr {
+                    Expr::Number(n) => {
+                        let page = (*n as u16) >> 6;
+                        self.emit(0xA9); self.emit(page as u8);              // LDA #(addr>>6)
+                    }
+                    Expr::Var(name) if self.var_types.get(name.as_str()) == Some(&VarType::Word) => {
+                        // ptr = (hi<<2) | (lo>>6)  — same logic as existing Stmt::Sprite
+                        let zp = *self.vars.get(name.as_str()).expect("sprite_frame: word addr var");
+                        let tmp = self.tmp_zp; self.tmp_zp += 1;
+                        self.emit(0xA5); self.emit(zp + 1);                  // LDA hi
+                        self.emit(0x0A); self.emit(0x0A);                    // ASL A; ASL A (hi<<2)
+                        self.emit(0x85); self.emit(tmp);                     // STA tmp
+                        self.emit(0xA5); self.emit(zp);                      // LDA lo
+                        for _ in 0..6 { self.emit(0x4A); }                  // LSR A ×6 (lo>>6)
+                        self.emit(0x05); self.emit(tmp);                     // ORA tmp
+                    }
+                    other => {
+                        // 8-bit expression: treat as already a pointer value (addr>>6 pre-computed)
+                        let other = other.clone();
+                        self.eval_expr(&other);
+                    }
+                }
+
+                // Step 2: store A to $07F8+id
+                match &id {
+                    Expr::Number(n) => {
+                        let ptr_reg = 0x07F8u16 + (*n as u16);
+                        self.emit(0x8D); self.emit(ptr_reg as u8); self.emit((ptr_reg >> 8) as u8);
+                        // STA $07F8+id (absolute)
+                    }
+                    _ => {
+                        // Variable id: save A, eval id → X, load A back, STA $07F8,X
+                        let tmp2 = self.tmp_zp; self.tmp_zp += 1;
+                        self.emit(0x85); self.emit(tmp2);                    // STA tmp2
+                        self.eval_expr(&id);
+                        self.emit(0xAA);                                     // TAX
+                        self.emit(0xA5); self.emit(tmp2);                    // LDA tmp2
+                        self.emit(0x9D); self.emit(0xF8); self.emit(0x07);  // STA $07F8,X
+                    }
+                }
+            }
+
+            Stmt::CharsetBase(addr) => {
+                // Compile-time directive: set charset base address
+                self.charset_base = *addr;
+            }
+
+            // ── mplot x, y, color ─────────────────────────────────────────────────
+            Stmt::Mplot { x, y, color } => {
+                let mzp = match self.mplot_zp {
+                    Some(z) => z,
+                    None => panic!("mplot: mplot_zp not allocated (should have been set in pre_scan)"),
+                };
+                let x = x.clone(); let y = y.clone(); let c = color.clone();
+                // Evaluate x → mzp+0
+                self.eval_expr(&x);
+                self.emit(0x85); self.emit(mzp);
+                // Evaluate y → mzp+1
+                self.eval_expr(&y);
+                self.emit(0x85); self.emit(mzp + 1);
+                // Evaluate color → mzp+2
+                self.eval_expr(&c);
+                self.emit(0x85); self.emit(mzp + 2);
+                // JSR mplot_helper (address patched in post-code phase)
+                self.emit(0x20);
+                let jsr_pos = self.code.len();
+                self.emit(0x00); self.emit(0x00);
+                self.mplot_patches.push(jsr_pos);
+            }
+
+            // ── music play / stop / pause / resume ───────────────────────────────
+            Stmt::MusicPlay(song_expr) => {
+                // LDA #song_num; JSR sid_init
+                let song = song_expr.clone();
+                self.eval_expr(&song); // A = song number (0-based)
+                let init_addr = self.sid_init_addr.unwrap_or(0);
+                self.emit(0x20); self.emit(init_addr as u8); self.emit((init_addr >> 8) as u8);
+                // Set up CIA1 timer A at 19656 cycles (~50 Hz PAL)
+                self.emit(0x78);                                       // SEI
+                self.emit(0xA9); self.emit(0x7F);
+                self.emit(0x8D); self.emit(0x0D); self.emit(0xDC);    // STA $DC0D — disable CIA1 IRQs
+                self.emit(0xA9); self.emit(0xC8);                     // LDA #$C8  (lo of 19656)
+                self.emit(0x8D); self.emit(0x04); self.emit(0xDC);    // STA $DC04 — timer A lo
+                self.emit(0xA9); self.emit(0x4C);                     // LDA #$4C  (hi of 19656)
+                self.emit(0x8D); self.emit(0x05); self.emit(0xDC);    // STA $DC05 — timer A hi
+                // Wrapper address — patched in post-code phase
+                self.emit(0xA9);
+                let lo_pos = self.code.len(); self.emit(0x00);        // LDA #lo (placeholder)
+                self.emit(0x8D); self.emit(0x14); self.emit(0x03);    // STA $0314
+                self.emit(0xA9);
+                let hi_pos = self.code.len(); self.emit(0x00);        // LDA #hi (placeholder)
+                self.emit(0x8D); self.emit(0x15); self.emit(0x03);    // STA $0315
+                self.emit(0xA9); self.emit(0x81);
+                self.emit(0x8D); self.emit(0x0D); self.emit(0xDC);    // STA $DC0D — enable timer A IRQ
+                self.emit(0xA9); self.emit(0x01);
+                self.emit(0x8D); self.emit(0x0E); self.emit(0xDC);    // STA $DC0E — start timer A
+                self.emit(0x58);                                       // CLI
+                self.music_wrap_patches.push((lo_pos, hi_pos));
+            }
+
+            Stmt::MusicStop => {
+                // Disable CIA1 timer A IRQ
+                self.emit(0x78);                                       // SEI
+                self.emit(0xA9); self.emit(0x7F);
+                self.emit(0x8D); self.emit(0x0D); self.emit(0xDC);    // STA $DC0D — disable CIA1 IRQs
+                self.emit(0x58);                                       // CLI
+                // Zero all 25 SID registers ($D400–$D418)
+                self.emit(0xA2); self.emit(0x18);                     // LDX #24
+                self.emit(0xA9); self.emit(0x00);                     // LDA #0
+                let loop_top = self.current_addr();
+                self.emit(0x9D); self.emit(0x00); self.emit(0xD4);    // STA $D400,X
+                self.emit(0xCA);                                       // DEX
+                self.emit(0x10);                                       // BPL opcode
+                let bpl_off = self.code.len(); self.emit(0x00);       // BPL offset (placeholder)
+                self.patch_bxx(bpl_off, loop_top);
+            }
+
+            Stmt::MusicPause => {
+                // Disable CIA1 timer A IRQ without resetting SID
+                self.emit(0x78);                                       // SEI
+                self.emit(0xA9); self.emit(0x7F);
+                self.emit(0x8D); self.emit(0x0D); self.emit(0xDC);    // STA $DC0D — disable CIA1 IRQs
+                self.emit(0x58);                                       // CLI
+            }
+
+            Stmt::MusicResume => {
+                // Re-enable CIA1 timer A IRQ
+                self.emit(0x78);                                       // SEI
+                self.emit(0xA9); self.emit(0x81);
+                self.emit(0x8D); self.emit(0x0D); self.emit(0xDC);    // STA $DC0D — re-enable CIA1 timer A
+                self.emit(0x58);                                       // CLI
+            }
+
+            // ── onerr goto label ──────────────────────────────────────────────────
+            Stmt::OnErrGoto(label, src_line) => {
+                // Write label address lo/hi to KERNAL IERROR vector $0300/$0301.
+                // When a KERNAL I/O error occurs, it does JMP ($0300) → our label.
+                self.emit(0xA9);
+                let lo_pos = self.code.len(); self.emit(0x00);        // LDA #lo (placeholder)
+                self.emit(0x8D); self.emit(0x00); self.emit(0x03);    // STA $0300
+                self.emit(0xA9);
+                let hi_pos = self.code.len(); self.emit(0x00);        // LDA #hi (placeholder)
+                self.emit(0x8D); self.emit(0x01); self.emit(0x03);    // STA $0301
+                // Resolve immediately if label already defined; otherwise defer
+                if let Some(&addr) = self.labels.get(label) {
+                    self.code[lo_pos] = addr as u8;
+                    self.code[hi_pos] = (addr >> 8) as u8;
+                } else {
+                    self.onerr_patches.push((lo_pos, hi_pos, label.clone(), *src_line));
+                }
+            }
+
+            Stmt::Chardef { id, bytes } => {
+                let id = *id;
+                let charset_base = self.charset_base;
+                let dst = charset_base + id as u16 * 8;
+
+                // JMP past inline data (3 bytes for JMP instruction)
+                self.emit(0x4C);
+                let jmp_lo = self.code.len();
+                self.emit16(0x0000);
+
+                // 8 bytes of character data (zero-padded if fewer supplied)
+                let data_addr = self.current_addr();
+                let mut data = bytes.clone();
+                data.resize(8, 0);
+                for b in &data { self.emit(*b); }
+
+                // Patch JMP to instruction immediately after the data block
+                let past_data = self.current_addr();
+                self.patch_abs(jmp_lo, past_data);
+
+                // Runtime: copy 8 bytes from data_addr to charset_base+id*8
+                // LDY #7; loop: LDA data_addr,Y; STA dst,Y; DEY; BPL loop
+                self.emit(0xA0); self.emit(0x07);                           // LDY #7
+                let loop_top = self.current_addr();
+                self.emit(0xB9); self.emit(data_addr as u8); self.emit((data_addr >> 8) as u8); // LDA abs,Y
+                self.emit(0x99); self.emit(dst as u8); self.emit((dst >> 8) as u8);             // STA dst,Y
+                self.emit(0x88);                                             // DEY
+                self.emit(0x10); let bpl = self.code.len(); self.emit(0x00);
+                self.patch_bxx(bpl, loop_top);
             }
             Stmt::Memcopy { src, dst, len } => {
                 let src = src.clone(); let dst = dst.clone(); let len = len.clone();
@@ -6837,6 +7499,63 @@ impl Codegen {
                     }
                 }
             }
+            Stmt::ColorScreen { col, row, color } => {
+                // color screen col, row, c — write color byte to $D800 + row*40 + col
+                let col = col.clone();
+                let row = row.clone();
+                let color = color.clone();
+                match (&col, &row) {
+                    (Expr::Number(c), Expr::Number(r))
+                        if *r >= 0 && *r <= 24 && *c >= 0 && *c <= 39 =>
+                    {
+                        // Compile-time: direct absolute STA to color RAM
+                        let offset = (*r as u16) * 40 + (*c as u16);
+                        let color_addr = 0xD800u16 + offset;
+                        self.eval_expr(&color);
+                        self.emit(0x8D); self.emit(color_addr as u8); self.emit((color_addr >> 8) as u8);
+                    }
+                    _ => {
+                        // Runtime: compute row*40 + col, add $D800 base
+                        let tmp_row = self.tmp_zp; self.tmp_zp += 1;
+                        let tmp10   = self.tmp_zp; self.tmp_zp += 1;
+                        let ptr_lo  = self.tmp_zp; self.tmp_zp += 1;
+                        let ptr_hi  = self.tmp_zp; self.tmp_zp += 1;
+                        // row → tmp_row
+                        self.eval_expr(&row);
+                        self.emit(0x85); self.emit(tmp_row);
+                        // row*10 = row*2 + row*8
+                        self.emit(0xA5); self.emit(tmp_row);
+                        self.emit(0x0A);                       // ASL ×2
+                        self.emit(0x85); self.emit(tmp10);
+                        self.emit(0x0A);                       // ×4
+                        self.emit(0x0A);                       // ×8
+                        self.emit(0x18);
+                        self.emit(0x65); self.emit(tmp10);     // ADC tmp10 → ×10
+                        self.emit(0x85); self.emit(tmp10);
+                        // row*40 with carry → ptr_hi
+                        self.emit(0xA9); self.emit(0x00);
+                        self.emit(0x85); self.emit(ptr_hi);
+                        self.emit(0xA5); self.emit(tmp10);
+                        self.emit(0x0A);                       // ASL ×20, carry
+                        self.emit(0x26); self.emit(ptr_hi);    // ROL ptr_hi
+                        self.emit(0x0A);                       // ASL ×40 lo, carry
+                        self.emit(0x26); self.emit(ptr_hi);    // ROL ptr_hi
+                        self.emit(0x85); self.emit(ptr_lo);
+                        // Add col, carry → ptr_hi
+                        self.eval_expr(&col);
+                        self.emit(0x18);
+                        self.emit(0x65); self.emit(ptr_lo);
+                        self.emit(0x85); self.emit(ptr_lo);
+                        self.emit(0xA5); self.emit(ptr_hi);
+                        self.emit(0x69); self.emit(0xD8);      // ADC #$D8 (carry still live, adds base $D8xx)
+                        self.emit(0x85); self.emit(ptr_hi);
+                        // STA (ptr_lo), Y  with color value
+                        self.eval_expr(&color);
+                        self.emit(0xA0); self.emit(0x00);      // LDY #0
+                        self.emit(0x91); self.emit(ptr_lo);    // STA (ptr_lo), Y
+                    }
+                }
+            }
             Stmt::Poke(addr, val) => {
                 let val = val.clone();
                 let addr = addr.clone();
@@ -7026,6 +7745,12 @@ impl Codegen {
                 self.code[offset + 1] = (addr >> 8) as u8;
             }
         }
+        for (offset, name, _) in self.gosub_patches.clone() {
+            if let Some(&addr) = self.labels.get(&name) {
+                self.code[offset] = addr as u8;
+                self.code[offset + 1] = (addr >> 8) as u8;
+            }
+        }
         for (lo_pos, hi_pos, name) in self.irq_patches.clone() {
             if let Some(&addr) = self.subs.get(&name) {
                 self.code[lo_pos] = addr as u8;
@@ -7034,6 +7759,12 @@ impl Codegen {
         }
         for (lo_pos, hi_pos, name) in self.nmi_patches.clone() {
             if let Some(&addr) = self.subs.get(&name) {
+                self.code[lo_pos] = addr as u8;
+                self.code[hi_pos] = (addr >> 8) as u8;
+            }
+        }
+        for (lo_pos, hi_pos, name, _src_line) in self.onerr_patches.clone() {
+            if let Some(&addr) = self.labels.get(&name) {
                 self.code[lo_pos] = addr as u8;
                 self.code[hi_pos] = (addr >> 8) as u8;
             }
@@ -7214,6 +7945,40 @@ impl Codegen {
             }
         }
 
+        // Emit multicolor pixel (mplot) helper and patch all JSR targets
+        if !self.mplot_patches.is_empty() {
+            let mplot_addr = self.current_addr();
+            self.emit_mplot_helper();
+            for &pos in &self.mplot_patches.clone() {
+                self.code[pos]     = mplot_addr as u8;
+                self.code[pos + 1] = (mplot_addr >> 8) as u8;
+            }
+        }
+
+        // Emit str$() helper and patch all JSR targets
+        if !self.strn_helper_patches.is_empty() {
+            let helper_addr = self.emit_strn_helper();
+            for &pos in &self.strn_helper_patches.clone() {
+                self.code[pos]     = helper_addr as u8;
+                self.code[pos + 1] = (helper_addr >> 8) as u8;
+            }
+        }
+
+        // Emit CIA1 music play-wrapper (LDA #$01; STA $DC0D; JSR sid_play; JMP $EA81)
+        // Emitted once; all `music play` setup sequences are patched to point here.
+        if !self.music_wrap_patches.is_empty() {
+            let wrap_addr = self.current_addr();
+            let play_addr = self.sid_play_addr.unwrap_or(0);
+            self.emit(0xA9); self.emit(0x01);                          // LDA #$01
+            self.emit(0x8D); self.emit(0x0D); self.emit(0xDC);        // STA $DC0D — ACK timer A
+            self.emit(0x20); self.emit(play_addr as u8); self.emit((play_addr >> 8) as u8); // JSR sid_play
+            self.emit(0x4C); self.emit(0x81); self.emit(0xEA);        // JMP $EA81 — irq_exit
+            for (lo_pos, hi_pos) in &self.music_wrap_patches.clone() {
+                self.code[*lo_pos] = wrap_addr as u8;
+                self.code[*hi_pos] = (wrap_addr >> 8) as u8;
+            }
+        }
+
         self.patch_forward_refs();
 
         // Embed SID music data at its native C64 load address.
@@ -7247,6 +8012,16 @@ impl Codegen {
         for (_, name, src_line) in &self.goto_patches {
             if !self.labels.contains_key(name) {
                 errs.push(format!("line {src_line}: Undefined label: {name}"));
+            }
+        }
+        for (_, name, src_line) in &self.gosub_patches {
+            if !self.labels.contains_key(name) {
+                errs.push(format!("line {src_line}: Undefined label: {name}"));
+            }
+        }
+        for (_, _, name, src_line) in &self.onerr_patches {
+            if !self.labels.contains_key(name) {
+                errs.push(format!("line {src_line}: onerr goto: Undefined label: {name}"));
             }
         }
         errs

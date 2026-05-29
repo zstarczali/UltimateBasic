@@ -479,6 +479,37 @@ Master volume (`$D418`) is always set to `$0F`.
 `sid volume N` writes N directly to `$D418`. Bits 0-3 = volume (0-15), bits 4-7 = filter mode.
 `sid stop` emits a 10-byte zero-fill loop (`LDX #24; LDA #0; STA $D400,X; DEX; BPL`) — faster than 25 individual pokes.
 
+### Music Playback
+
+High-level `music play/stop/pause/resume` commands built on top of `load sid` and CIA1 timer A.
+
+```basic
+load sid "tune.sid"           # embed SID file; defines sid_init / sid_play
+
+music play                    # init sub-tune 0, start CIA1 timer A IRQ at 50 Hz PAL
+music play 1                  # start from sub-tune 1 (0-based song index)
+music stop                    # disable CIA1 IRQ + zero all 25 SID registers
+music pause                   # disable CIA1 timer A IRQ (SID output frozen, not zeroed)
+music resume                  # re-enable CIA1 timer A IRQ (resume from pause point)
+```
+
+| Statement | Code emitted |
+|---|---|
+| `music play [n]` | `LDA #n; JSR sid_init`; CIA1 timer A setup at 19 656 cycles; `$0314`/`$0315` → wrapper |
+| `music stop` | `SEI; LDA #$7F; STA $DC0D; CLI` + SID zero-fill loop (`$D400–$D418`) |
+| `music pause` | `SEI; LDA #$7F; STA $DC0D; CLI` |
+| `music resume` | `SEI; LDA #$81; STA $DC0D; CLI` |
+
+`music play` generates a shared IRQ **wrapper** (emitted once in post-code):
+```asm
+  LDA #$01       ; ACK CIA1 timer A IRQ ($DC0D)
+  STA $DC0D
+  JSR sid_play   ; advance one frame of music
+  JMP $EA81      ; irq_exit: restore A/X/Y + RTI
+```
+
+Requires a prior `load sid` statement (to define `sid_init` / `sid_play`). Calling `music play` without `load sid` emits a JSR to address 0.
+
 `bye` uses `JSR $E544` (direct KERNAL clear-screen) then `SEI; LDA #$FF; STA $91; CLI; RTS`.
 Clearing `$91` prevents BASIC from printing "BREAK IN 10" if the user pressed RUN/STOP during
 the program.
@@ -879,6 +910,25 @@ end
 
 PAL timing: clock = 985 248 Hz. Period for 50 Hz ≈ 19 705 cycles (`$4CC9`). Forward references supported.
 
+### Error Handling
+
+```basic
+onerr goto err_handler   # set KERNAL I/O error vector ($0300/$0301) to a label
+```
+
+`onerr goto label` writes the label address (lo, hi) to `$0300` / `$0301`. When a KERNAL I/O
+error occurs the KERNAL executes `JMP ($0300)` → the label. Forward references (label defined
+after `onerr goto`) are fully supported. Unresolved labels are reported as compile-time errors.
+
+```basic
+onerr goto disk_err
+load "MISSING", $C000    # if this fails, KERNAL jumps to disk_err
+...
+label disk_err
+  print "DISK ERROR"
+  bye
+```
+
 ```basic
 data 1, 2, 3, 255        # constant byte table (compiled inline, after all code)
 read varname             # load next byte from table into varname (auto-declares if needed)
@@ -901,6 +951,7 @@ plot xor x, y            # toggle (XOR) pixel at (x, y) — EOR mask into byte
 circle x, y, r           # midpoint circle centered at (x, y) with radius r; clips off-screen points
 line x1, y1, x2, y2      # Bresenham line from (x1,y1) to (x2,y2); x: 0-255, y: 0-199
 paint x, y               # 4-connected flood fill from (x, y); fills clear pixels bounded by set ones
+mplot x, y, color        # set multicolor pixel at (x: 0-159, y: 0-199), color 0-3 (requires graphics on multi)
 ```
 
 All `graphics on` variants blank the VIC display during setup ($D011 DEN bit) to prevent
@@ -913,6 +964,11 @@ mode-switch glitches. Call `display on` after `gcls` and drawing to unblank.
 `plot` emits a compact helper subroutine once per program (all `plot` calls share it via `JSR`).
 `plot erase` and `plot xor` each emit their own helper (only if used); all three share the same ZP block.
 `paint` emits a ~200-byte flood-fill helper + allocates 512 bytes of stack at `$C000+` (same pool as arrays).
+`mplot` emits a shared ~115-byte helper (emitted once in post-code). The helper:
+1. Computes byte address: `$2000 + (y>>3)*320 + (x>>2)*8 + (y&7)` (same row formula as hires)
+2. Computes pair index `x&3` and shift count `(3-pair)*2` (6, 4, 2, or 0)
+3. Builds `and_mask = ~($03 << shift_count)` and `set_bits = (color&3) << shift_count`
+4. Read-Modify-Write: `LDA (ptr),Y; AND and_mask; ORA set_bits; STA (ptr),Y`
 
 X supports the full 320-pixel width. For x ≤ 255 the high byte is 0; for x = 256–319 it is 1, which the helper adds as an extra +256 to the byte address. `word` variables work directly as x.
 
@@ -1038,9 +1094,15 @@ reference each other freely.  See `examples/raster_irq_demo.ub`.
 ```basic
 numstr score, $0340      # writes "042\0" to $0340 (always 3 digits, zero-padded)
 var n = str_to_int("42") # compile-time: Expr::Number(42)
+
+print str$(score)                # print 8-bit int as 3-digit decimal string ("000"–"255")
+print "Score: " + str$(score)   # usable in string concat print context
+var s: string = str$(n)          # assign to string var (shared static buffer)
 ```
 
 `numstr` converts an 8-bit variable to a 3-character decimal ASCII string (always 3 digits, e.g. `5` → `"005"`) stored at the given absolute address, followed by a null terminator. The keyword is `numstr` (not `int_to_str`).
+
+`str$(n)` is the expression form: converts an 8-bit value to a 3-digit null-terminated decimal string and returns a pointer to it (stored in a permanent ZP pair). Always 3 digits with leading zeros (`"000"`–`"255"`). Uses a single shared 4-byte static buffer — calling `str$(n)` again overwrites the previous result.
 
 ---
 
@@ -1108,5 +1170,7 @@ data pointer) and a full hex dump of the generated machine code.
 | `rnd()` | Simple LCG, not cryptographic; period = 256 |
 | `abs()` / `sgn()` / `min()` / `max()` | 8-bit values only; `abs`/`sgn` treat values as signed (bit 7 = negative → `abs` two's-complements, `sgn` returns `$FF`); `min`/`max` are unsigned (0–255) |
 | `plot` | Out-of-range pixels are silently clipped (CheckPlot: Y ≥ 200 or X ≥ 320 → skip) |
+| `mplot` | No bounds checking — x must be 0–159, y must be 0–199 |
 | `chr$` | No PETSCII↔ASCII mapping — n is passed as-is to CHROUT |
-| Error reporting | Compile-time only; no runtime error handling |
+| `music play` | Requires `load sid`; emits one shared wrapper (last `music play` wins if called multiple times) |
+| Error reporting | Compile-time only; `onerr goto` handles KERNAL I/O errors at runtime |

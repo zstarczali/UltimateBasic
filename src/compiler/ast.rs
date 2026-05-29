@@ -25,11 +25,15 @@ pub enum Expr {
     Abs(Box<Expr>),
     Min(Box<Expr>, Box<Expr>),
     Max(Box<Expr>, Box<Expr>),
+    Clamp(Box<Expr>, Box<Expr>, Box<Expr>), // clamp(val, lo, hi) — clamp val to [lo, hi] range (8-bit unsigned)
     Sgn(Box<Expr>),
     ArrayGet(String, Box<Expr>), // arr[idx]
     ChrStr(Box<Expr>),           // chr$(n) — character with PETSCII code n
+    StrN(Box<Expr>),             // str$(n) — 8-bit integer → 3-digit null-terminated decimal string
     SpriteHit,                   // sprhit()    — read $D01E (sprite–sprite collision, cleared on read)
     SpriteBgHit,                 // sprbghit() — read $D01F (sprite–background collision, cleared on read)
+    SpriteX(Box<Expr>),          // sprite_x(id) — read sprite X position from $D000 + id*2
+    SpriteY(Box<Expr>),          // sprite_y(id) — read sprite Y position from $D001 + id*2
     StrLen(Box<Expr>),           // len(s)  — length of null-terminated string var, 0–255
     Asc(Box<Expr>),              // asc(s)  — PETSCII code of first character (0 if empty)
     Peek16(Box<Expr>),           // peek16(addr) — read 16-bit word: lo at addr, hi at addr+1
@@ -88,6 +92,7 @@ pub enum Stmt {
     Display { on: bool },  // display on/off — controls VIC DEN bit ($D011 bit4)
     Sys { addr: u16, arg: Option<Expr> },  // sys addr [, val] — optional LDA #val before JSR
     WaitKey,                                 // waitkey() standalone statement — CIA1 matrix scan until any key
+    WaitGetch,                               // wait key — blocking KERNAL getch ($FFE4 loop until keypress)
     IrqExit,                                 // irq_exit — JMP $EA81 (proper IRQ handler exit)
     /// `sid volume N` — write N to $D418 (master volume + filter mode, bits 0-3 = vol 0-15).
     SidVolume(Expr),
@@ -158,6 +163,8 @@ pub enum Stmt {
     Dec(String),
     /// screen col, row, char [, color] — direct POKE to screen and optional color RAM
     Screen { col: Expr, row: Expr, char_expr: Expr, color_expr: Option<Expr> },
+    /// `color screen col, row, c` — write color byte to color RAM ($D800 + row*40 + col)
+    ColorScreen { col: Expr, row: Expr, color: Expr },
     /// open channel, device, secondary [, "filename"] — KERNAL OPEN (SETNAM+SETLFS+OPEN)
     Open { channel: Expr, device: Expr, secondary: Expr, filename: Option<String> },
     /// close channel — KERNAL CLOSE ($FFC3) with A = channel number
@@ -181,4 +188,29 @@ pub enum Stmt {
     Speed(Expr),
     /// `badlines on/off` — enable/disable badline timing via bit 7 of $D031
     Badlines(bool),
+    /// `fill screen val` — fill screen RAM ($0400–$07FF, 4 pages) with val (fast shorthand)
+    FillScreen(Expr),
+    /// `fill color val` — fill color RAM ($D800–$DBFF, 4 pages) with val (fast shorthand)
+    FillColor(Expr),
+    /// `gosub label` — JSR to a label; complement to the existing `return` (RTS)
+    Gosub(String, usize),
+    /// `sprite_frame id, addr` — update sprite data pointer $07F8+id = addr>>6
+    /// id: 0-7 const or var; addr: 64-byte-aligned address (const, word var, or 8-bit expr)
+    SpriteFrame { id: Expr, addr: Expr },
+    /// `chardef id ... end` — inline 8-byte char definition; copies to charset_base+id*8 at runtime
+    Chardef { id: u8, bytes: Vec<u8> },
+    /// `charset addr` — set charset RAM base address (compile-time directive, default $3800)
+    CharsetBase(u16),
+    /// `mplot x, y, color` — set a 2-bit color pixel in multicolor bitmap mode (160×200)
+    Mplot { x: Expr, y: Expr, color: Expr },
+    /// `music play [N]` — initialise SID with song N (default 0) and start CIA1 50 Hz IRQ
+    MusicPlay(Expr),
+    /// `music stop` — disable CIA1 timer IRQ and zero all SID registers
+    MusicStop,
+    /// `music pause` — disable CIA1 timer IRQ without resetting SID
+    MusicPause,
+    /// `music resume` — re-enable CIA1 timer A IRQ after pause
+    MusicResume,
+    /// `onerr goto label` — install KERNAL IERROR handler ($0300/$0301 → label address)
+    OnErrGoto(String, usize),
 }
