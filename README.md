@@ -310,6 +310,9 @@ screen x, y, ch, col     # all four arguments as variables
 display on               # re-enable VIC display ($D011 DEN bit)
 display off              # blank display
 
+lowercase                # CHR$(14) → switch VIC-II to lowercase/uppercase charset
+uppercase                # CHR$(142) → switch VIC-II back to uppercase/graphics charset
+
 cursor 20, 10            # move cursor to col 20, row 10 (KERNAL PLOT $FFF0)
 cursor x, y              # column from variable x (0–39), row from y (0–24)
 
@@ -321,6 +324,8 @@ scroll x 3               # set horizontal fine scroll: $D016 bits 0-2 = 3 (0-7)
 scroll y 2               # set vertical fine scroll:   $D011 bits 0-2 = 2 (0-7)
 scroll x n               # value can be a variable or expression (masked to bits 0-2)
 ```
+
+`lowercase` emits `LDA #$0E; JSR $FFD2` at runtime. String literals compiled after `lowercase` have their case swapped automatically — uppercase source chars are stored in the PETSCII lowercase slot (`$61+`) and lowercase source chars in the uppercase slot (`$41+`) — so `"Hello World"` source displays as **Hello World** on screen. `uppercase` emits `LDA #$8E; JSR $FFD2` and reverts to direct mapping. `cls` does **not** reset the charset mode.
 
 `scroll x n` writes `(n AND 7)` into bits 0-2 of `$D016` (preserving bits 3-7).
 `scroll y n` writes `(n AND 7)` into bits 0-2 of `$D011` (preserving bits 3-7).
@@ -963,6 +968,7 @@ The result pointer is stored in a permanent ZP pair allocated at compile time.
 | `examples/sprite_orbit_demo.ub` | 8 hardware sprites in circular orbit via sin/cos table |
 | `examples/reu_bitmap_demo.ub` | REU stash/fetch with bitmap graphics |
 | `examples/sid_music_demo.ub` | SID music player with raster IRQ and keyboard exit |
+| `examples/tenprint.ub` | 5 TENPRINT maze implementations with menu; demos `lowercase` charset mode |
 
 ## Architecture
 

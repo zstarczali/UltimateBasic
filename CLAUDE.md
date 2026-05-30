@@ -38,6 +38,7 @@ examples/
   sprite_mux_orbit.ub  – 24-sprite orbit with sprdef + precomputed positions
   sprite_orbit_demo.ub – 8 hardware sprites in circular orbit via sin/cos
   reu_bitmap_demo.ub   – REU stash/fetch with bitmap graphics
+  tenprint.ub          – 5 TENPRINT maze implementations with menu; demos lowercase charset mode
 ```
 
 ## Architecture
@@ -368,10 +369,21 @@ graphics off             # back to text mode
 display on               # re-enable VIC display ($D011 bit4 = DEN → 1)
 display off              # blank display  ($D011 bit4 = DEN → 0)
 
+lowercase                # CHR$(14) → switch VIC-II to lowercase/uppercase charset
+uppercase                # CHR$(142) → switch VIC-II back to uppercase/graphics charset
+
 scroll x 3               # horizontal fine scroll: $D016 bits 0-2 = 3 (range 0-7)
 scroll y 2               # vertical fine scroll:   $D011 bits 0-2 = 2 (range 0-7)
 scroll x n               # value can be a variable or expression (masked to bits 0-2)
 ```
+
+`lowercase` emits `LDA #$0E; JSR $FFD2` (KERNAL CHROUT) at runtime to activate the
+lowercase/uppercase charset. String literals after `lowercase` are automatically
+encoded with swapped case so that source `"Hello World"` displays as **Hello World**
+on screen: uppercase source chars are stored as `$41+0x20` (→ PETSCII lowercase slot)
+and lowercase source chars as `$61−0x20` (→ PETSCII uppercase slot).
+`uppercase` emits `LDA #$8E; JSR $FFD2` and restores normal uppercase/graphics charset
+(source case-encoding reverts to direct mapping). `cls` does **not** reset the charset mode.
 
 `scroll x n` computes `(n AND 7)` and writes it into bits 0-2 of `$D016` (preserving bits 3-7).
 `scroll y n` computes `(n AND 7)` and writes it into bits 0-2 of `$D011` (preserving bits 3-7).

@@ -464,6 +464,7 @@ pub struct Codegen {
     strn_zp: Option<u8>,               // 2-byte ZP ptr pair for str$() result (lo=strn_zp, hi=strn_zp+1)
     strn_tmp_zp: Option<u8>,           // 1-byte perm ZP working scratch for strn_helper digit extraction
     strn_helper_patches: Vec<usize>,   // code positions of JSR targets to patch to strn_helper
+    charset_lowercase: bool,           // compile-time mode: true after 'lowercase', false after 'uppercase'
 }
 
 /// Carry SID metadata through pre_scan → compile().
@@ -530,6 +531,7 @@ impl Codegen {
             strn_zp: None,
             strn_tmp_zp: None,
             strn_helper_patches: vec![],
+            charset_lowercase: false,
         }
     }
 
@@ -1070,7 +1072,7 @@ impl Codegen {
                 let inner = inner.clone();
                 match inner.as_ref() {
                     Expr::StringLit(s) => {
-                        let code = s.chars().next().map(|c| ascii_to_petscii(c)).unwrap_or(0);
+                        let code = s.chars().next().map(|c| ascii_to_petscii(c, self.charset_lowercase)).unwrap_or(0);
                         self.emit(0xA9); self.emit(code);      // LDA #first_char
                     }
                     Expr::Var(name) if matches!(self.var_types.get(name), Some(VarType::Str)) => {
@@ -1743,8 +1745,9 @@ impl Codegen {
 
     // Print string literal, no trailing newline
     fn print_str_inline(&mut self, s: &str) {
+        let lowercase = self.charset_lowercase;
         for c in s.chars() {
-            self.emit(0xA9); self.emit(ascii_to_petscii(c));
+            self.emit(0xA9); self.emit(ascii_to_petscii(c, lowercase));
             self.emit(0x20); self.emit16(CHROUT);
         }
     }
@@ -5138,7 +5141,8 @@ impl Codegen {
                             self.emit16(0x0000);
                             // Emit PETSCII string + null terminator
                             let str_addr = self.current_addr();
-                            for c in s.chars() { self.emit(ascii_to_petscii(c)); }
+                            let lowercase = self.charset_lowercase;
+                            for c in s.chars() { self.emit(ascii_to_petscii(c, lowercase)); }
                             self.emit(0x00);
                             let after = self.current_addr();
                             self.patch_abs(jmp_patch, after);
@@ -5660,6 +5664,18 @@ impl Codegen {
                 }
                 self.emit(0x8D); self.emit16(0xD031); // STA $D031
             }
+            Stmt::Lowercase => {
+                // CHR$(14) → KERNAL CHROUT: switches VIC-II to lowercase/uppercase charset
+                self.charset_lowercase = true;
+                self.emit(0xA9); self.emit(0x0E);     // LDA #14
+                self.emit(0x20); self.emit16(0xFFD2); // JSR $FFD2 (CHROUT)
+            }
+            Stmt::Uppercase => {
+                // CHR$(142) → KERNAL CHROUT: switches VIC-II to uppercase/graphics charset
+                self.charset_lowercase = false;
+                self.emit(0xA9); self.emit(0x8E);     // LDA #142
+                self.emit(0x20); self.emit16(0xFFD2); // JSR $FFD2 (CHROUT)
+            }
             Stmt::SidVolume(expr) => {
                 self.eval_expr(expr);          // A = volume/filter byte
                 self.emit(0x8D); self.emit16(0xD418); // STA $D418 (master volume + filter mode)
@@ -5971,7 +5987,7 @@ impl Codegen {
                 let jmp_pos = self.code.len();
                 self.emit(0x00); self.emit(0x00); // placeholder
                 let name_addr = self.current_addr();
-                for c in filename.chars() { self.emit(ascii_to_petscii(c)); }
+                for c in filename.chars() { self.emit(ascii_to_petscii(c, false)); }
                 let after_name = self.current_addr();
                 self.patch_abs(jmp_pos, after_name);
 
@@ -7621,7 +7637,7 @@ impl Codegen {
                     self.emit(0x4C);
                     let jmp_pos = self.code.len(); self.emit16(0x0000);
                     let name_addr = self.current_addr();
-                    for c in fname.chars() { self.emit(ascii_to_petscii(c)); }
+                    for c in fname.chars() { self.emit(ascii_to_petscii(c, false)); }
                     self.patch_abs(jmp_pos, self.current_addr());
                     // SETNAM: A=len, X=lo, Y=hi
                     self.emit(0xA9); self.emit(fname.len() as u8);
@@ -8107,13 +8123,17 @@ fn mhz_to_speed_index(mhz: i32) -> u8 {
     (if idx == 0 { 0 } else { idx - 1 }).min(15) as u8
 }
 
-fn ascii_to_petscii(c: char) -> u8 {
-    // C64 default mode: uppercase/graphics
-    // PETSCII $41-$5A = uppercase A-Z (same codes as ASCII uppercase)
-    // lowercase input → convert to uppercase
+fn ascii_to_petscii(c: char, lowercase_mode: bool) -> u8 {
+    // PETSCII charset mode behaviour:
+    // Uppercase mode (default): $41-$5A = uppercase A-Z on screen; $61-$7A = graphics
+    // Lowercase mode (CHR$(14)): $41-$5A = lowercase a-z on screen; $61-$7A = uppercase A-Z on screen
+    //
+    // To make "Hello World" in source display as "Hello World" in lowercase mode we swap cases:
+    //   source 'H' (uppercase) → emit $68 ($61+'H'-'A') → displays as 'H' in lowercase mode
+    //   source 'e' (lowercase) → emit $45 ($41+'e'-'a') → displays as 'e' in lowercase mode
     match c {
-        'A'..='Z' => c as u8,
-        'a'..='z' => c as u8 - 0x20,
+        'A'..='Z' => if lowercase_mode { c as u8 + 0x20 } else { c as u8 },
+        'a'..='z' => if lowercase_mode { c as u8 - 0x20 } else { c as u8 },
         '0'..='9' => c as u8,
         ' '       => 0x20,
         '!'       => 0x21,
