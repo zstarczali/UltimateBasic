@@ -1,3 +1,0 @@
-var s = "123"
-var x = val(s)
-print x
