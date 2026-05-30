@@ -2,3 +2,4 @@
 *.prg
 *.prg
 /tmp
+/examples/out

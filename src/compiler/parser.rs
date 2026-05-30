@@ -1272,6 +1272,16 @@ impl Parser {
                 self.expect_newline();
                 Some(Stmt::Badlines(on))
             }
+            Token::Lowercase => {
+                self.advance();
+                self.expect_newline();
+                Some(Stmt::Lowercase)
+            }
+            Token::Uppercase => {
+                self.advance();
+                self.expect_newline();
+                Some(Stmt::Uppercase)
+            }
             Token::Data => {
                 self.advance();
                 let mut items = vec![];

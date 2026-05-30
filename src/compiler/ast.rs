@@ -213,4 +213,8 @@ pub enum Stmt {
     MusicResume,
     /// `onerr goto label` — install KERNAL IERROR handler ($0300/$0301 → label address)
     OnErrGoto(String, usize),
+    /// `lowercase` — switch to lowercase/uppercase charset via CHR$(14) → CHROUT ($FFD2)
+    Lowercase,
+    /// `uppercase` — switch to uppercase/graphics charset via CHR$(142) → CHROUT ($FFD2)
+    Uppercase,
 }

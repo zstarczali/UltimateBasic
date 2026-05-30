@@ -156,6 +156,8 @@ pub enum Token {
     Speed,       // speed N / speed max / speed off — U64 CPU speed ($D031 bits 0-3)
     Badlines,    // badlines on / badlines off  — U64 badline timing ($D031 bit 7)
     Turbo,       // turbo() — 1 if U64 turbo is active (bits 0-3 of $D031 != 0), else 0
+    Lowercase,   // lowercase — switch VIC-II to lowercase/uppercase charset (CHR$(14))
+    Uppercase,   // uppercase — switch VIC-II to uppercase/graphics charset (CHR$(142))
 
     // Operators
     Plus,
@@ -393,8 +395,10 @@ impl Lexer {
             "cia_timer" => Token::CiaTimer,
             "scroll"   => Token::Scroll,
             "speed"    => Token::Speed,
-            "badlines" => Token::Badlines,
-            "turbo"    => Token::Turbo,
+            "badlines"  => Token::Badlines,
+            "turbo"     => Token::Turbo,
+            "lowercase" => Token::Lowercase,
+            "uppercase" => Token::Uppercase,
             // "print" is handled above in the match (before the string match block)
             "return"   => Token::Return,
             "call"     => Token::Call,

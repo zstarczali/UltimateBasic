@@ -9,19 +9,20 @@
 
 label menu_start
 cls
+lowercase                # switch to lowercase charset mode
 color border 6
 color bg 6
 color text 1
 
-print at 7, 3,  "  TENPRINT MAZE GENERATOR  "
+print at 7, 3,  "  TenPrint Maze Generator  "
 print at 7, 4,  "---------------------------"
-print at 7, 6,  " 1.  DIRECT SCREEN POKE"
-print at 7, 8,  " 2.  PRINT CHR$ LOOP"
-print at 7, 10, " 3.  SCROLLING VERSION"
-print at 7, 12, " 4.  PURE ASSEMBLY"
-print at 7, 14, " 5.  DIRECT WRITE (FAST)"
+print at 7, 6,  " 1.  Direct screen poke"
+print at 7, 8,  " 2.  Print chr$ loop"
+print at 7, 10, " 3.  Scrolling version"
+print at 7, 12, " 4.  Pure assembly"
+print at 7, 14, " 5.  Direct write (fast)"
 print at 7, 16, "---------------------------"
-print at 7, 17, "   SELECT 1 - 5 ..."
+print at 7, 17, "   Select 1 - 5 ..."
 
 var choice = getch()
 var c=choice - 48
@@ -29,6 +30,7 @@ var c=choice - 48
 print at 7, c*2+4, "<"+(choice-48)+".>"
 delay 40
 cls
+uppercase                # switch back to uppercase charset mode
 
 if choice == 49 then goto tenprint0 end
 if choice == 50 then goto tenprint1 end
