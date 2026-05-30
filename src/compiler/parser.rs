@@ -672,9 +672,6 @@ impl Parser {
                 let block = if on && !multi && self.peek() == &Token::Block {
                     self.advance(); true
                 } else { false };
-                if block {
-                    return self.reject_stmt("Unsupported feature: graphics on block");
-                }
                 self.expect_newline();
                 Some(Stmt::Graphics { on, multi, block })
             }
@@ -986,7 +983,20 @@ impl Parser {
             }
             Token::Plot4 => {
                 self.advance();
-                self.reject_stmt("Unsupported feature: plot4")
+                if matches!(self.peek(), Token::Erase) {
+                    self.advance();
+                    let x = self.parse_expr();
+                    if self.peek() == &Token::Comma { self.advance(); }
+                    let y = self.parse_expr();
+                    self.expect_newline();
+                    Some(Stmt::Plot4Erase(x, y))
+                } else {
+                    let x = self.parse_expr();
+                    if self.peek() == &Token::Comma { self.advance(); }
+                    let y = self.parse_expr();
+                    self.expect_newline();
+                    Some(Stmt::Plot4(x, y))
+                }
             }
             Token::Paint => {
                 self.advance();

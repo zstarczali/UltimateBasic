@@ -12,17 +12,18 @@ fn compile_raw(src: &str) -> Vec<u8> {
 }
 
 #[test]
-fn graphics_on_block_is_rejected() {
+fn graphics_on_block_compiles() {
     let res = compile("graphics on block", &CompileOptions { basic_stub: false });
-    assert!(res.errors.iter().any(|err| err.contains("Unsupported feature: graphics on block")),
-        "expected graphics on block to be rejected, got {:?}", res.errors);
+    assert!(res.errors.is_empty(),
+        "expected graphics on block to compile without errors, got {:?}", res.errors);
+    assert!(!res.prg.is_empty(), "expected non-empty PRG output");
 }
 
 #[test]
-fn plot4_is_rejected() {
-    let res = compile("plot4 1, 2", &CompileOptions { basic_stub: false });
-    assert!(res.errors.iter().any(|err| err.contains("Unsupported feature: plot4")),
-        "expected plot4 to be rejected, got {:?}", res.errors);
+fn plot4_compiles() {
+    let res = compile("graphics on block\nplot4 1, 2", &CompileOptions { basic_stub: false });
+    assert!(res.errors.is_empty(),
+        "expected plot4 to compile without errors, got {:?}", res.errors);
 }
 
 struct TestCpu {
@@ -205,6 +206,12 @@ impl TestCpu {
             0xC5 => {
                 let zp = self.fetch_byte();
                 self.compare(self.a, self.mem[zp as usize]);
+            }
+            0xC6 => {
+                let zp = self.fetch_byte();
+                let result = self.mem[zp as usize].wrapping_sub(1);
+                self.mem[zp as usize] = result;
+                self.set_zn(result);
             }
             0xC9 => {
                 let imm = self.fetch_byte();
@@ -2387,7 +2394,17 @@ fn input_with_prompt_prints_before_basin() {
     assert!(chrout_pos.unwrap() < basin_pos.unwrap(), "CHROUT must come before BASIN");
 }
 
-// ── Fill ─────────────────────────────────────────────────────────────────────
+#[test]
+fn input_int_erases_non_digit_with_del() {
+    // For integer input, non-digit chars are echoed by BASIN then erased with DEL ($14 via CHROUT)
+    let prg = compile_raw("input score");
+    let bytes = &prg[2..];
+    // DEL erase: LDA #$14 ($A9 $14) followed by JSR $FFD2 ($20 $D2 $FF)
+    assert!(bytes.windows(2).any(|w| w == &[0xA9, 0x14]),
+        "input int should emit LDA #$14 (DEL) to erase non-digit echo");
+    assert!(bytes.windows(5).any(|w| w == &[0xA9, 0x14, 0x20, 0xD2, 0xFF]),
+        "input int should emit LDA #$14; JSR $FFD2 sequence");
+}
 
 #[test]
 fn fill_emits_indirect_store() {
@@ -3416,11 +3433,7 @@ fn word_array_set_var_index_emits_iny() {
 }
 
 // ── Backward compat: plot4/block removed — tests below kept as compile-only ─
-// (These tests were removed because plot4 and graphics-on-block are no longer
-//  supported. The rejection tests above verify the error path still works.)
-
 #[test]
-#[ignore = "plot4 / graphics on block removed"]
 fn graphics_on_block_emits_correct_d018() {
     // Direct write $1A to $D018 to set screen@$0400 and charset@$2800.
     let prg = compile_raw("graphics on block");
@@ -3482,7 +3495,6 @@ fn badlines_on_compiles() {
 }
 
 #[test]
-#[ignore = "plot4 / graphics on block removed"]
 fn graphics_on_block_sets_vic_bank_0() {
     let prg = compile_raw("graphics on block");
     let bytes = &prg[2..];
@@ -3566,7 +3578,6 @@ fn float_div_result_is_float() {
 }
 
 #[test]
-#[ignore = "plot4 / graphics on block removed"]
 fn graphics_on_block_copies_charset_to_2800() {
     // STA $2800,X = 9D 00 28
     let prg = compile_raw("graphics on block");
@@ -3576,7 +3587,6 @@ fn graphics_on_block_copies_charset_to_2800() {
 }
 
 #[test]
-#[ignore = "plot4 / graphics on block removed"]
 fn graphics_on_block_emits_canonical_blanked_d011() {
     let prg = compile_raw("graphics on block");
     let bytes = &prg[2..];
@@ -3585,7 +3595,6 @@ fn graphics_on_block_emits_canonical_blanked_d011() {
 }
 
 #[test]
-#[ignore = "plot4 / graphics on block removed"]
 fn graphics_on_block_canonicalizes_d011_before_display_on() {
     let prg = compile_raw("graphics on block\ndisplay on");
     let bytes = &prg[2..];
@@ -3594,7 +3603,6 @@ fn graphics_on_block_canonicalizes_d011_before_display_on() {
 }
 
 #[test]
-#[ignore = "plot4 removed"]
 fn plot4_emits_ora_pnt() {
     // ORA zero-page (opcode $05) for the set-pixel operation
     let prg = compile_raw("graphics on block\nplot4 10, 5");
@@ -3604,7 +3612,6 @@ fn plot4_emits_ora_pnt() {
 }
 
 #[test]
-#[ignore = "plot4 removed"]
 fn plot4_emits_lda_indirect_y() {
     // LDA (ptr),Y = $B1
     let prg = compile_raw("graphics on block\nplot4 10, 5");
@@ -3614,7 +3621,6 @@ fn plot4_emits_lda_indirect_y() {
 }
 
 #[test]
-#[ignore = "plot4 removed"]
 fn plot4_emits_sta_indirect_y() {
     // STA (ptr),Y = $91
     let prg = compile_raw("graphics on block\nplot4 10, 5");
@@ -3624,7 +3630,6 @@ fn plot4_emits_sta_indirect_y() {
 }
 
 #[test]
-#[ignore = "plot4 removed"]
 fn plot4_erase_emits_eor_ff() {
     // De Morgan erase uses EOR #$FF (opcode $49, value $FF) twice
     let prg = compile_raw("graphics on block\nplot4 erase 10, 5");
@@ -3635,7 +3640,6 @@ fn plot4_erase_emits_eor_ff() {
 }
 
 #[test]
-#[ignore = "plot4 / graphics on block removed"]
 fn gcls_in_block_mode_fills_screen_ram() {
     // In block mode, gcls fills $0400-$07E7 with 0 → STA $0400,X = 9D 00 04
     let prg = compile_raw("graphics on block\ngcls");
@@ -3645,7 +3649,6 @@ fn gcls_in_block_mode_fills_screen_ram() {
 }
 
 #[test]
-#[ignore = "plot4 / graphics on block removed"]
 fn gcls_in_block_mode_fills_color_ram() {
     // Also fills color RAM $D800-$DBE7 → STA $D800,X = 9D 00 D8
     let prg = compile_raw("graphics on block\ngcls");
@@ -3655,7 +3658,6 @@ fn gcls_in_block_mode_fills_color_ram() {
 }
 
 #[test]
-#[ignore = "plot4 removed"]
 fn plot4_fullscreen_fill_reaches_bottom_rows_in_emulation() {
     let src = "graphics on block\ngcls\nvar y = 0\nvar x = 0\nwhile y < 50\n  x = 0\n  while x < 80\n    plot4 x, y\n    x = x + 1\n  end\n  y = y + 1\nend";
     let prg = compile_raw(src);
@@ -3669,9 +3671,33 @@ fn plot4_fullscreen_fill_reaches_bottom_rows_in_emulation() {
 }
 
     #[test]
-    #[ignore = "graphics on block removed"]
+    fn sin_pattern_populates_bottom_block_rows() {
+        // Verify that a sin interference pattern (same formula as block_demo.ub)
+        // writes non-zero screen RAM values in the bottom character rows (chars 17-24,
+        // covering block y=34..49). This catches the "bottom third empty" regression.
+        let src = "graphics on block\ngcls\n\
+            var x = 0\nvar y = 0\nvar v = 0\n\
+            y = 0\n\
+            while y < 50\n  x = 0\n  while x < 80\n\
+                v = sin(x * 11 + y * 7)\n\
+                if v > 128 then\n  plot4 x, y\n  end\n\
+                x = x + 1\n  end\n  y = y + 1\nend";
+        let prg = compile_raw(src);
+        let mut cpu = TestCpu::new(&prg);
+        cpu.run_until_main_rts(4_000_000);
+
+        // Block rows 34-49 map to character rows 17-24 → screen offset $440 to $7E7
+        let bottom = &cpu.mem[0x0400 + 17 * 40..=0x07E7];
+        let non_zero = bottom.iter().filter(|&&b| b != 0).count();
+        assert!(non_zero > 50,
+            "expected sin pattern to write to bottom block rows, got {} non-zero cells; \
+             first row of bottom section: {:02X?}",
+            non_zero, &cpu.mem[0x0400 + 17 * 40..0x0400 + 17 * 40 + 40]);
+    }
+
+    #[test]
     fn direct_block_fill_reaches_full_screen_in_emulation() {
-        let src = "graphics on block\ngcls\ndisplay on\nfill $0C00, 1000, 15";
+        let src = "graphics on block\ngcls\ndisplay on\nfill $0400, 1000, 15";
         let prg = compile_raw(src);
         let mut cpu = TestCpu::new(&prg);
         cpu.run_until_main_rts(2_000_000);
@@ -3683,7 +3709,6 @@ fn plot4_fullscreen_fill_reaches_bottom_rows_in_emulation() {
     }
 
 #[test]
-#[ignore = "graphics on block removed"]
 fn graphics_on_block_parser_sets_block_flag() {
     // Parser test: `graphics on block` should parse to Graphics { on: true, block: true, multi: false }
     use ultimate_basic::compiler::parser::Parser;
@@ -4093,6 +4118,31 @@ fn string_index_write_var_index_emits_tay() {
         "string[i]=c with var index should emit TAY ($A8); got {:?}", bytes);
     assert!(bytes.iter().any(|&b| b == 0x91),
         "string[i]=c should emit STA (ptr),Y ($91); got {:?}", bytes);
+}
+
+#[test]
+fn string_index_read_const_emits_lda_indirect_y() {
+    // var c = msg[0]  →  LDY #0; LDA (ptr),Y
+    let prg = compile_raw("var msg = \"ABC\"\nvar c = msg[0]");
+    let bytes = &prg[2..];
+    // LDA (zp),Y opcode = $B1
+    assert!(bytes.iter().any(|&b| b == 0xB1),
+        "string[0] read should emit LDA (ptr),Y ($B1); got {:?}", bytes);
+    // LDY #0 = A0 00
+    assert!(bytes.windows(2).any(|w| w == &[0xA0, 0x00]),
+        "string[0] read should emit LDY #0 ($A0 $00); got {:?}", bytes);
+}
+
+#[test]
+fn string_index_read_var_index_emits_tay() {
+    // var c = msg[i]  →  eval i → A; TAY; LDA (ptr),Y
+    let prg = compile_raw("var msg = \"ABC\"\nvar i = 1\nvar c = msg[i]");
+    let bytes = &prg[2..];
+    // TAY = $A8; LDA (zp),Y = $B1
+    assert!(bytes.iter().any(|&b| b == 0xA8),
+        "string[i] read with var index should emit TAY ($A8); got {:?}", bytes);
+    assert!(bytes.iter().any(|&b| b == 0xB1),
+        "string[i] read should emit LDA (ptr),Y ($B1); got {:?}", bytes);
 }
 
 // ─── sprite_x / sprite_y ───────────────────────────────────────────────────

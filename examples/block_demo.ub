@@ -1,0 +1,84 @@
+# block_demo.ub
+# 80×50 block pixel graphics demo
+# Press any key to continue between scenes
+
+color border 0
+color bg 0
+graphics on block
+gcls
+
+var x = 0
+var y = 0
+var v = 0
+var i = 0
+var k = 0
+var px = 20
+var py = 15
+var dx = 1
+var dy = 1
+
+# ── 1. sin interference pattern ──────────────────────────────────────────────
+# x*11 spans 79*11=869 ≈ 3.4 sin-cycles per row → uniform ~50% density on ALL 50 rows
+# (verified in the 6502 emulator: screen RAM $0400-$07E7 is fully populated)
+
+y = 0
+while y < 50
+  x = 0
+  while x < 80
+    v = sin(x * 11 + y * 7)
+    if v > 128 then
+      plot4 x, y
+    end
+    x = x + 1
+  end
+  y = y + 1
+end
+
+display on
+k = getch()
+
+# ── 2. bouncing block in a framed arena ──────────────────────────────────────
+
+gcls
+
+# draw border frame
+i = 0
+while i < 80
+  plot4 i, 0
+  plot4 i, 49
+  i = i + 1
+end
+i = 1
+while i < 49
+  plot4 0, i
+  plot4 79, i
+  i = i + 1
+end
+
+loop
+  plot4 erase px, py
+
+  if dx == 1 then
+    px = px + 1
+    if px >= 78 then dx = 0 end
+  else
+    px = px - 1
+    if px <= 1 then dx = 1 end
+  end
+
+  if dy == 1 then
+    py = py + 1
+    if py >= 48 then dy = 0 end
+  else
+    py = py - 1
+    if py <= 1 then dy = 1 end
+  end
+
+  plot4 px, py
+  wait 2
+
+  k = inkey()
+  if k != 0 then break end
+end
+
+bye

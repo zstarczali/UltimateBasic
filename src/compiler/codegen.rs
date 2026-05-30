@@ -2611,41 +2611,40 @@ impl Codegen {
     // and color RAM ($D800-$DBE7, 1000 bytes) with 1 (white pixels on background color).
     fn emit_gcls_block(&mut self) {
         // ── Screen RAM ($0400-$07E7) ← 0 (char 0 = all pixels off) ───────
-        // 3 full pages ($04xx, $05xx, $06xx) then 232 bytes ($07xx).
+        // Clear all 4 pages $0400-$07FF (1024 bytes) with a single INX/BNE page
+        // loop so the WHOLE 1000-byte matrix — including the bottom rows
+        // ($0700-$07E7) — is cleared. The extra $07E8-$07FF (incl. sprite
+        // pointers) is harmless: sprites are disabled in block mode.
+        // NOTE: a descending `LDX #231 … DEX BPL` loop is WRONG here — 231 = $E7
+        // already has bit 7 set, so BPL exits after one iteration and leaves
+        // $0700-$07E6 holding the KERNAL's leftover $20 spaces; plot4's ORA then
+        // turns those into $2F (undefined char → blank), blanking the bottom rows.
         self.emit(0xA9); self.emit(0x00);    // LDA #0
         self.emit(0xA2); self.emit(0x00);    // LDX #0
         let top1 = self.current_addr();
         self.emit(0x9D); self.emit(0x00); self.emit(0x04); // STA $0400,X
         self.emit(0x9D); self.emit(0x00); self.emit(0x05); // STA $0500,X
         self.emit(0x9D); self.emit(0x00); self.emit(0x06); // STA $0600,X
+        self.emit(0x9D); self.emit(0x00); self.emit(0x07); // STA $0700,X
         self.emit(0xE8);                     // INX
         self.emit(0xD0); let b1 = self.code.len(); self.emit(0x00);
         self.patch_bxx(b1, top1);
-        // Remaining 232 bytes ($0700-$07E7): X from 231 downto 0.
-        self.emit(0xA2); self.emit(231u8);   // LDX #231
-        let top2 = self.current_addr();
-        self.emit(0x9D); self.emit(0x00); self.emit(0x07); // STA $0700,X
-        self.emit(0xCA);                     // DEX
-        self.emit(0x10); let b2 = self.code.len(); self.emit(0x00);
-        self.patch_bxx(b2, top2);
 
         // ── Color RAM ($D800-$DBE7) ← 1 (white pixels) ───────────────────
+        // Same 4-page INX/BNE clear ($D800-$DBFF), covering all 1000 cells incl.
+        // the bottom rows. Without this the bottom color cells keep the default
+        // $0E (light blue) — but since the char itself is blank the pixels show
+        // background anyway; clearing keeps state consistent.
         self.emit(0xA9); self.emit(0x01);    // LDA #1 (white)
         self.emit(0xA2); self.emit(0x00);    // LDX #0
         let top3 = self.current_addr();
         self.emit(0x9D); self.emit(0x00); self.emit(0xD8); // STA $D800,X
         self.emit(0x9D); self.emit(0x00); self.emit(0xD9); // STA $D900,X
         self.emit(0x9D); self.emit(0x00); self.emit(0xDA); // STA $DA00,X
+        self.emit(0x9D); self.emit(0x00); self.emit(0xDB); // STA $DB00,X
         self.emit(0xE8);                     // INX
         self.emit(0xD0); let b3 = self.code.len(); self.emit(0x00);
         self.patch_bxx(b3, top3);
-        // Remaining 232 bytes ($DB00-$DBE7).
-        self.emit(0xA2); self.emit(231u8);   // LDX #231
-        let top4 = self.current_addr();
-        self.emit(0x9D); self.emit(0x00); self.emit(0xDB); // STA $DB00,X
-        self.emit(0xCA);                     // DEX
-        self.emit(0x10); let b4 = self.code.len(); self.emit(0x00);
-        self.patch_bxx(b4, top4);
     }
 
     // Gcls: clear bitmap $2000-$3FFF (32 pages with $00) AND fill video matrix
@@ -6096,9 +6095,21 @@ impl Codegen {
                 let skip_addr = self.current_addr();
                 self.emit(0x4C); self.emit16(loop_top);
 
-                // Patch digit-filter skips
-                if let Some(bcc) = bcc_digit { self.patch_bxx(bcc + 1, skip_addr); }
-                if let Some(bcs) = bcs_digit { self.patch_bxx(bcs + 1, skip_addr); }
+                // For integer mode: invalid char handler — erase echoed char with DEL ($14),
+                // then loop back. BASIN already echoed the char; CHROUT $14 erases it.
+                let inv_char_addr = if !is_string {
+                    let addr = self.current_addr();
+                    self.emit(0xA9); self.emit(0x14);     // LDA #$14 (DEL)
+                    self.emit(0x20); self.emit16(0xFFD2); // JSR $FFD2 (CHROUT)
+                    self.emit(0x4C); self.emit16(loop_top); // JMP loop_top
+                    addr
+                } else {
+                    skip_addr
+                };
+
+                // Patch digit-filter skips: invalid chars → erase echo; buffer-full → silent skip
+                if let Some(bcc) = bcc_digit { self.patch_bxx(bcc + 1, inv_char_addr); }
+                if let Some(bcs) = bcs_digit { self.patch_bxx(bcs + 1, inv_char_addr); }
                 self.patch_bxx(bcs_max + 1, skip_addr);
 
                 // DEL handler
