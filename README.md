@@ -274,6 +274,24 @@ mplot x, y, color        # set multicolor pixel (x: 0-159, y: 0-199, color: 0-3)
 Both `graphics on` variants blank the display (`LDA $D011 / AND #$EF / STA $D011`) while
 switching VIC registers, then re-enable it in the target mode — prevents mode-switch glitches.
 
+### Block graphics (80×50)
+
+```basic
+graphics on block        # 80×50 block-pixel mode (text mode + custom 4-pixel charset @ $2800)
+graphics off             # return to text mode
+gcls                     # clear block playfield: screen RAM $0400-$07FF + color RAM $D800-$DBFF
+
+plot4 x, y               # set block pixel at (x, y);  x: 0-79, y: 0-49
+plot4 erase x, y         # clear block pixel at (x, y)
+```
+
+A chunky low-res mode layered on standard 40×25 text. A 16-character custom charset copied to
+`$2800` encodes a 2×2 quadrant grid per character (bit3=TL, bit2=TR, bit1=BL, bit0=BR), so each
+text cell holds 2×2 block pixels → an effective 80×50 grid. No bitmap RAM is used (`$2000-$3FFF`
+stays free), making it faster than hires bitmap. `plot4` OR's the quadrant bit into the cell so
+overlapping pixels accumulate; `plot4 erase` clears it. `gcls` clears both screen and color RAM.
+See `examples/block_demo.ub`.
+
 ### Screen and color
 
 ```basic
@@ -935,6 +953,7 @@ The result pointer is stored in a permanent ZP pair allocated at compile time.
 | `examples/features.ub` | const, label/goto, poke/peek, rnd, math functions |
 | `examples/new_features.ub` | sub params, arrays, word vars, string vars |
 | `examples/bitmap_demo.ub` | 320×200 bitmap, plot, graphics on/off |
+| `examples/block_demo.ub` | 80×50 block graphics, plot4, graphics on block |
 | `examples/joystick_demo.ub` | joystick reading, sprite movement |
 | `examples/mux_demo.ub` | raster sprite multiplexer (3 windows × 8 sprites = 24) |
 | `examples/orbit_demo.ub` | 24-sprite orbit with pulsating radius and random colors |
@@ -1022,6 +1041,7 @@ cargo test               # unit + integration tests
 | `abs()` / `sgn()` / `min()` / `max()` | 8-bit values only; `abs`/`sgn` treat values as signed (bit 7 = negative → `abs` two's-complements, `sgn` returns `$FF`); `min`/`max` are unsigned (0–255) |
 | `plot` | Out-of-range pixels are silently clipped (Y ≥ 200 or X ≥ 320 → no-op) |
 | `mplot` | No bounds checking — x must be 0–159, y must be 0–199 |
+| `plot4` | No bounds checking — x must be 0–79, y must be 0–49 (block mode) |
 | `chr$` | No PETSCII↔ASCII mapping — n is passed as-is to CHROUT |
 | `music play` | Requires `load sid`; only one CIA1 wrapper is emitted (last `music play` wins) |
 | Error reporting | Compile-time only; `onerr goto` handles KERNAL I/O errors at runtime |

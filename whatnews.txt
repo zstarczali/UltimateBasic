@@ -42,6 +42,14 @@ Bitmap graphics
   - mplot x, y, color  (multicolor pixel; requires graphics on multi)
   - plot erase, plot xor, line, paint
 
+Block graphics (80×50)
+  - graphics on block  (chunky 80×50 mode; custom 4-pixel charset @ $2800; no bitmap RAM)
+  - plot4 x, y / plot4 erase x, y  (set/clear a block pixel, x: 0-79, y: 0-49)
+  - gcls clears screen RAM $0400-$07FF + color RAM $D800-$DBFF in block mode
+  - Fix: gcls block-mode no longer leaves the bottom ~6 rows uncleared
+    (the old descending LDX #231/DEX/BPL loop ran only once for counts ≥128;
+     replaced with forward INX/BNE page loops)
+
 Sprites & charset
   - sprite_frame id, addr  (update data pointer at runtime)
   - sprdef id...end  (inline 63-byte shape + auto pointer; binary literals)

@@ -29,6 +29,7 @@ examples/
   features.ub          – original feature demo
   new_features.ub      – arrays, word vars, sub params, string vars demo
   bitmap_demo.ub       – 320×200 bitmap, plot, circle, line
+  block_demo.ub        – 80×50 block graphics, plot4, graphics on block
   joystick_demo.ub     – joystick reading, sprite movement
   mux_demo.ub          – raster sprite multiplexer (3 windows × 8 sprites)
   orbit_demo.ub        – 24-sprite orbit with pulsating radius
@@ -974,6 +975,41 @@ X supports the full 320-pixel width. For x ≤ 255 the high byte is 0; for x = 2
 
 Pixel byte formula: `$2000 + (y>>3)*320 + (x and $1F8) + (y and 7)`,  bit: `$80 >> (x and 7)`
 
+### Block Graphics (80×50)
+
+```basic
+graphics on block        # 80×50 block-pixel mode (text mode + custom 4-pixel charset @ $2800)
+graphics off             # back to text mode
+gcls                     # clear block playfield: screen RAM $0400-$07FF + color RAM $D800-$DBFF
+
+plot4 x, y               # set block pixel at (x, y);  x: 0-79, y: 0-49
+plot4 erase x, y         # clear block pixel at (x, y)
+```
+
+Block mode is a chunky low-res mode layered on standard 40×25 text mode. A 16-character custom
+charset is built and copied to `$2800`; each character encodes a 2×2 quadrant grid
+(bit3=top-left, bit2=top-right, bit1=bottom-left, bit0=bottom-right). Each text cell therefore
+holds 2×2 block pixels → an effective 80×50 grid. No bitmap RAM is used (`$2000-$3FFF` stays
+free), making it faster than hires bitmap.
+
+`emit_graphics_on_block()`:
+1. Blanks display (`$D011` DEN), disables all sprites and clears sprite MCM/expand/priority
+2. Forces 40-column mode (`$D016`), VIC bank 0 (`$DD00`), and clears MCM/ECM/BMM
+3. Builds the 16-char charset inline (`JMP` over 128 bytes) and copies it to `$2800`
+4. Sets `$D018 = $1A` (screen `$0400`, charset `$2800`), `$D011 = $0B`
+
+`plot4 x, y` computes the cell address `$0400 + (y>>1)*40 + (x>>1)`, derives the quadrant bit
+from `(x&1, y&1)`, and OR's it into the cell so overlapping block pixels accumulate.
+`plot4 erase` AND's the inverse mask. Both share a helper using ZP `$FB/$FC/$FD`.
+
+`gcls` in block mode clears screen RAM (`$0400-$07FF`) and color RAM (`$D800-$DBFF`) with
+forward `INX/BNE` page loops. (Earlier versions used a descending `LDX #231 / DEX / BPL` loop
+that only ran once — bit 7 of `$E7` is set, so `BPL` exits immediately — leaving the bottom
+~6 rows holding KERNAL `$20` spaces that rendered as black/garbage blocks. Always use forward
+`INX/BNE` page loops for ≥128-byte fills.)
+
+See `examples/block_demo.ub`.
+
 ### chr$
 
 ```basic
@@ -1171,6 +1207,7 @@ data pointer) and a full hex dump of the generated machine code.
 | `abs()` / `sgn()` / `min()` / `max()` | 8-bit values only; `abs`/`sgn` treat values as signed (bit 7 = negative → `abs` two's-complements, `sgn` returns `$FF`); `min`/`max` are unsigned (0–255) |
 | `plot` | Out-of-range pixels are silently clipped (CheckPlot: Y ≥ 200 or X ≥ 320 → skip) |
 | `mplot` | No bounds checking — x must be 0–159, y must be 0–199 |
+| `plot4` | No bounds checking — x must be 0–79, y must be 0–49 (block mode) |
 | `chr$` | No PETSCII↔ASCII mapping — n is passed as-is to CHROUT |
 | `music play` | Requires `load sid`; emits one shared wrapper (last `music play` wins if called multiple times) |
 | Error reporting | Compile-time only; `onerr goto` handles KERNAL I/O errors at runtime |
