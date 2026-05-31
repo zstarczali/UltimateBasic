@@ -966,7 +966,7 @@ The result pointer is stored in a permanent ZP pair allocated at compile time.
 | `examples/features.ub` | const, label/goto, poke/peek, rnd, math functions |
 | `examples/new_features.ub` | sub params, arrays, word vars, string vars |
 | `examples/bitmap_demo.ub` | 320×200 bitmap, plot, graphics on/off |
-| `examples/block_demo.ub` | 80×50 block graphics, plot4, graphics on block |
+| `examples/block_demo.ub` | 80×50 block graphics, plot4, circle4, graphics on block |
 | `examples/joystick_demo.ub` | joystick reading, sprite movement |
 | `examples/mux_demo.ub` | raster sprite multiplexer (3 windows × 8 sprites = 24) |
 | `examples/orbit_demo.ub` | 24-sprite orbit with pulsating radius and random colors |

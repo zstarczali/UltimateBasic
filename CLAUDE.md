@@ -29,7 +29,7 @@ examples/
   features.ub          – original feature demo
   new_features.ub      – arrays, word vars, sub params, string vars demo
   bitmap_demo.ub       – 320×200 bitmap, plot, circle, line
-  block_demo.ub        – 80×50 block graphics, plot4, graphics on block
+  block_demo.ub        – 80×50 block graphics, plot4, circle4, graphics on block
   joystick_demo.ub     – joystick reading, sprite movement
   mux_demo.ub          – raster sprite multiplexer (3 windows × 8 sprites)
   orbit_demo.ub        – 24-sprite orbit with pulsating radius
