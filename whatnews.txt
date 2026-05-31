@@ -1,5 +1,35 @@
-Ultimate Basic v1.4.0 – Release Notes
+Ultimate Basic v1.4.2 – Release Notes
 ======================================
+
+Recent development notes (2026-05-30 / 2026-05-31)
+--------------------------------------------------
+
+2026-05-31
+  - Added parallax starfield example programs:
+      examples/parallax.ub
+      examples/parallax_demo.ub
+      examples/text_scroll_demo.ub
+  - Added smooth text-scroller demo using hardware horizontal fine scroll.
+  - Added new scroll helpers for pixel-scrolling examples:
+      scroll x n narrow   (set x fine-scroll and force 38-column mode)
+      scroll x n wide     (set x fine-scroll and restore 40-column mode)
+      scroll row R left   (shift one screen RAM row left by one character)
+  - Reworked text-scroll example to use UltimateBasic commands instead of inline asm for
+    38/40-column mode and row shifting.
+  - Clarified documentation: semicolon is not a BASIC comment marker; it is an asm-source
+    comment marker inside asm { } blocks. BASIC comments are # and rem.
+  - Added focused tests for scroll x narrow/wide, scroll row left, and semicolon handling.
+
+2026-05-30
+  - Added graphics on block: 80x50 chunky block-pixel mode using a custom 4-pixel charset
+    at $2800, with no bitmap RAM required.
+  - Added plot4 x, y and plot4 erase x, y for setting and clearing block pixels.
+  - Added circle4 x, y, r for midpoint circle outlines in 80x50 block-pixel mode.
+  - Fixed gcls in block mode so it clears all screen/color RAM pages correctly; the old
+    descending DEX/BPL loop failed for counts >= 128.
+  - Added lowercase and uppercase commands for switching C64 charset mode via CHROUT.
+  - Updated TENPRINT example to demonstrate lowercase charset mode.
+  - Removed temporary test/demo files from tmp/.
 
 New language features
 ---------------------
@@ -35,6 +65,9 @@ Screen & display
   - screen col, row, char [, color]  (direct screen/color RAM write)
   - display on / display off  (VIC DEN bit, independent of mode)
   - scroll x n / scroll y n  (hardware fine-scroll registers)
+  - scroll x n narrow / scroll x n wide  (fine scroll + 38/40-column mode control)
+  - scroll row R left  (single screen-row character shift for smooth scrollers)
+  - lowercase / uppercase  (switch C64 charset mode)
   - cursor col, row
 
 Bitmap graphics
@@ -45,6 +78,7 @@ Bitmap graphics
 Block graphics (80×50)
   - graphics on block  (chunky 80×50 mode; custom 4-pixel charset @ $2800; no bitmap RAM)
   - plot4 x, y / plot4 erase x, y  (set/clear a block pixel, x: 0-79, y: 0-49)
+  - circle4 x, y, r  (draw clipped midpoint circle outlines in block-pixel coordinates)
   - gcls clears screen RAM $0400-$07FF + color RAM $D800-$DBFF in block mode
   - Fix: gcls block-mode no longer leaves the bottom ~6 rows uncleared
     (the old descending LDX #231/DEX/BPL loop ran only once for counts ≥128;

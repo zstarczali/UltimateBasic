@@ -1,0 +1,392 @@
+# parallax_demo.ub
+# Hardware fine-scroll parallax starfield.
+# The first seven text rows stay fixed; lower bands use pixel-scroll phases.
+
+cls fast
+color border 0
+color bg 0
+color text 1
+scroll x 0
+asm {
+  LDA #$00
+  STA $D016        ; 38-column mode hides the incoming scroll column
+}
+
+print at 6, 0, "HARDWARE PARALLAX SCROLL"
+print at 4, 1, "LOWER BANDS PIXEL SCROLL"
+print at 10, 2, "PRESS ANY KEY"
+
+var frame = 0
+var tick1 = 0
+var p0 = 7
+var p1 = 7
+var p2 = 7
+var p3 = 7
+var p4 = 7
+var p5 = 7
+var key = 0
+
+# IRQ phase table in free RAM. The raster handler reads these every frame.
+poke $C300, p0
+poke $C301, p1
+poke $C302, p2
+poke $C303, p3
+poke $C304, p4
+poke $C305, p5
+poke $C306, 0
+
+# Seed sparse star rows. The parallax is produced by hardware fine scroll,
+# while character rows are shifted only when their 8-pixel phase wraps.
+screen 2, 8, 46, 6
+screen 17, 8, 46, 6
+screen 31, 8, 46, 6
+screen 8, 9, 46, 6
+screen 25, 9, 46, 6
+
+screen 4, 10, 46, 14
+screen 13, 10, 46, 14
+screen 29, 10, 46, 14
+screen 35, 11, 46, 14
+screen 20, 11, 46, 14
+
+screen 6, 13, 42, 3
+screen 16, 13, 46, 3
+screen 28, 13, 42, 3
+screen 37, 14, 46, 3
+screen 12, 14, 42, 3
+
+screen 1, 16, 42, 7
+screen 11, 16, 42, 7
+screen 24, 16, 46, 7
+screen 33, 17, 42, 7
+screen 19, 17, 46, 7
+
+screen 5, 19, 43, 1
+screen 15, 19, 45, 1
+screen 27, 19, 43, 1
+screen 38, 20, 45, 1
+screen 21, 20, 43, 1
+
+screen 3, 22, 45, 1
+screen 9, 22, 43, 1
+screen 18, 23, 45, 1
+screen 27, 23, 43, 1
+screen 36, 23, 45, 1
+
+# Raster split IRQ. It changes horizontal fine scroll for six bands.
+asm {
+  SEI
+  LDA #<irq0
+  STA $0314
+  LDA #>irq0
+  STA $0315
+  LDA #$7F
+  STA $DC0D        ; disable CIA1 timer IRQ
+  LDA #$1B
+  STA $D011        ; text mode, display on, raster bit 8 clear
+  LDA #$70
+  STA $D012        ; first split before row 8, below the fixed header
+  LDA #$01
+  STA $D01A        ; enable VIC raster IRQ
+  CLI
+  JMP irq_done
+
+irq0:
+  INC $D019
+  LDA $C300
+  AND #$07
+  STA $D016
+  LDA #$80
+  STA $D012
+  LDA #<irq1
+  STA $0314
+  LDA #>irq1
+  STA $0315
+  JMP $EA7E
+
+irq1:
+  INC $D019
+  LDA $C301
+  AND #$07
+  STA $D016
+  LDA #$98
+  STA $D012
+  LDA #<irq2
+  STA $0314
+  LDA #>irq2
+  STA $0315
+  JMP $EA7E
+
+irq2:
+  INC $D019
+  LDA $C302
+  AND #$07
+  STA $D016
+  LDA #$B0
+  STA $D012
+  LDA #<irq3
+  STA $0314
+  LDA #>irq3
+  STA $0315
+  JMP $EA7E
+
+irq3:
+  INC $D019
+  LDA $C303
+  AND #$07
+  STA $D016
+  LDA #$C8
+  STA $D012
+  LDA #<irq4
+  STA $0314
+  LDA #>irq4
+  STA $0315
+  JMP $EA7E
+
+irq4:
+  INC $D019
+  LDA $C304
+  AND #$07
+  STA $D016
+  LDA #$E0
+  STA $D012
+  LDA #<irq5
+  STA $0314
+  LDA #>irq5
+  STA $0315
+  JMP $EA7E
+
+irq5:
+  INC $D019
+  LDA $C305
+  AND #$07
+  STA $D016
+  LDA #$F8
+  STA $D012
+  LDA #<irq_reset
+  STA $0314
+  LDA #>irq_reset
+  STA $0315
+  JMP $EA7E
+
+irq_reset:
+  INC $D019
+  LDA #$00
+  STA $D016
+  LDA #$70
+  STA $D012
+  LDA #<irq0
+  STA $0314
+  LDA #>irq0
+  STA $0315
+  JMP $EA7E
+
+irq_done:
+}
+
+label main_loop
+# Keep updates away from the visible split area. The IRQ uses the phase table
+# for the next frame, so updating it in the lower border avoids mid-frame wobble.
+wait raster 250
+
+inc frame
+inc tick1
+
+# Layer 0: slowest, one pixel every four frames.
+if (frame and 3) == 0 then
+  if p0 == 0 then
+    p0 = 7
+    asm {
+      LDX #$00
+    l0r8:
+      LDA $0541,X
+      STA $0540,X
+      LDA $0569,X
+      STA $0568,X
+      INX
+      CPX #$27
+      BNE l0r8
+    }
+    poke $0567, 32
+    poke $058F, 32
+    poke $D967, 6
+    poke $D98F, 6
+    if rnd(4) == 0 then poke $0567, 46 end
+    if rnd(4) == 0 then poke $058F, 46 end
+  else
+    dec p0
+  end
+end
+
+# Layer 1: one pixel every three frames.
+if tick1 == 3 then
+  tick1 = 0
+  if p1 == 0 then
+    p1 = 7
+    asm {
+      LDX #$00
+    l1r10:
+      LDA $0591,X
+      STA $0590,X
+      LDA $05B9,X
+      STA $05B8,X
+      INX
+      CPX #$27
+      BNE l1r10
+    }
+    poke $05B7, 32
+    poke $05DF, 32
+    poke $D9B7, 14
+    poke $D9DF, 14
+    if rnd(3) == 0 then poke $05B7, 46 end
+    if rnd(3) == 0 then poke $05DF, 46 end
+  else
+    dec p1
+  end
+end
+
+# Layer 2: one pixel every two frames.
+if (frame and 1) == 0 then
+  if p2 == 0 then
+    p2 = 7
+    asm {
+      LDX #$00
+    l2r13:
+      LDA $0609,X
+      STA $0608,X
+      LDA $0631,X
+      STA $0630,X
+      INX
+      CPX #$27
+      BNE l2r13
+    }
+    poke $062F, 32
+    poke $0657, 32
+    poke $DA2F, 3
+    poke $DA57, 3
+    if rnd(2) == 0 then poke $062F, 42 end
+    if rnd(2) == 0 then poke $0657, 46 end
+  else
+    dec p2
+  end
+end
+
+# Layer 3: one pixel every frame.
+if p3 == 0 then
+  p3 = 7
+  asm {
+    LDX #$00
+  l3r16:
+    LDA $0681,X
+    STA $0680,X
+    LDA $06A9,X
+    STA $06A8,X
+    INX
+    CPX #$27
+    BNE l3r16
+  }
+  poke $06A7, 32
+  poke $06CF, 32
+  poke $DAA7, 7
+  poke $DACF, 7
+  if rnd(2) == 0 then poke $06A7, 42 end
+  if rnd(2) == 0 then poke $06CF, 46 end
+else
+  dec p3
+end
+
+# Layer 4: faster foreground, one pixel every frame plus denser stars.
+if p4 == 0 then
+  p4 = 7
+  asm {
+    LDX #$00
+  l4r19:
+    LDA $06F9,X
+    STA $06F8,X
+    LDA $0721,X
+    STA $0720,X
+    INX
+    CPX #$27
+    BNE l4r19
+  }
+  poke $071F, 32
+  poke $0747, 32
+  poke $DB1F, 1
+  poke $DB47, 1
+  if rnd(3) != 0 then poke $071F, 43 end
+  if rnd(3) != 0 then poke $0747, 45 end
+else
+  dec p4
+end
+
+# Layer 5: nearest band, two pixel steps per frame.
+if p5 <= 1 then
+  p5 = 7
+  asm {
+    LDX #$00
+  l5r22:
+    LDA $0771,X
+    STA $0770,X
+    LDA $0799,X
+    STA $0798,X
+    INX
+    CPX #$27
+    BNE l5r22
+  }
+  poke $0797, 32
+  poke $07BF, 32
+  poke $DB97, 1
+  poke $DBBF, 1
+  if rnd(2) == 0 then poke $0797, 43 end
+  if rnd(2) == 0 then poke $07BF, 45 end
+else
+  p5 = p5 - 2
+end
+
+# Commit all fine-scroll phases together for the next raster frame.
+poke $C300, p0
+poke $C301, p1
+poke $C302, p2
+poke $C303, p3
+poke $C304, p4
+poke $C305, p5
+
+# KERNAL keyboard scanning is disabled with CIA1 timer IRQs, so poll the
+# keyboard matrix directly: any low bit on $DC01 means some key is held.
+asm {
+  LDA #$FF
+  STA $DC02        ; CIA1 port A output: drive all keyboard columns
+  LDA #$00
+  STA $DC03        ; CIA1 port B input: read keyboard rows
+  STA $DC00        ; select all columns
+  LDA $DC01
+  CMP #$FF
+  BEQ no_key
+  LDA #$01
+  STA $C306
+no_key:
+}
+key = peek($C306)
+if key != 0 then goto done end
+
+wait 1
+goto main_loop
+
+label done
+asm {
+  SEI
+  LDA #$00
+  STA $D01A
+  LDA #$7F
+  STA $DC0D
+  CLI
+}
+scroll x 0
+asm {
+  LDA #$08
+  STA $D016        ; restore normal 40-column text mode
+}
+color border 0
+color bg 6
+cls
+bye

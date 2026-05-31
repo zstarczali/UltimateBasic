@@ -54,8 +54,8 @@ Keywords and identifiers are **case-insensitive**: `PRINT`, `Print`, and `print`
 ```basic
 # hash comment
 rem this is also a comment
-var x = 5  ; inline semicolon comment
-var x = 5  : var y = 6  # colon separates statements on one line
+var x = 5  # inline comment
+var x = 5 : var y = 6  # colon separates statements on one line
 ```
 
 ### Operators
@@ -283,13 +283,15 @@ gcls                     # clear block playfield: screen RAM $0400-$07FF + color
 
 plot4 x, y               # set block pixel at (x, y);  x: 0-79, y: 0-49
 plot4 erase x, y         # clear block pixel at (x, y)
+circle4 x, y, r          # draw midpoint circle in block pixels; clips to 80×50
 ```
 
 A chunky low-res mode layered on standard 40×25 text. A 16-character custom charset copied to
 `$2800` encodes a 2×2 quadrant grid per character (bit3=TL, bit2=TR, bit1=BL, bit0=BR), so each
 text cell holds 2×2 block pixels → an effective 80×50 grid. No bitmap RAM is used (`$2000-$3FFF`
 stays free), making it faster than hires bitmap. `plot4` OR's the quadrant bit into the cell so
-overlapping pixels accumulate; `plot4 erase` clears it. `gcls` clears both screen and color RAM.
+overlapping pixels accumulate; `plot4 erase` clears it. `circle4` uses the same block-pixel helper
+to draw an outline circle in the 80×50 coordinate space. `gcls` clears both screen and color RAM.
 See `examples/block_demo.ub`.
 
 ### Screen and color
@@ -323,12 +325,18 @@ print at 0, 0            # position only (no text, no newline)
 scroll x 3               # set horizontal fine scroll: $D016 bits 0-2 = 3 (0-7)
 scroll y 2               # set vertical fine scroll:   $D011 bits 0-2 = 2 (0-7)
 scroll x n               # value can be a variable or expression (masked to bits 0-2)
+scroll x 7 narrow        # set fine scroll and force 38-column mode (hide edge column)
+scroll x 0 wide          # set fine scroll and restore 40-column mode
+scroll row 12 left       # shift screen RAM row 12 left by one character
 ```
 
 `lowercase` emits `LDA #$0E; JSR $FFD2` at runtime. String literals compiled after `lowercase` have their case swapped automatically — uppercase source chars are stored in the PETSCII lowercase slot (`$61+`) and lowercase source chars in the uppercase slot (`$41+`) — so `"Hello World"` source displays as **Hello World** on screen. `uppercase` emits `LDA #$8E; JSR $FFD2` and reverts to direct mapping. `cls` does **not** reset the charset mode.
 
 `scroll x n` writes `(n AND 7)` into bits 0-2 of `$D016` (preserving bits 3-7).
+`scroll x n narrow` writes the fine-scroll bits and clears `$D016` bit 3 (38-column mode).
+`scroll x n wide` writes the fine-scroll bits and sets `$D016` bit 3 (40-column mode).
 `scroll y n` writes `(n AND 7)` into bits 0-2 of `$D011` (preserving bits 3-7).
+`scroll row R left` shifts one constant screen row left; write the new rightmost character with `screen 39, R, ch`.
 Useful for smooth hardware scrolling: decrement each frame from 7 down to 0, shift screen RAM, reset to 7.
 
 `screen col, row, char [, color]` writes directly to screen RAM (`$0400 + row*40 + col`) and
@@ -909,7 +917,7 @@ done:
 - `#<label` / `#>label` yield the lo / hi byte of a label's address.
 - `*` yields the current instruction address, so `JMP *` assembles as a self-loop.
 - Lines starting with `$`, `%`, or a digit are emitted as raw bytes (backward-compatible).
-- Comments: `;` or `//` to end of line. (`#` is the immediate prefix, not a comment.)
+- Inside `asm { }`, comments are `;` or `//` to end of line. (`#` is the immediate prefix, not a comment.)
 
 **Mixing `asm { }` with subroutine parameters**
 
@@ -1048,6 +1056,7 @@ cargo test               # unit + integration tests
 | `plot` | Out-of-range pixels are silently clipped (Y ≥ 200 or X ≥ 320 → no-op) |
 | `mplot` | No bounds checking — x must be 0–159, y must be 0–199 |
 | `plot4` | No bounds checking — x must be 0–79, y must be 0–49 (block mode) |
+| `circle4` | Clips off-screen block pixels; useful radius is roughly 0–49 in 80×50 block mode |
 | `chr$` | No PETSCII↔ASCII mapping — n is passed as-is to CHROUT |
 | `music play` | Requires `load sid`; only one CIA1 wrapper is emitted (last `music play` wins) |
 | Error reporting | Compile-time only; `onerr goto` handles KERNAL I/O errors at runtime |

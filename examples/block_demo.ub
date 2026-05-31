@@ -12,6 +12,9 @@ var y = 0
 var v = 0
 var i = 0
 var k = 0
+var cellx = 0
+var celly = 0
+var col = 0
 var px = 20
 var py = 15
 var dx = 1
@@ -28,6 +31,10 @@ while y < 50
     v = sin(x * 11 + y * 7)
     if v > 128 then
       plot4 x, y
+      cellx = x shr 1
+      celly = y shr 1
+      col = ((x shr 3) + (y shr 2)) and 7
+      color screen cellx, celly, col + 1
     end
     x = x + 1
   end
@@ -37,21 +44,48 @@ end
 display on
 k = getch()
 
-# ── 2. bouncing block in a framed arena ──────────────────────────────────────
+# ── 2. circle4 block circles ─────────────────────────────────────────────────
 
 gcls
+
+y = 0
+while y < 25
+  x = 0
+  while x < 40
+    col = (x + y) and 7
+    color screen x, y, col + 1
+    x = x + 1
+  end
+  y = y + 1
+end
+
+circle4 40, 25, 22
+circle4 40, 25, 14
+circle4 20, 14, 9
+circle4 60, 36, 10
+
+k = getch()
+
+# ── 3. bouncing block in a framed arena ──────────────────────────────────────
+
+gcls
+fill color 11
 
 # draw border frame
 i = 0
 while i < 80
   plot4 i, 0
   plot4 i, 49
+  color screen i shr 1, 0, 2
+  color screen i shr 1, 24, 2
   i = i + 1
 end
 i = 1
 while i < 49
   plot4 0, i
   plot4 79, i
+  color screen 0, i shr 1, 2
+  color screen 39, i shr 1, 2
   i = i + 1
 end
 
@@ -75,6 +109,7 @@ loop
   end
 
   plot4 px, py
+  color screen px shr 1, py shr 1, 1
   wait 2
 
   k = inkey()

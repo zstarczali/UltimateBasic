@@ -375,6 +375,9 @@ uppercase                # CHR$(142) → switch VIC-II back to uppercase/graphic
 scroll x 3               # horizontal fine scroll: $D016 bits 0-2 = 3 (range 0-7)
 scroll y 2               # vertical fine scroll:   $D011 bits 0-2 = 2 (range 0-7)
 scroll x n               # value can be a variable or expression (masked to bits 0-2)
+scroll x 7 narrow        # set fine scroll and force 38-column mode (hide edge column)
+scroll x 0 wide          # set fine scroll and restore 40-column mode
+scroll row 12 left       # shift screen RAM row 12 left by one character
 ```
 
 `lowercase` emits `LDA #$0E; JSR $FFD2` (KERNAL CHROUT) at runtime to activate the
@@ -386,7 +389,10 @@ and lowercase source chars as `$61−0x20` (→ PETSCII uppercase slot).
 (source case-encoding reverts to direct mapping). `cls` does **not** reset the charset mode.
 
 `scroll x n` computes `(n AND 7)` and writes it into bits 0-2 of `$D016` (preserving bits 3-7).
+`scroll x n narrow` writes the fine-scroll bits and clears `$D016` bit 3 (38-column mode).
+`scroll x n wide` writes the fine-scroll bits and sets `$D016` bit 3 (40-column mode).
 `scroll y n` computes `(n AND 7)` and writes it into bits 0-2 of `$D011` (preserving bits 3-7).
+`scroll row R left` shifts one constant screen row left; write the new rightmost character with `screen 39, R, ch`.
 Useful for smooth hardware scrolling: decrement each frame from 7 to 0, then shift screen RAM and reset to 7.
 
 ### Ultimate 64 — CPU Speed
@@ -692,11 +698,11 @@ Requires a real REU or emulated REU (VICE: enable Georam/REU). The transfer is s
 ```basic
 # hash comment (existing)
 rem this is also a comment
-var x = 5  ; inline comment
+var x = 5  # inline comment
 poke $D020, 6 : color border 6  # colon separates two statements on one line
 ```
 
-`rem` and `;` are treated identically to `#` — everything to end of line is ignored.
+`rem` and `#` are comments — everything to end of line is ignored.
 `:` separates multiple statements on one line (like C64 BASIC).
 
 ### Compile-time File Embedding
@@ -996,6 +1002,7 @@ gcls                     # clear block playfield: screen RAM $0400-$07FF + color
 
 plot4 x, y               # set block pixel at (x, y);  x: 0-79, y: 0-49
 plot4 erase x, y         # clear block pixel at (x, y)
+circle4 x, y, r          # draw midpoint circle in block pixels; clips to 80×50
 ```
 
 Block mode is a chunky low-res mode layered on standard 40×25 text mode. A 16-character custom
@@ -1013,6 +1020,8 @@ free), making it faster than hires bitmap.
 `plot4 x, y` computes the cell address `$0400 + (y>>1)*40 + (x>>1)`, derives the quadrant bit
 from `(x&1, y&1)`, and OR's it into the cell so overlapping block pixels accumulate.
 `plot4 erase` AND's the inverse mask. Both share a helper using ZP `$FB/$FC/$FD`.
+`circle4 x, y, r` uses an 8-bit midpoint circle helper and plots through the same `plot4` helper.
+It clips generated points outside the 80×50 block-pixel playfield.
 
 `gcls` in block mode clears screen RAM (`$0400-$07FF`) and color RAM (`$D800-$DBFF`) with
 forward `INX/BNE` page loops. (Earlier versions used a descending `LDX #231 / DEX / BPL` loop
@@ -1111,7 +1120,7 @@ done:
 - `#<label` / `#>label` yield the lo / hi byte of a label's address.
 - `*` yields the current instruction address, so `JMP *` assembles as a self-loop.
 - Lines starting with `$`, `%`, or a digit are emitted as raw bytes (backward-compatible with the old `asm { $A9 $07 }` form).
-- Comments: `;` or `//` to end of line. (`#` is the immediate prefix, not a comment.)
+- Inside `asm { }`, comments are `;` or `//` to end of line. (`#` is the immediate prefix, not a comment.)
 - The `asm $EA, $EA` single-line raw-byte form is unchanged.
 
 **Mixing `asm { }` with subroutine parameters**
@@ -1220,6 +1229,7 @@ data pointer) and a full hex dump of the generated machine code.
 | `plot` | Out-of-range pixels are silently clipped (CheckPlot: Y ≥ 200 or X ≥ 320 → skip) |
 | `mplot` | No bounds checking — x must be 0–159, y must be 0–199 |
 | `plot4` | No bounds checking — x must be 0–79, y must be 0–49 (block mode) |
+| `circle4` | Clips off-screen block pixels; useful radius is roughly 0–49 in 80×50 block mode |
 | `chr$` | No PETSCII↔ASCII mapping — n is passed as-is to CHROUT |
 | `music play` | Requires `load sid`; emits one shared wrapper (last `music play` wins if called multiple times) |
 | Error reporting | Compile-time only; `onerr goto` handles KERNAL I/O errors at runtime |
