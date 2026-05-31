@@ -7,11 +7,7 @@ color bg 0
 color text 1
 fill $D800, 1000, 1
 
-scroll x 7
-asm {
-  LDA #$07
-  STA $D016        ; 38-column mode plus x-scroll 7 hides the incoming column
-}
+scroll x 7 narrow
 
 var msg = array(40)
 var pos = 0
@@ -78,15 +74,7 @@ wait raster 250
 if phase == 0 then
   phase = 7
 
-  asm {
-    LDX #$00
-  shift_row:
-    LDA $05E1,X
-    STA $05E0,X
-    INX
-    CPX #$27
-    BNE shift_row
-  }
+  scroll row 12 left
 
   screen 39, 12, msg[pos], 1
   pos = pos + 1
@@ -103,10 +91,6 @@ if key != 0 then goto done end
 goto scroll_loop
 
 label done
-scroll x 0
-asm {
-  LDA #$08
-  STA $D016        ; restore normal 40-column text mode
-}
+scroll x 0 wide
 cls
 bye

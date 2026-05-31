@@ -1,11 +1,11 @@
 pub mod ast;
+pub mod codegen;
 pub mod lexer;
 pub mod parser;
-pub mod codegen;
 
+use codegen::Codegen;
 use lexer::Lexer;
 use parser::Parser;
-use codegen::Codegen;
 
 pub struct CompileOptions {
     pub basic_stub: bool,
@@ -13,7 +13,7 @@ pub struct CompileOptions {
 
 /// Single variable in zero-page.
 pub struct VarEntry {
-    pub name:    String,
+    pub name: String,
     pub zp_addr: u8,
     pub type_str: String,
 }
@@ -26,23 +26,23 @@ pub struct SubEntry {
 
 /// Byte array in heap RAM ($C000+).
 pub struct ArrayEntry {
-    pub name:      String,
+    pub name: String,
     pub base_addr: u16,
-    pub size:      u16,
+    pub size: u16,
 }
 
 /// Memory layout produced after a successful compilation.
 pub struct MemoryMap {
-    pub load_addr:    u16,
-    pub code_size:    usize,
-    pub variables:    Vec<VarEntry>,    // sorted by ZP address
-    pub subroutines:  Vec<SubEntry>,    // sorted by address
-    pub arrays:       Vec<ArrayEntry>,  // sorted by base address
-    pub plot_zp:      Option<u8>,       // 6-byte ZP block for plot helper
-    pub line_zp:      Option<u8>,       // 12-byte ZP block for Bresenham line helper
-    pub sin_table_addr: Option<u16>,    // absolute address of 256-byte sin/cos table
-    pub data_zp:      Option<u8>,       // 2-byte ZP pair for data/read pointer
-    pub code_bytes:   Vec<u8>,          // raw machine code (for verbose hex dump)
+    pub load_addr: u16,
+    pub code_size: usize,
+    pub variables: Vec<VarEntry>,    // sorted by ZP address
+    pub subroutines: Vec<SubEntry>,  // sorted by address
+    pub arrays: Vec<ArrayEntry>,     // sorted by base address
+    pub plot_zp: Option<u8>,         // 6-byte ZP block for plot helper
+    pub line_zp: Option<u8>,         // 12-byte ZP block for Bresenham line helper
+    pub sin_table_addr: Option<u16>, // absolute address of 256-byte sin/cos table
+    pub data_zp: Option<u8>,         // 2-byte ZP pair for data/read pointer
+    pub code_bytes: Vec<u8>,         // raw machine code (for verbose hex dump)
 }
 
 pub struct CompileResult {
@@ -57,9 +57,9 @@ const BASIC_STUB: &[u8] = &[
     0x01, 0x08, // PRG load address $0801
     0x0B, 0x08, // next line pointer -> $080B
     0x0A, 0x00, // line number 10
-    0x9E,       // SYS token
+    0x9E, // SYS token
     0x32, 0x30, 0x36, 0x31, // "2061"
-    0x00,       // end of line
+    0x00, // end of line
     0x00, 0x00, // end of BASIC program
 ]; // 14 bytes total, code starts at $080F
 
@@ -74,13 +74,19 @@ pub fn compile(source: &str, opts: &CompileOptions) -> CompileResult {
     compile_with_path(source, opts, None)
 }
 
-pub fn compile_with_path(source: &str, opts: &CompileOptions, source_path: Option<&std::path::Path>) -> CompileResult {
+pub fn compile_with_path(
+    source: &str,
+    opts: &CompileOptions,
+    source_path: Option<&std::path::Path>,
+) -> CompileResult {
     let load_addr: u16 = if opts.basic_stub { 0x080D } else { 0x0801 };
 
     let mut lexer = Lexer::new(source);
     let tokens = lexer.tokenize();
     let lex_errors = lexer.errors().to_vec();
-    let base_dir = source_path.and_then(|p| p.parent()).map(|p| p.to_path_buf());
+    let base_dir = source_path
+        .and_then(|p| p.parent())
+        .map(|p| p.to_path_buf());
     let mut parser = if let Some(dir) = base_dir {
         Parser::new_with_base(tokens, dir)
     } else {

@@ -1,7 +1,7 @@
 // Integration tests for Ultimate Basic compiler.
 // Tests compile entire programs and verify PRG output.
 
-use ultimate_basic::compiler::{compile, compile_with_path, CompileOptions};
+use ultimate_basic::compiler::{CompileOptions, compile, compile_with_path};
 
 fn compile_stub(src: &str) -> Vec<u8> {
     compile(src, &CompileOptions { basic_stub: true }).prg
@@ -14,16 +14,61 @@ fn compile_raw(src: &str) -> Vec<u8> {
 #[test]
 fn graphics_on_block_compiles() {
     let res = compile("graphics on block", &CompileOptions { basic_stub: false });
-    assert!(res.errors.is_empty(),
-        "expected graphics on block to compile without errors, got {:?}", res.errors);
+    assert!(
+        res.errors.is_empty(),
+        "expected graphics on block to compile without errors, got {:?}",
+        res.errors
+    );
     assert!(!res.prg.is_empty(), "expected non-empty PRG output");
 }
 
 #[test]
 fn plot4_compiles() {
-    let res = compile("graphics on block\nplot4 1, 2", &CompileOptions { basic_stub: false });
-    assert!(res.errors.is_empty(),
-        "expected plot4 to compile without errors, got {:?}", res.errors);
+    let res = compile(
+        "graphics on block\nplot4 1, 2",
+        &CompileOptions { basic_stub: false },
+    );
+    assert!(
+        res.errors.is_empty(),
+        "expected plot4 to compile without errors, got {:?}",
+        res.errors
+    );
+}
+
+#[test]
+fn circle4_compiles() {
+    let res = compile(
+        "graphics on block\ngcls\ncircle4 40, 25, 18",
+        &CompileOptions { basic_stub: false },
+    );
+    assert!(
+        res.errors.is_empty(),
+        "expected circle4 to compile without errors, got {:?}",
+        res.errors
+    );
+}
+
+#[test]
+fn scroll_x_column_modes_compile() {
+    let res = compile(
+        "scroll x 7 narrow\nscroll x 0 wide",
+        &CompileOptions { basic_stub: false },
+    );
+    assert!(
+        res.errors.is_empty(),
+        "expected scroll x narrow/wide to compile without errors, got {:?}",
+        res.errors
+    );
+}
+
+#[test]
+fn scroll_row_left_compiles() {
+    let res = compile("scroll row 12 left", &CompileOptions { basic_stub: false });
+    assert!(
+        res.errors.is_empty(),
+        "expected scroll row left to compile without errors, got {:?}",
+        res.errors
+    );
 }
 
 struct TestCpu {
@@ -239,7 +284,11 @@ impl TestCpu {
             }
             0xF0 => self.branch(self.zero),
             0x10 => self.branch(!self.negative),
-            _ => panic!("unsupported opcode ${:02X} at ${:04X}", opcode, self.pc.wrapping_sub(1)),
+            _ => panic!(
+                "unsupported opcode ${:02X} at ${:04X}",
+                opcode,
+                self.pc.wrapping_sub(1)
+            ),
         }
         true
     }
@@ -305,13 +354,21 @@ impl TestCpu {
 #[test]
 fn stub_is_correct_length() {
     let prg = compile_stub("");
-    assert_eq!(prg.len(), 16, "Empty program: 14 stub + CLD(1) + RTS(1) = 16");
+    assert_eq!(
+        prg.len(),
+        16,
+        "Empty program: 14 stub + CLD(1) + RTS(1) = 16"
+    );
 }
 
 #[test]
 fn no_stub_is_correct_length() {
     let prg = compile_raw("");
-    assert_eq!(prg.len(), 4, "Empty program: 2 header + CLD(1) + RTS(1) = 4");
+    assert_eq!(
+        prg.len(),
+        4,
+        "Empty program: 2 header + CLD(1) + RTS(1) = 4"
+    );
 }
 
 #[test]
@@ -335,7 +392,7 @@ fn var_decl_generates_code() {
     assert!(prg.len() > 7); // header(2) + CLD(1) + LDA #42(2) + STA $02(2) + RTS(1)
     assert_eq!(prg[2], 0xD8); // CLD
     assert_eq!(prg[3], 0xA9); // LDA immediate
-    assert_eq!(prg[4], 42);   // #42
+    assert_eq!(prg[4], 42); // #42
     assert_eq!(prg[5], 0x85); // STA zp
     assert_eq!(prg[6], 0x02); // $02
     assert_eq!(prg[7], 0x60); // RTS
@@ -623,7 +680,7 @@ fn joy_port2_reads_dc00() {
     // AND #$1F then EOR #$1F
     let has_mask = bytes.windows(2).any(|w| w == &[0x29, 0x1F]);
     assert!(has_mask, "joy should mask bits 0-4");
-    let has_inv  = bytes.windows(2).any(|w| w == &[0x49, 0x1F]);
+    let has_inv = bytes.windows(2).any(|w| w == &[0x49, 0x1F]);
     assert!(has_inv, "joy should invert bits 0-4");
 }
 
@@ -653,22 +710,48 @@ fn line_emits_bresenham_helper() {
 fn line_produces_larger_code_than_plot() {
     let plot_size = compile_raw("graphics on\nplot 10, 20\ngraphics off").len();
     let line_size = compile_raw("graphics on\nline 10, 20, 50, 80\ngraphics off").len();
-    assert!(line_size > plot_size, "line should emit more code than a single plot");
+    assert!(
+        line_size > plot_size,
+        "line should emit more code than a single plot"
+    );
 }
 
 #[test]
 fn circle_emits_helper_and_compiles() {
-    let res = compile("graphics on\ncircle 160, 100, 32\ngraphics off", &CompileOptions { basic_stub: false });
-    assert!(res.errors.is_empty(), "circle should compile cleanly: {:?}", res.errors);
-    assert!(res.map.plot_zp.is_some(), "circle should reserve the shared plot helper ZP block");
-    assert!(res.prg.len() > compile_raw("graphics on\ngraphics off").len(), "circle should add code beyond bare graphics mode switches");
+    let res = compile(
+        "graphics on\ncircle 160, 100, 32\ngraphics off",
+        &CompileOptions { basic_stub: false },
+    );
+    assert!(
+        res.errors.is_empty(),
+        "circle should compile cleanly: {:?}",
+        res.errors
+    );
+    assert!(
+        res.map.plot_zp.is_some(),
+        "circle should reserve the shared plot helper ZP block"
+    );
+    assert!(
+        res.prg.len() > compile_raw("graphics on\ngraphics off").len(),
+        "circle should add code beyond bare graphics mode switches"
+    );
 }
 
 #[test]
 fn circle_produces_larger_code_than_plot() {
-    let res = compile("var cx: word = 160\ngraphics on\ncircle cx, 100, 32\ngraphics off", &CompileOptions { basic_stub: false });
-    assert!(res.errors.is_empty(), "circle with word X center should compile cleanly: {:?}", res.errors);
-    assert!(res.map.plot_zp.is_some(), "circle with word X center should still reserve plot helper state");
+    let res = compile(
+        "var cx: word = 160\ngraphics on\ncircle cx, 100, 32\ngraphics off",
+        &CompileOptions { basic_stub: false },
+    );
+    assert!(
+        res.errors.is_empty(),
+        "circle with word X center should compile cleanly: {:?}",
+        res.errors
+    );
+    assert!(
+        res.map.plot_zp.is_some(),
+        "circle with word X center should still reserve plot helper state"
+    );
 }
 
 #[test]
@@ -680,7 +763,10 @@ fn sin_emits_lut_lookup() {
     // Should contain a 256-byte table at the end with value 128 at index 0 (sin(0)=0→128)
     // Find consecutive region where bytes[0]==128 (sin(0)) and bytes[64]==255 (sin(90°))
     let has_sin_table = bytes.windows(65).any(|w| w[0] == 128 && w[64] == 255);
-    assert!(has_sin_table, "Should contain sin lookup table with sin(0)=128 and sin(64)=255");
+    assert!(
+        has_sin_table,
+        "Should contain sin lookup table with sin(0)=128 and sin(64)=255"
+    );
 }
 
 #[test]
@@ -689,7 +775,10 @@ fn cos_uses_same_sin_table() {
     let prg_cos = compile_raw("var x = 0\nx = cos(x)").len();
     let prg_both = compile_raw("var x = 0\nx = sin(x)\nx = cos(x)").len();
     // One table either way, so sin+cos together should only have ONE 256-byte table
-    assert!(prg_both < prg_sin + prg_cos, "sin+cos should share one table");
+    assert!(
+        prg_both < prg_sin + prg_cos,
+        "sin+cos should share one table"
+    );
 }
 
 #[test]
@@ -754,9 +843,9 @@ fn reu_present_returns_one_when_not_checked() {
     assert!(has_lda1, "reu_present should emit LDA #1 (found path)");
     // Must contain LDA #0 ($A9 $00) and JMP ($4C) — fail path
     let has_lda0 = bytes.windows(2).any(|w| w == &[0xA9, 0x00]);
-    let has_jmp  = bytes.contains(&0x4C);
+    let has_jmp = bytes.contains(&0x4C);
     assert!(has_lda0, "reu_present should emit LDA #0 (not-found path)");
-    assert!(has_jmp,  "reu_present should emit JMP to skip fail branch");
+    assert!(has_jmp, "reu_present should emit JMP to skip fail branch");
 }
 
 #[test]
@@ -768,10 +857,16 @@ fn graphics_on_blanks_display() {
     assert!(has_blank, "graphics on should blank display with AND #$EF");
     // ORA #$20 ($09 $20) sets only BMM — display stays blanked, user calls `display on`
     let has_bmm = bytes.windows(2).any(|w| w == &[0x09, 0x20]);
-    assert!(has_bmm, "graphics on should set BMM with ORA #$20 (display stays blanked)");
+    assert!(
+        has_bmm,
+        "graphics on should set BMM with ORA #$20 (display stays blanked)"
+    );
     // display must NOT be re-enabled here ($D011 ORA #$10 must NOT appear)
     let no_den = !bytes.windows(2).any(|w| w == &[0x09, 0x10]);
-    assert!(no_den, "graphics on must not re-enable display (DEN stays 0)");
+    assert!(
+        no_den,
+        "graphics on must not re-enable display (DEN stays 0)"
+    );
 }
 
 #[test]
@@ -800,7 +895,10 @@ fn graphics_on_multi_sets_mcm() {
     let bytes = &prg[2..];
     // ORA #$10 ($09 $10) sets MCM bit in $D016
     let has_mcm = bytes.windows(2).any(|w| w == &[0x09, 0x10]);
-    assert!(has_mcm, "graphics on multi should set MCM bit with ORA #$10");
+    assert!(
+        has_mcm,
+        "graphics on multi should set MCM bit with ORA #$10"
+    );
 }
 
 #[test]
@@ -809,7 +907,10 @@ fn graphics_on_hires_clears_mcm() {
     let bytes = &prg[2..];
     // AND #$EF ($29 $EF) clears MCM bit in $D016 (same opcode used for both blank and MCM clear)
     let count = bytes.windows(2).filter(|w| *w == &[0x29, 0xEF]).count();
-    assert!(count >= 2, "hires mode should have at least 2× AND #$EF (blank + MCM clear)");
+    assert!(
+        count >= 2,
+        "hires mode should have at least 2× AND #$EF (blank + MCM clear)"
+    );
 }
 
 #[test]
@@ -912,8 +1013,15 @@ fn empty_program_compiles() {
 fn demo_game_compiles() {
     let src = "# NEXTBASIC DEMO\ncls\ncolor text 14\ncolor bg 0\nvar n = 1\nwhile n < 6\n  print \"  n = \", n\n  n = n + 1\nend";
     let res = compile(src, &CompileOptions { basic_stub: true });
-    assert!(res.errors.is_empty(), "Should compile without errors: {:?}", res.errors);
-    assert!(res.prg.len() > 100, "Should produce reasonable amount of code");
+    assert!(
+        res.errors.is_empty(),
+        "Should compile without errors: {:?}",
+        res.errors
+    );
+    assert!(
+        res.prg.len() > 100,
+        "Should produce reasonable amount of code"
+    );
 }
 
 #[test]
@@ -954,8 +1062,11 @@ greet()
 sys $FFD2
 ";
     let res = compile(src, &CompileOptions { basic_stub: true });
-    assert!(res.errors.is_empty(),
-        "Should compile without errors. Got: {:?}", res.errors);
+    assert!(
+        res.errors.is_empty(),
+        "Should compile without errors. Got: {:?}",
+        res.errors
+    );
     assert!(res.prg.len() > 200);
 }
 
@@ -1014,10 +1125,12 @@ fn string_concat_in_print() {
     // print 12, 12, "Hello " + "Haver"
     // String bytes are NOT consecutive — interleaved with JSR CHROUT opcodes.
     // The key check: same binary as writing the literal directly.
-    let concat  = compile_raw("print 12, 12, \"Hello \" + \"Haver\"");
+    let concat = compile_raw("print 12, 12, \"Hello \" + \"Haver\"");
     let literal = compile_raw("print 12, 12, \"Hello Haver\"");
-    assert_eq!(concat, literal,
-        "Concatenated string must produce identical code to direct literal");
+    assert_eq!(
+        concat, literal,
+        "Concatenated string must produce identical code to direct literal"
+    );
 }
 
 #[test]
@@ -1028,7 +1141,10 @@ fn string_var_concat_in_print() {
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     // Should use LDA (ptr),Y = $B1 for both string vars
     let count = res.prg[2..].iter().filter(|&&b| b == 0xB1).count();
-    assert!(count >= 2, "Should emit LDA (ptr),Y at least twice for s1+s2");
+    assert!(
+        count >= 2,
+        "Should emit LDA (ptr),Y at least twice for s1+s2"
+    );
 }
 
 #[test]
@@ -1044,12 +1160,15 @@ fn string_literal_concat_with_var() {
 #[test]
 fn number_add_still_works_in_print() {
     // print 3 + 4 must still print "7", not "34"
-    let with_add    = compile_raw("print 3 + 4");
+    let with_add = compile_raw("print 3 + 4");
     let with_result = compile_raw("var t = 3 + 4\nprint t");
     // Both should contain the same numeric result code; neither should be the
     // same as printing "3" followed by "4" separately
     let separate = compile_raw("print 3, 4");
-    assert_ne!(with_add, separate, "3+4 must evaluate numerically, not print separately");
+    assert_ne!(
+        with_add, separate,
+        "3+4 must evaluate numerically, not print separately"
+    );
     let _ = with_result; // compiles without error
 }
 
@@ -1068,7 +1187,10 @@ fn string_concat_produces_same_as_literal() {
     // "Hello " + "World" should produce identical code to "Hello World"
     let a = compile_raw("print \"Hello \" + \"World\"");
     let b = compile_raw("print \"Hello World\"");
-    assert_eq!(a, b, "Concatenated string must be identical to direct literal");
+    assert_eq!(
+        a, b,
+        "Concatenated string must be identical to direct literal"
+    );
 }
 
 #[test]
@@ -1104,7 +1226,10 @@ fn for_next_generates_same_code_as_loop() {
     // Both syntaxes must compile to identical bytes
     let a = compile_raw("for i = 1 to 3\n  print i\nnext");
     let b = compile_raw("loop i = 1 to 3\n  print i\nend");
-    assert_eq!(a, b, "for..next and loop..end should produce identical code");
+    assert_eq!(
+        a, b,
+        "for..next and loop..end should produce identical code"
+    );
 }
 
 // ── Bitwise operators ───────────────────────────────────────────────────────
@@ -1177,7 +1302,9 @@ fn sound_sets_master_volume() {
     let prg = compile_raw("sound 0, $1CAD, 10");
     let bytes = &prg[2..];
     // LDA #$0F; STA $D418
-    let has_vol = bytes.windows(5).any(|w| w == &[0xA9, 0x0F, 0x8D, 0x18, 0xD4]);
+    let has_vol = bytes
+        .windows(5)
+        .any(|w| w == &[0xA9, 0x0F, 0x8D, 0x18, 0xD4]);
     assert!(has_vol, "sound should set master volume $D418 = $0F");
 }
 
@@ -1198,10 +1325,14 @@ fn sound_gate_on_and_off() {
     let prg = compile_raw("sound 0, $1000, 3");
     let bytes = &prg[2..];
     // GATE on: STA $D404 with value $11
-    let has_gate_on = bytes.windows(5).any(|w| w == &[0xA9, 0x11, 0x8D, 0x04, 0xD4]);
+    let has_gate_on = bytes
+        .windows(5)
+        .any(|w| w == &[0xA9, 0x11, 0x8D, 0x04, 0xD4]);
     assert!(has_gate_on, "sound should GATE on with $11 to $D404");
     // GATE off: STA $D404 with value $10
-    let has_gate_off = bytes.windows(5).any(|w| w == &[0xA9, 0x10, 0x8D, 0x04, 0xD4]);
+    let has_gate_off = bytes
+        .windows(5)
+        .any(|w| w == &[0xA9, 0x10, 0x8D, 0x04, 0xD4]);
     assert!(has_gate_off, "sound should GATE off with $10 to $D404");
 }
 
@@ -1227,7 +1358,10 @@ fn word_add_constant_propagates_carry() {
     assert!(has_clc, "word + constant should emit CLC");
     // ADC #0 (carry propagation to hi byte) = $69 $00
     let has_carry = bytes.windows(2).any(|w| w == &[0x69, 0x00]);
-    assert!(has_carry, "word + constant should propagate carry with ADC #0");
+    assert!(
+        has_carry,
+        "word + constant should propagate carry with ADC #0"
+    );
 }
 
 #[test]
@@ -1252,7 +1386,10 @@ fn word_sub_constant_propagates_borrow() {
     let has_sec = bytes.contains(&0x38);
     assert!(has_sec, "word - constant should emit SEC");
     let has_borrow = bytes.windows(2).any(|w| w == &[0xE9, 0x00]);
-    assert!(has_borrow, "word - constant should propagate borrow with SBC #0");
+    assert!(
+        has_borrow,
+        "word - constant should propagate borrow with SBC #0"
+    );
 }
 
 #[test]
@@ -1262,7 +1399,10 @@ fn word_copy_copies_both_bytes() {
     let bytes = &prg[2..];
     // LDA zp ($A5) should appear at least 2× for lo and hi copy
     let count_lda_zp = bytes.windows(1).filter(|w| *w == &[0xA5]).count();
-    assert!(count_lda_zp >= 2, "word copy should load both lo and hi bytes");
+    assert!(
+        count_lda_zp >= 2,
+        "word copy should load both lo and hi bytes"
+    );
 }
 
 // ── print mixed args ────────────────────────────────────────────────────────
@@ -1272,11 +1412,15 @@ fn print_empty_is_just_newline() {
     let prg = compile_raw("print");
     let bytes = &prg[2..];
     // header(2) + CLD(1) + LDA #$0D(2) + JSR $FFD2(3) + RTS(1) = 9 bytes total
-    assert_eq!(prg.len(), 9, "bare print = header + CLD + LDA #CR + JSR CHROUT + RTS");
-    assert_eq!(bytes[0], 0xD8);  // CLD
-    assert_eq!(bytes[1], 0xA9);  // LDA immediate
-    assert_eq!(bytes[2], 0x0D);  // #$0D = carriage return
-    assert_eq!(bytes[3], 0x20);  // JSR
+    assert_eq!(
+        prg.len(),
+        9,
+        "bare print = header + CLD + LDA #CR + JSR CHROUT + RTS"
+    );
+    assert_eq!(bytes[0], 0xD8); // CLD
+    assert_eq!(bytes[1], 0xA9); // LDA immediate
+    assert_eq!(bytes[2], 0x0D); // #$0D = carriage return
+    assert_eq!(bytes[3], 0x20); // JSR
 }
 
 #[test]
@@ -1357,7 +1501,10 @@ scores[idx] = 99
     let res = compile(src, &CompileOptions { basic_stub: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     let bytes = &res.prg[2..];
-    assert!(bytes.contains(&0x91), "Should emit STA (ptr),Y for dynamic index");
+    assert!(
+        bytes.contains(&0x91),
+        "Should emit STA (ptr),Y for dynamic index"
+    );
 }
 
 #[test]
@@ -1384,7 +1531,10 @@ var v = scores[i]
     let res = compile(src, &CompileOptions { basic_stub: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     let bytes = &res.prg[2..];
-    assert!(bytes.contains(&0xB1), "Should emit LDA (ptr),Y for dynamic index");
+    assert!(
+        bytes.contains(&0xB1),
+        "Should emit LDA (ptr),Y for dynamic index"
+    );
 }
 
 #[test]
@@ -1426,7 +1576,10 @@ poke addr, 6
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     // Should use STA (zp),Y  = $91
     let bytes = &res.prg[2..];
-    assert!(bytes.contains(&0x91), "Should emit STA (zp),Y for word var poke");
+    assert!(
+        bytes.contains(&0x91),
+        "Should emit STA (zp),Y for word var poke"
+    );
 }
 
 #[test]
@@ -1439,7 +1592,10 @@ var v = peek(addr)
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     // Should use LDA (zp),Y  = $B1
     let bytes = &res.prg[2..];
-    assert!(bytes.contains(&0xB1), "Should emit LDA (zp),Y for word var peek");
+    assert!(
+        bytes.contains(&0xB1),
+        "Should emit LDA (zp),Y for word var peek"
+    );
 }
 
 // ── String variables ────────────────────────────────────────────────────────
@@ -1455,7 +1611,10 @@ fn string_var_inlined() {
     assert!(has_h, "PETSCII 'H' should be in binary");
     // print_str_via_ptr emits LDA (ptr),Y = $B1
     let bytes = &res.prg[2..];
-    assert!(bytes.contains(&0xB1), "Should emit LDA (ptr),Y for string print");
+    assert!(
+        bytes.contains(&0xB1),
+        "Should emit LDA (ptr),Y for string print"
+    );
 }
 
 #[test]
@@ -1472,7 +1631,10 @@ fn string_var_jmp_over_data() {
     assert!(res.errors.is_empty());
     // Should emit JMP ($4C) to skip over string data
     let bytes = &res.prg[2..];
-    assert!(bytes.contains(&0x4C), "Should emit JMP over inline string data");
+    assert!(
+        bytes.contains(&0x4C),
+        "Should emit JMP over inline string data"
+    );
 }
 
 // ── New features: const, label, goto, poke, peek, rnd, abs, min, max, sgn ──
@@ -1507,7 +1669,10 @@ fn poke_with_expression_address() {
     let prg = compile_raw("var idx = 10\npoke $0400 + idx, 42");
     let bytes = &prg[2..];
     // Should contain STA (ptr),Y = $91
-    assert!(bytes.contains(&0x91), "Should emit STA (ptr),Y for expression address");
+    assert!(
+        bytes.contains(&0x91),
+        "Should emit STA (ptr),Y for expression address"
+    );
 }
 
 #[test]
@@ -1589,11 +1754,20 @@ fn sgn_correct_opcodes() {
     // New implementation uses BCC ($90) and BPL ($10) — NOT the old BCS-offset-4 pattern.
     let prg = compile_raw("var s = sgn(200)");
     let bytes = &prg[2..];
-    assert!(bytes.contains(&0x90), "sgn should emit BCC ($90) for zero branch");
-    assert!(bytes.contains(&0x10), "sgn should emit BPL ($10) for positive branch");
+    assert!(
+        bytes.contains(&0x90),
+        "sgn should emit BCC ($90) for zero branch"
+    );
+    assert!(
+        bytes.contains(&0x10),
+        "sgn should emit BPL ($10) for positive branch"
+    );
     // Must emit LDA #$FF for the negative case
     let has_ff = bytes.windows(2).any(|w| w[0] == 0xA9 && w[1] == 0xFF);
-    assert!(has_ff, "sgn should emit LDA #$FF ($A9 $FF) for negative case");
+    assert!(
+        has_ff,
+        "sgn should emit LDA #$FF ($A9 $FF) for negative case"
+    );
 }
 
 #[test]
@@ -1606,8 +1780,13 @@ fn not_correct_opcode() {
     assert!(bytes.contains(&0xB0), "not should emit BCS ($B0), not BEQ");
     // Must NOT use BEQ ($F0) as the branch after CMP #1
     // (BEQ would only fire for x==1, breaking `not 5` etc.)
-    let cmp1_beq = bytes.windows(4).any(|w| w[0]==0xC9 && w[1]==0x01 && w[2]==0xF0);
-    assert!(!cmp1_beq, "not must not use BEQ after CMP #1 (breaks values > 1)");
+    let cmp1_beq = bytes
+        .windows(4)
+        .any(|w| w[0] == 0xC9 && w[1] == 0x01 && w[2] == 0xF0);
+    assert!(
+        !cmp1_beq,
+        "not must not use BEQ after CMP #1 (breaks values > 1)"
+    );
 }
 
 #[test]
@@ -1651,7 +1830,10 @@ poke SCRADDR + idx, c
     let res = compile(src, &CompileOptions { basic_stub: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     let bytes = &res.prg[2..];
-    assert!(bytes.contains(&0x91), "Should use indirect indexed STA (ptr),Y");
+    assert!(
+        bytes.contains(&0x91),
+        "Should use indirect indexed STA (ptr),Y"
+    );
 }
 
 // ── chr$ ────────────────────────────────────────────────────────────────────
@@ -1662,11 +1844,15 @@ fn chr_str_in_print_emits_chrout() {
     let prg = compile_raw("print chr$(65)");
     let bytes = &prg[2..];
     // LDA #65 = A9 41
-    assert!(bytes.windows(2).any(|w| w == &[0xA9, 65]),
-        "Should emit LDA #65");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xA9, 65]),
+        "Should emit LDA #65"
+    );
     // JSR CHROUT = 20 D2 FF
-    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xD2, 0xFF]),
-        "Should emit JSR CHROUT");
+    assert!(
+        bytes.windows(3).any(|w| w == &[0x20, 0xD2, 0xFF]),
+        "Should emit JSR CHROUT"
+    );
 }
 
 #[test]
@@ -1674,8 +1860,10 @@ fn chr_str_carriage_return() {
     // print chr$(13) → outputs $0D (CR)
     let prg = compile_raw("print chr$(13)");
     let bytes = &prg[2..];
-    assert!(bytes.windows(2).any(|w| w == &[0xA9, 0x0D]),
-        "Should emit LDA #$0D");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xA9, 0x0D]),
+        "Should emit LDA #$0D"
+    );
 }
 
 #[test]
@@ -1683,8 +1871,10 @@ fn chr_str_in_expression() {
     // var c = chr$(65) → LDA #65, STA zp  (identity: char code = byte value)
     let prg = compile_raw("var c = chr$(65)");
     let bytes = &prg[2..];
-    assert!(bytes.windows(2).any(|w| w == &[0xA9, 65]),
-        "Should load char code 65");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xA9, 65]),
+        "Should load char code 65"
+    );
 }
 
 #[test]
@@ -1694,10 +1884,14 @@ fn chr_str_concat_with_string() {
     let res = compile(src, &CompileOptions { basic_stub: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     let bytes = &res.prg[2..];
-    assert!(bytes.windows(2).any(|w| w == &[0xA9, 0x3E]), // '>' = $3E in PETSCII
-        "Should contain PETSCII '>'");
-    assert!(bytes.windows(2).any(|w| w == &[0xA9, 65]),
-        "Should contain char code 65");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xA9, 0x3E]), // '>' = $3E in PETSCII
+        "Should contain PETSCII '>'"
+    );
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xA9, 65]),
+        "Should contain char code 65"
+    );
 }
 
 // ── str$() ──────────────────────────────────────────────────────────────────
@@ -1742,8 +1936,10 @@ fn gcls_emits_fill_loop() {
     let prg = compile_raw("gcls");
     let bytes = &prg[2..];
     // Initializes ptr_hi to $20 (bitmap at $2000)
-    assert!(bytes.windows(2).any(|w| w == &[0xA9, 0x20]),
-        "Should emit LDA #$20 for bitmap base high byte");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xA9, 0x20]),
+        "Should emit LDA #$20 for bitmap base high byte"
+    );
     // Inner loop uses STA (ptr_lo),Y = $91
     assert!(bytes.contains(&0x91), "Should emit STA (ptr),Y for fill");
     // INC ptr_hi = $E6
@@ -1778,7 +1974,10 @@ fn bye_emits_kernal_cls_and_rts() {
     assert!(bytes.contains(&0x78), "bye should SEI before clearing $91");
     assert!(bytes.contains(&0x58), "bye should CLI after clearing $91");
     let has_warm_start_jmp = bytes.windows(3).any(|w| w == [0x4C, 0x59, 0xA6]);
-    assert!(has_warm_start_jmp, "bye should JMP $A659 (BASIC warm start)");
+    assert!(
+        has_warm_start_jmp,
+        "bye should JMP $A659 (BASIC warm start)"
+    );
 }
 
 #[test]
@@ -1821,8 +2020,10 @@ fn incbin_embeds_bytes() {
     let res = compile(&src, &CompileOptions { basic_stub: false });
     std::fs::remove_file(path).ok();
     assert!(res.errors.is_empty());
-    assert!(res.prg.windows(3).any(|w| w == [0x42, 0x43, 0x44]),
-        "incbin bytes should appear in output");
+    assert!(
+        res.prg.windows(3).any(|w| w == [0x42, 0x43, 0x44]),
+        "incbin bytes should appear in output"
+    );
 }
 
 // ── load sid ─────────────────────────────────────────────────────────────────
@@ -1830,13 +2031,21 @@ fn incbin_embeds_bytes() {
 /// Build a minimal PSID v1 file (118-byte header + music data).
 fn make_fake_psid(load_addr: u16, init_addr: u16, play_addr: u16, music: &[u8]) -> Vec<u8> {
     let mut hdr = vec![0u8; 0x76]; // 118-byte header (PSID v1)
-    hdr[0x00] = b'P'; hdr[0x01] = b'S'; hdr[0x02] = b'I'; hdr[0x03] = b'D';
-    hdr[0x04] = 0x00; hdr[0x05] = 0x01; // version 1
-    hdr[0x06] = 0x00; hdr[0x07] = 0x76; // data_offset = $76
+    hdr[0x00] = b'P';
+    hdr[0x01] = b'S';
+    hdr[0x02] = b'I';
+    hdr[0x03] = b'D';
+    hdr[0x04] = 0x00;
+    hdr[0x05] = 0x01; // version 1
+    hdr[0x06] = 0x00;
+    hdr[0x07] = 0x76; // data_offset = $76
     // Header addresses are big-endian
-    hdr[0x08] = (load_addr >> 8) as u8; hdr[0x09] = load_addr as u8;
-    hdr[0x0A] = (init_addr >> 8) as u8; hdr[0x0B] = init_addr as u8;
-    hdr[0x0C] = (play_addr >> 8) as u8; hdr[0x0D] = play_addr as u8;
+    hdr[0x08] = (load_addr >> 8) as u8;
+    hdr[0x09] = load_addr as u8;
+    hdr[0x0A] = (init_addr >> 8) as u8;
+    hdr[0x0B] = init_addr as u8;
+    hdr[0x0C] = (play_addr >> 8) as u8;
+    hdr[0x0D] = play_addr as u8;
     hdr.extend_from_slice(music);
     hdr
 }
@@ -1854,8 +2063,10 @@ fn load_sid_embeds_music_at_load_addr() {
     std::fs::remove_file(sid_path).ok();
 
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
-    assert!(res.prg.windows(music.len()).any(|w| w == music.as_slice()),
-        "SID music bytes should be embedded in the output");
+    assert!(
+        res.prg.windows(music.len()).any(|w| w == music.as_slice()),
+        "SID music bytes should be embedded in the output"
+    );
 }
 
 #[test]
@@ -1874,8 +2085,10 @@ fn load_sid_injects_constants() {
 
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     // JSR $1000 = $20, $00, $10
-    assert!(res.prg.windows(3).any(|w| w == [0x20, 0x00, 0x10]),
-        "sys sid_init should emit JSR $1000");
+    assert!(
+        res.prg.windows(3).any(|w| w == [0x20, 0x00, 0x10]),
+        "sys sid_init should emit JSR $1000"
+    );
 }
 
 #[test]
@@ -1886,14 +2099,20 @@ fn load_sid_invalid_file_reports_error() {
     let opts = CompileOptions { basic_stub: false };
     let res = compile_with_path(&src, &opts, Some(std::path::Path::new(sid_path)));
     std::fs::remove_file(sid_path).ok();
-    assert!(!res.errors.is_empty(), "Should report an error for an invalid SID file");
+    assert!(
+        !res.errors.is_empty(),
+        "Should report an error for an invalid SID file"
+    );
 }
 
 #[test]
 fn load_sid_missing_file_reports_error() {
     let src = "load sid \"nonexistent_totally_fake.sid\"";
     let res = compile(src, &CompileOptions { basic_stub: false });
-    assert!(!res.errors.is_empty(), "Should report an error for a missing SID file");
+    assert!(
+        !res.errors.is_empty(),
+        "Should report an error for a missing SID file"
+    );
 }
 
 #[test]
@@ -1911,8 +2130,10 @@ fn load_sid_override_addr_places_data_at_specified_address() {
 
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     // Music bytes must appear somewhere in the output
-    assert!(res.prg.windows(music.len()).any(|w| w == music.as_slice()),
-        "SID music bytes should be embedded in the output");
+    assert!(
+        res.prg.windows(music.len()).any(|w| w == music.as_slice()),
+        "SID music bytes should be embedded in the output"
+    );
     // The load address override means the PRG must be large enough to reach $2000
     // (PRG starts at $0801, so offset to $2000 is $1800 - 2 = $17FE bytes minimum incl. header)
     assert!(res.prg.len() >= 0x17FF, "PRG must extend to $2000");
@@ -1924,14 +2145,25 @@ fn print_at_positions_cursor_then_prints() {
     let res = compile(src, &CompileOptions { basic_stub: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     // Must call KERNAL PLOT: JSR $FFF0 = $20 $F0 $FF
-    assert!(res.prg.windows(3).any(|w| w == [0x20, 0xF0, 0xFF]),
-        "print at should emit JSR $FFF0 (KERNAL PLOT)");
+    assert!(
+        res.prg.windows(3).any(|w| w == [0x20, 0xF0, 0xFF]),
+        "print at should emit JSR $FFF0 (KERNAL PLOT)"
+    );
     // CLC = $18 must appear before the JSR $FFF0 (C=0 = SET cursor per KERNAL reference)
-    let plot_pos = res.prg.windows(3).position(|w| w == [0x20, 0xF0, 0xFF]).unwrap();
-    assert!(res.prg[..plot_pos].contains(&0x18), "print at should clear carry (CLC) before PLOT");
+    let plot_pos = res
+        .prg
+        .windows(3)
+        .position(|w| w == [0x20, 0xF0, 0xFF])
+        .unwrap();
+    assert!(
+        res.prg[..plot_pos].contains(&0x18),
+        "print at should clear carry (CLC) before PLOT"
+    );
     // Must also call CHROUT: JSR $FFD2 = $20 $D2 $FF (for the string)
-    assert!(res.prg.windows(3).any(|w| w == [0x20, 0xD2, 0xFF]),
-        "print at should emit JSR $FFD2 (KERNAL CHROUT) for string output");
+    assert!(
+        res.prg.windows(3).any(|w| w == [0x20, 0xD2, 0xFF]),
+        "print at should emit JSR $FFD2 (KERNAL CHROUT) for string output"
+    );
 }
 
 #[test]
@@ -1939,8 +2171,10 @@ fn print_at_no_args_still_positions() {
     let src = "print at 0, 0";
     let res = compile(src, &CompileOptions { basic_stub: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
-    assert!(res.prg.windows(3).any(|w| w == [0x20, 0xF0, 0xFF]),
-        "print at with no print args should still emit JSR $FFF0");
+    assert!(
+        res.prg.windows(3).any(|w| w == [0x20, 0xF0, 0xFF]),
+        "print at with no print args should still emit JSR $FFF0"
+    );
 }
 
 #[test]
@@ -1949,10 +2183,14 @@ fn sid_volume_emits_sta_d418() {
     let res = compile(src, &CompileOptions { basic_stub: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     // LDA #15 = $A9 $0F; STA $D418 = $8D $18 $D4
-    assert!(res.prg.windows(2).any(|w| w == [0xA9, 0x0F]),
-        "sid volume 15 should emit LDA #$0F");
-    assert!(res.prg.windows(3).any(|w| w == [0x8D, 0x18, 0xD4]),
-        "sid volume should emit STA $D418");
+    assert!(
+        res.prg.windows(2).any(|w| w == [0xA9, 0x0F]),
+        "sid volume 15 should emit LDA #$0F"
+    );
+    assert!(
+        res.prg.windows(3).any(|w| w == [0x8D, 0x18, 0xD4]),
+        "sid volume should emit STA $D418"
+    );
 }
 
 #[test]
@@ -1961,8 +2199,12 @@ fn sid_stop_zeros_all_registers() {
     let res = compile(src, &CompileOptions { basic_stub: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     // LDX #$18 = $A2 $18; LDA #$00 = $A9 $00; STA $D400,X = $9D $00 $D4; DEX=$CA; BPL=-6=$10 $FA
-    assert!(res.prg.windows(10).any(|w| w == [0xA2, 0x18, 0xA9, 0x00, 0x9D, 0x00, 0xD4, 0xCA, 0x10, 0xFA]),
-        "sid stop should emit zero-fill loop for $D400-$D418");
+    assert!(
+        res.prg
+            .windows(10)
+            .any(|w| w == [0xA2, 0x18, 0xA9, 0x00, 0x9D, 0x00, 0xD4, 0xCA, 0x10, 0xFA]),
+        "sid stop should emit zero-fill loop for $D400-$D418"
+    );
 }
 
 #[test]
@@ -1971,17 +2213,25 @@ fn waitkey_polls_cia1_matrix() {
     let res = compile(src, &CompileOptions { basic_stub: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     // LDA #$00 = $A9 $00 — select all CIA1 rows
-    assert!(res.prg.windows(2).any(|w| w == [0xA9, 0x00]),
-        "waitkey should emit LDA #$00 to select CIA1 rows");
+    assert!(
+        res.prg.windows(2).any(|w| w == [0xA9, 0x00]),
+        "waitkey should emit LDA #$00 to select CIA1 rows"
+    );
     // STA $DC00 = $8D $00 $DC
-    assert!(res.prg.windows(3).any(|w| w == [0x8D, 0x00, 0xDC]),
-        "waitkey should emit STA $DC00");
+    assert!(
+        res.prg.windows(3).any(|w| w == [0x8D, 0x00, 0xDC]),
+        "waitkey should emit STA $DC00"
+    );
     // LDA $DC01 = $AD $01 $DC
-    assert!(res.prg.windows(3).any(|w| w == [0xAD, 0x01, 0xDC]),
-        "waitkey should emit LDA $DC01 in polling loop");
+    assert!(
+        res.prg.windows(3).any(|w| w == [0xAD, 0x01, 0xDC]),
+        "waitkey should emit LDA $DC01 in polling loop"
+    );
     // CMP #$FF = $C9 $FF
-    assert!(res.prg.windows(2).any(|w| w == [0xC9, 0xFF]),
-        "waitkey should emit CMP #$FF");
+    assert!(
+        res.prg.windows(2).any(|w| w == [0xC9, 0xFF]),
+        "waitkey should emit CMP #$FF"
+    );
 }
 
 #[test]
@@ -1990,11 +2240,15 @@ fn irq_exit_emits_jmp_ea81() {
     let res = compile(src, &CompileOptions { basic_stub: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     // irq_exit must emit JMP $EA81 = $4C $81 $EA
-    assert!(res.prg.windows(3).any(|w| w == [0x4C, 0x81, 0xEA]),
-        "irq_exit should emit JMP $EA81 ($4C $81 $EA)");
+    assert!(
+        res.prg.windows(3).any(|w| w == [0x4C, 0x81, 0xEA]),
+        "irq_exit should emit JMP $EA81 ($4C $81 $EA)"
+    );
     // Must NOT contain a JSR $EA81 ($20 $81 $EA) — that would corrupt the IRQ stack
-    assert!(!res.prg.windows(3).any(|w| w == [0x20, 0x81, 0xEA]),
-        "irq_exit must not emit JSR $EA81");
+    assert!(
+        !res.prg.windows(3).any(|w| w == [0x20, 0x81, 0xEA]),
+        "irq_exit must not emit JSR $EA81"
+    );
 }
 
 #[test]
@@ -2003,11 +2257,15 @@ fn sys_with_arg_emits_lda_imm_then_jsr() {
     let res = compile(src, &CompileOptions { basic_stub: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     // LDA #7 = $A9 $07
-    assert!(res.prg.windows(2).any(|w| w == [0xA9, 0x07]),
-        "sys addr, val should emit LDA #val ($A9 $07)");
+    assert!(
+        res.prg.windows(2).any(|w| w == [0xA9, 0x07]),
+        "sys addr, val should emit LDA #val ($A9 $07)"
+    );
     // JSR $FFD2 = $20 $D2 $FF
-    assert!(res.prg.windows(3).any(|w| w == [0x20, 0xD2, 0xFF]),
-        "sys addr, val should emit JSR addr ($20 $D2 $FF)");
+    assert!(
+        res.prg.windows(3).any(|w| w == [0x20, 0xD2, 0xFF]),
+        "sys addr, val should emit JSR addr ($20 $D2 $FF)"
+    );
 }
 
 #[test]
@@ -2016,12 +2274,20 @@ fn sys_without_arg_emits_only_jsr() {
     let res = compile(src, &CompileOptions { basic_stub: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     // JSR $FFD2 = $20 $D2 $FF
-    assert!(res.prg.windows(3).any(|w| w == [0x20, 0xD2, 0xFF]),
-        "sys addr should emit JSR addr");
+    assert!(
+        res.prg.windows(3).any(|w| w == [0x20, 0xD2, 0xFF]),
+        "sys addr should emit JSR addr"
+    );
     // No LDA immediate before the JSR (no spurious LDA #n)
-    let pos = res.prg.windows(3).position(|w| w == [0x20, 0xD2, 0xFF]).unwrap();
-    assert!(pos == 0 || res.prg[pos - 2] != 0xA9,
-        "sys addr (no arg) should not emit LDA #n before JSR");
+    let pos = res
+        .prg
+        .windows(3)
+        .position(|w| w == [0x20, 0xD2, 0xFF])
+        .unwrap();
+    assert!(
+        pos == 0 || res.prg[pos - 2] != 0xA9,
+        "sys addr (no arg) should not emit LDA #n before JSR"
+    );
 }
 
 #[test]
@@ -2029,8 +2295,10 @@ fn data_read_emits_indirect_lda() {
     let src = "data 10, 20, 30\nread x\nread y";
     let res = compile(src, &CompileOptions { basic_stub: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
-    assert!(res.prg.windows(3).any(|w| w == [10, 20, 30]),
-        "data bytes should be in output");
+    assert!(
+        res.prg.windows(3).any(|w| w == [10, 20, 30]),
+        "data bytes should be in output"
+    );
     assert!(res.prg.contains(&0xB1), "read should use LDA (zp),Y");
     assert!(res.prg.contains(&0xE6), "read should INC data pointer");
 }
@@ -2040,7 +2308,10 @@ fn data_bytes_in_output() {
     let src = "data 99\nread x";
     let res = compile(src, &CompileOptions { basic_stub: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
-    assert!(res.prg.contains(&99u8), "data byte 99 should appear in output");
+    assert!(
+        res.prg.contains(&99u8),
+        "data byte 99 should appear in output"
+    );
 }
 
 // ── plot ────────────────────────────────────────────────────────────────────
@@ -2064,8 +2335,10 @@ fn plot_helper_contains_bitmap_base() {
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     // ADC #$20 in the helper: opcode $69 $20
     let bytes = &res.prg[2..];
-    assert!(bytes.windows(2).any(|w| w == &[0x69, 0x20]),
-        "Plot helper should embed ADC #$20 for bitmap base");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0x69, 0x20]),
+        "Plot helper should embed ADC #$20 for bitmap base"
+    );
 }
 
 #[test]
@@ -2075,7 +2348,10 @@ fn plot_helper_emitted_once_for_multiple_calls() {
     let b = compile_raw("plot 0, 0\nplot 1, 1");
     // The helper (~70 bytes) is emitted once; b is larger but not 2× helper size larger
     let diff = b.len() as isize - a.len() as isize;
-    assert!(diff < 70, "Second plot call should JSR to existing helper, not duplicate it");
+    assert!(
+        diff < 70,
+        "Second plot call should JSR to existing helper, not duplicate it"
+    );
     assert!(diff > 0, "Second call adds some code");
 }
 
@@ -2101,11 +2377,15 @@ fn plot_x_over_255_stores_hi_byte() {
     let prg = compile_raw("plot 300, 0");
     let bytes = &prg[2..];
     // LDA #1 for X_hi = A9 01
-    assert!(bytes.windows(2).any(|w| w == &[0xA9, 0x01]),
-        "plot 300,0 should emit LDA #1 for X_hi");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xA9, 0x01]),
+        "plot 300,0 should emit LDA #1 for X_hi"
+    );
     // LDA #44 for X_lo = A9 2C
-    assert!(bytes.windows(2).any(|w| w == &[0xA9, 44]),
-        "plot 300,0 should emit LDA #44 for X_lo");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xA9, 44]),
+        "plot 300,0 should emit LDA #44 for X_lo"
+    );
 }
 
 #[test]
@@ -2115,8 +2395,10 @@ fn plot_x_319_full_width() {
     let res = compile(src, &CompileOptions { basic_stub: false });
     assert!(res.errors.is_empty());
     let bytes = &res.prg[2..];
-    assert!(bytes.windows(2).any(|w| w == &[0xA9, 0x01]),
-        "plot 319,0 should store X_hi=1");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xA9, 0x01]),
+        "plot 319,0 should store X_hi=1"
+    );
 }
 
 #[test]
@@ -2125,8 +2407,10 @@ fn plot_x_255_zero_hi_byte() {
     let prg = compile_raw("plot 255, 0");
     let bytes = &prg[2..];
     // LDA #0 for X_hi = A9 00
-    assert!(bytes.windows(2).any(|w| w == &[0xA9, 0x00]),
-        "plot 255,0 should store X_hi=0");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xA9, 0x00]),
+        "plot 255,0 should store X_hi=0"
+    );
 }
 
 #[test]
@@ -2136,8 +2420,10 @@ fn plot_helper_has_x_hi_branch() {
     let prg = compile_raw("plot 0, 0");
     let bytes = &prg[2..];
     let inc_count = bytes.windows(2).filter(|w| w[0] == 0xE6).count();
-    assert!(inc_count >= 3,
-        "Helper should have INC ptr_hi for: lo carry, X_hi!=0, and pixel_y carry");
+    assert!(
+        inc_count >= 3,
+        "Helper should have INC ptr_hi for: lo carry, X_hi!=0, and pixel_y carry"
+    );
 }
 
 // ── Sprite ───────────────────────────────────────────────────────────────────
@@ -2149,7 +2435,10 @@ fn sprite_sets_y_register() {
     let bytes = &prg[2..];
     // STA $D001 = 8D 01 D0
     let has_sta_y = bytes.windows(3).any(|w| w == &[0x8D, 0x01, 0xD0]);
-    assert!(has_sta_y, "sprite should STA $D001 (Y register for sprite 0)");
+    assert!(
+        has_sta_y,
+        "sprite should STA $D001 (Y register for sprite 0)"
+    );
 }
 
 #[test]
@@ -2159,7 +2448,10 @@ fn sprite_sets_x_register() {
     let bytes = &prg[2..];
     // STA $D000 = 8D 00 D0
     let has_sta_x = bytes.windows(3).any(|w| w == &[0x8D, 0x00, 0xD0]);
-    assert!(has_sta_x, "sprite should STA $D000 (X register for sprite 0)");
+    assert!(
+        has_sta_x,
+        "sprite should STA $D000 (X register for sprite 0)"
+    );
 }
 
 #[test]
@@ -2169,7 +2461,10 @@ fn sprite_with_const_x_below_256_clears_d010_bit() {
     let bytes = &prg[2..];
     // AND #$FE = 29 FE (clears bit 0 = sprite 0 MSB)
     let has_and = bytes.windows(2).any(|w| w == &[0x29, 0xFE]);
-    assert!(has_and, "x<256: sprite should AND #$FE on $D010 to clear MSB bit");
+    assert!(
+        has_and,
+        "x<256: sprite should AND #$FE on $D010 to clear MSB bit"
+    );
 }
 
 #[test]
@@ -2179,7 +2474,10 @@ fn sprite_with_const_x_above_255_sets_d010_bit() {
     let bytes = &prg[2..];
     // ORA #$01 = 09 01
     let has_ora = bytes.windows(2).any(|w| w == &[0x09, 0x01]);
-    assert!(has_ora, "x>=256: sprite should ORA #$01 on $D010 to set MSB bit");
+    assert!(
+        has_ora,
+        "x>=256: sprite should ORA #$01 on $D010 to set MSB bit"
+    );
     // X low byte = 300 & 0xFF = 44 = $2C  →  LDA #$2C = A9 2C
     let has_x_lo = bytes.windows(2).any(|w| w == &[0xA9, 0x2C]);
     assert!(has_x_lo, "sprite x=300: lo byte $2C should be loaded");
@@ -2192,7 +2490,10 @@ fn sprite_with_data_addr_writes_pointer() {
     let bytes = &prg[2..];
     // LDA #$80 = A9 80
     let has_ptr = bytes.windows(2).any(|w| w == &[0xA9, 0x80]);
-    assert!(has_ptr, "sprite data_addr $2000 → pointer $80 should be loaded");
+    assert!(
+        has_ptr,
+        "sprite data_addr $2000 → pointer $80 should be loaded"
+    );
     // STA $07F8 = 8D F8 07
     let has_sta_ptr = bytes.windows(3).any(|w| w == &[0x8D, 0xF8, 0x07]);
     assert!(has_sta_ptr, "sprite data pointer should be STA'd to $07F8");
@@ -2299,7 +2600,10 @@ fn sprite_1_uses_correct_registers() {
     assert!(has_sta_y, "sprite 1 Y should STA $D003");
     // AND #$FD = 29 FD (x<256: clear bit 1)
     let has_and = bytes.windows(2).any(|w| w == &[0x29, 0xFD]);
-    assert!(has_and, "sprite 1 x<256 should AND #$FD (clear bit 1 of $D010)");
+    assert!(
+        has_and,
+        "sprite 1 x<256 should AND #$FD (clear bit 1 of $D010)"
+    );
 }
 
 #[test]
@@ -2310,7 +2614,10 @@ fn sprite_word_x_uses_lo_byte_and_runtime_msb() {
     let bytes = &prg[2..];
     // LDA zp  = A5 zp
     let has_lda_zp = bytes.windows(1).filter(|w| w[0] == 0xA5).count();
-    assert!(has_lda_zp >= 2, "word x: should load lo and hi bytes from ZP");
+    assert!(
+        has_lda_zp >= 2,
+        "word x: should load lo and hi bytes from ZP"
+    );
     // BEQ = F0 (branch to clear_msb)
     let has_beq = bytes.contains(&0xF0);
     assert!(has_beq, "word x: should emit BEQ for runtime MSB check");
@@ -2327,7 +2634,11 @@ fn sprite_def_aligns_to_64_byte_boundary() {
     bytes63[1] = 0x7E; // row 1 byte 1, easily spotted
     let src = format!(
         "sprdef 0\n{}\nend",
-        bytes63.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(",")
+        bytes63
+            .iter()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
     );
     let prg = compile_raw(&src);
     let bytes = &prg[2..]; // skip load address
@@ -2347,7 +2658,10 @@ fn sprite_def_aligns_to_64_byte_boundary() {
 
     // $7E marker byte: data starts at $0840, prg[2..] = $0801 base, offset = $0840-$0801 = $3F = 63
     // byte[1] of sprite data = offset 64 from $080D base = bytes[$3F+1] = bytes[64]
-    assert_eq!(bytes[64], 0x7E, "sprite data byte 1 should be at expected offset");
+    assert_eq!(
+        bytes[64], 0x7E,
+        "sprite data byte 1 should be at expected offset"
+    );
 }
 
 #[test]
@@ -2379,7 +2693,10 @@ fn input_string_emits_basin_and_null_term() {
     assert!(has_basin, "input string should emit JSR $FFCF");
     // Null-terminate: LDA #0 (A9 00) then STA indirect (91)
     let has_null = bytes.windows(2).any(|w| w == &[0xA9, 0x00]);
-    assert!(has_null, "input string should emit null terminator (LDA #0)");
+    assert!(
+        has_null,
+        "input string should emit null terminator (LDA #0)"
+    );
 }
 
 #[test]
@@ -2388,10 +2705,13 @@ fn input_with_prompt_prints_before_basin() {
     let bytes = &prg[2..];
     // Should contain CHROUT call ($FFD2) for the prompt before BASIN ($FFCF)
     let chrout_pos = bytes.windows(3).position(|w| w == &[0x20, 0xD2, 0xFF]);
-    let basin_pos  = bytes.windows(3).position(|w| w == &[0x20, 0xCF, 0xFF]);
+    let basin_pos = bytes.windows(3).position(|w| w == &[0x20, 0xCF, 0xFF]);
     assert!(chrout_pos.is_some(), "input with prompt should call CHROUT");
-    assert!(basin_pos.is_some(),  "input with prompt should call BASIN");
-    assert!(chrout_pos.unwrap() < basin_pos.unwrap(), "CHROUT must come before BASIN");
+    assert!(basin_pos.is_some(), "input with prompt should call BASIN");
+    assert!(
+        chrout_pos.unwrap() < basin_pos.unwrap(),
+        "CHROUT must come before BASIN"
+    );
 }
 
 #[test]
@@ -2400,10 +2720,16 @@ fn input_int_erases_non_digit_with_del() {
     let prg = compile_raw("input score");
     let bytes = &prg[2..];
     // DEL erase: LDA #$14 ($A9 $14) followed by JSR $FFD2 ($20 $D2 $FF)
-    assert!(bytes.windows(2).any(|w| w == &[0xA9, 0x14]),
-        "input int should emit LDA #$14 (DEL) to erase non-digit echo");
-    assert!(bytes.windows(5).any(|w| w == &[0xA9, 0x14, 0x20, 0xD2, 0xFF]),
-        "input int should emit LDA #$14; JSR $FFD2 sequence");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xA9, 0x14]),
+        "input int should emit LDA #$14 (DEL) to erase non-digit echo"
+    );
+    assert!(
+        bytes
+            .windows(5)
+            .any(|w| w == &[0xA9, 0x14, 0x20, 0xD2, 0xFF]),
+        "input int should emit LDA #$14; JSR $FFD2 sequence"
+    );
 }
 
 #[test]
@@ -2421,11 +2747,15 @@ fn fill_page_count_for_1000_bytes() {
     let prg = compile_raw("fill $0400, 1000, 0");
     let bytes = &prg[2..];
     // LDA #3 (page count hi)
-    assert!(bytes.windows(2).any(|w| w == &[0xA9, 3]),
-        "fill 1000 should store page count 3");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xA9, 3]),
+        "fill 1000 should store page count 3"
+    );
     // LDA #232 (partial = 1000 - 3*256 = 232)
-    assert!(bytes.windows(2).any(|w| w == &[0xA9, 232]),
-        "fill 1000 should store partial count 232");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xA9, 232]),
+        "fill 1000 should store partial count 232"
+    );
 }
 
 #[test]
@@ -2436,7 +2766,10 @@ fn fill_zero_len_compiles_cleanly() {
     let bytes = &prg[2..];
     // Both page and partial loops guarded by BEQ ($F0)
     let beq_count = bytes.iter().filter(|&&b| b == 0xF0).count();
-    assert!(beq_count >= 2, "fill should emit at least 2 BEQ guards for the two loops");
+    assert!(
+        beq_count >= 2,
+        "fill should emit at least 2 BEQ guards for the two loops"
+    );
 }
 
 // ── Memcopy ───────────────────────────────────────────────────────────────────
@@ -2446,9 +2779,15 @@ fn memcopy_emits_load_and_store_indirect() {
     let prg = compile_raw("memcopy $C000, $0400, 256");
     let bytes = &prg[2..];
     // LDA (src),Y = $B1 <zp>
-    assert!(bytes.iter().any(|&b| b == 0xB1), "memcopy should emit LDA (src),Y");
+    assert!(
+        bytes.iter().any(|&b| b == 0xB1),
+        "memcopy should emit LDA (src),Y"
+    );
     // STA (dst),Y = $91 <zp>
-    assert!(bytes.iter().any(|&b| b == 0x91), "memcopy should emit STA (dst),Y");
+    assert!(
+        bytes.iter().any(|&b| b == 0x91),
+        "memcopy should emit STA (dst),Y"
+    );
 }
 
 #[test]
@@ -2457,12 +2796,16 @@ fn memcopy_256_bytes_uses_page_loop() {
     let prg = compile_raw("memcopy $C000, $0400, 256");
     let bytes = &prg[2..];
     // LDA #1 for page count (hi byte of 256 = 1)
-    assert!(bytes.windows(2).any(|w| w == &[0xA9, 1]),
-        "memcopy 256 bytes should have page count 1");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xA9, 1]),
+        "memcopy 256 bytes should have page count 1"
+    );
     // LDA #0 for partial (lo byte of 256 = 0)
     // Also used for LDY #0, but the combination is unambiguous in context
-    assert!(bytes.windows(2).any(|w| w == &[0xA9, 0]),
-        "memcopy 256 bytes should have partial count 0");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xA9, 0]),
+        "memcopy 256 bytes should have partial count 0"
+    );
 }
 
 #[test]
@@ -2472,7 +2815,10 @@ fn memcopy_increments_src_and_dst_hi() {
     let bytes = &prg[2..];
     let inc_zp_count = bytes.windows(1).filter(|w| w[0] == 0xE6).count();
     // Must have at least 2 INC zp (src_hi and dst_hi) in the page loop
-    assert!(inc_zp_count >= 2, "memcopy should INC src_hi and dst_hi each page");
+    assert!(
+        inc_zp_count >= 2,
+        "memcopy should INC src_hi and dst_hi each page"
+    );
 }
 
 // ── DrawMem ───────────────────────────────────────────────────────────────────
@@ -2481,15 +2827,24 @@ fn memcopy_increments_src_and_dst_hi() {
 fn drawmem_emits_lda_indirect_and_sta_indirect() {
     let prg = compile_raw("drawmem $C000, $0400, 8, 10, 40");
     let bytes = &prg[2..];
-    assert!(bytes.iter().any(|&b| b == 0xB1), "drawmem should emit LDA (src),Y ($B1)");
-    assert!(bytes.iter().any(|&b| b == 0x91), "drawmem should emit STA (dst),Y ($91)");
+    assert!(
+        bytes.iter().any(|&b| b == 0xB1),
+        "drawmem should emit LDA (src),Y ($B1)"
+    );
+    assert!(
+        bytes.iter().any(|&b| b == 0x91),
+        "drawmem should emit STA (dst),Y ($91)"
+    );
 }
 
 #[test]
 fn drawmem_emits_iny_for_inner_loop() {
     let prg = compile_raw("drawmem $C000, $0400, 8, 10, 40");
     let bytes = &prg[2..];
-    assert!(bytes.iter().any(|&b| b == 0xC8), "drawmem should emit INY ($C8)");
+    assert!(
+        bytes.iter().any(|&b| b == 0xC8),
+        "drawmem should emit INY ($C8)"
+    );
 }
 
 #[test]
@@ -2497,7 +2852,10 @@ fn drawmem_emits_cpy_for_width_check() {
     let prg = compile_raw("drawmem $C000, $0400, 8, 10, 40");
     let bytes = &prg[2..];
     // CPY zp is $C4
-    assert!(bytes.iter().any(|&b| b == 0xC4), "drawmem should emit CPY w_hold ($C4)");
+    assert!(
+        bytes.iter().any(|&b| b == 0xC4),
+        "drawmem should emit CPY w_hold ($C4)"
+    );
 }
 
 #[test]
@@ -2505,7 +2863,10 @@ fn drawmem_emits_dec_for_height_counter() {
     let prg = compile_raw("drawmem $C000, $0400, 8, 10, 40");
     let bytes = &prg[2..];
     // DEC zp is $C6
-    assert!(bytes.iter().any(|&b| b == 0xC6), "drawmem should emit DEC h_ctr ($C6)");
+    assert!(
+        bytes.iter().any(|&b| b == 0xC6),
+        "drawmem should emit DEC h_ctr ($C6)"
+    );
 }
 
 #[test]
@@ -2514,7 +2875,11 @@ fn drawmem_emits_inc_for_src_and_dst_hi() {
     let bytes = &prg[2..];
     // INC zp is $E6 — should appear for both INC src_hi and INC dst_hi
     let inc_count = bytes.iter().filter(|&&b| b == 0xE6).count();
-    assert!(inc_count >= 2, "drawmem should emit INC src_hi and INC dst_hi ($E6), got {}", inc_count);
+    assert!(
+        inc_count >= 2,
+        "drawmem should emit INC src_hi and INC dst_hi ($E6), got {}",
+        inc_count
+    );
 }
 
 #[test]
@@ -2522,10 +2887,14 @@ fn drawmem_initialises_src_address() {
     // src = $C000 → LDA #$00, STA zp, LDA #$C0, STA zp+1
     let prg = compile_raw("drawmem $C000, $0400, 8, 10, 40");
     let bytes = &prg[2..];
-    assert!(bytes.windows(2).any(|w| w[0] == 0xA9 && w[1] == 0x00),
-        "drawmem should load low byte $00 for src $C000");
-    assert!(bytes.windows(2).any(|w| w[0] == 0xA9 && w[1] == 0xC0),
-        "drawmem should load high byte $C0 for src $C000");
+    assert!(
+        bytes.windows(2).any(|w| w[0] == 0xA9 && w[1] == 0x00),
+        "drawmem should load low byte $00 for src $C000"
+    );
+    assert!(
+        bytes.windows(2).any(|w| w[0] == 0xA9 && w[1] == 0xC0),
+        "drawmem should load high byte $C0 for src $C000"
+    );
 }
 
 #[test]
@@ -2533,8 +2902,10 @@ fn drawmem_initialises_dst_address() {
     // dst = $0400 → LDA #$00, STA zp, LDA #$04, STA zp+1
     let prg = compile_raw("drawmem $C000, $0400, 8, 10, 40");
     let bytes = &prg[2..];
-    assert!(bytes.windows(2).any(|w| w[0] == 0xA9 && w[1] == 0x04),
-        "drawmem should load high byte $04 for dst $0400");
+    assert!(
+        bytes.windows(2).any(|w| w[0] == 0xA9 && w[1] == 0x04),
+        "drawmem should load high byte $04 for dst $0400"
+    );
 }
 
 #[test]
@@ -2546,8 +2917,14 @@ drawmem src, $0400, 8, 10, 40
     let prg = compile_raw(src);
     let bytes = &prg[2..];
     // LDA zp ($A5) used to load word var lo/hi bytes
-    assert!(bytes.iter().any(|&b| b == 0xA5), "drawmem with word src should emit LDA zp ($A5)");
-    assert!(bytes.iter().any(|&b| b == 0xB1), "drawmem should still emit LDA (src),Y");
+    assert!(
+        bytes.iter().any(|&b| b == 0xA5),
+        "drawmem with word src should emit LDA zp ($A5)"
+    );
+    assert!(
+        bytes.iter().any(|&b| b == 0xB1),
+        "drawmem should still emit LDA (src),Y"
+    );
 }
 
 #[test]
@@ -2558,8 +2935,14 @@ drawmem $C000, dst, 8, 10, 40
 "#;
     let prg = compile_raw(src);
     let bytes = &prg[2..];
-    assert!(bytes.iter().any(|&b| b == 0xA5), "drawmem with word dst should emit LDA zp ($A5)");
-    assert!(bytes.iter().any(|&b| b == 0x91), "drawmem should still emit STA (dst),Y");
+    assert!(
+        bytes.iter().any(|&b| b == 0xA5),
+        "drawmem with word dst should emit LDA zp ($A5)"
+    );
+    assert!(
+        bytes.iter().any(|&b| b == 0x91),
+        "drawmem should still emit STA (dst),Y"
+    );
 }
 
 // ── IRQ ───────────────────────────────────────────────────────────────────────
@@ -2568,8 +2951,14 @@ drawmem $C000, dst, 8, 10, 40
 fn irq_emits_sei_cli() {
     let prg = compile_raw("irq $0900");
     let bytes = &prg[2..];
-    assert!(bytes.iter().any(|&b| b == 0x78), "irq should emit SEI ($78)");
-    assert!(bytes.iter().any(|&b| b == 0x58), "irq should emit CLI ($58)");
+    assert!(
+        bytes.iter().any(|&b| b == 0x78),
+        "irq should emit SEI ($78)"
+    );
+    assert!(
+        bytes.iter().any(|&b| b == 0x58),
+        "irq should emit CLI ($58)"
+    );
 }
 
 #[test]
@@ -2598,8 +2987,13 @@ fn irq_sets_raster_line() {
     let prg = compile_raw("irq $0900, 100");
     let bytes = &prg[2..];
     // LDA #100 then STA $D012: A9 64 8D 12 D0
-    let pos = bytes.windows(5).position(|w| w == &[0xA9, 100, 0x8D, 0x12, 0xD0]);
-    assert!(pos.is_some(), "irq with line should emit LDA #100; STA $D012");
+    let pos = bytes
+        .windows(5)
+        .position(|w| w == &[0xA9, 100, 0x8D, 0x12, 0xD0]);
+    assert!(
+        pos.is_some(),
+        "irq with line should emit LDA #100; STA $D012"
+    );
 }
 
 #[test]
@@ -2608,8 +3002,14 @@ fn irq_constant_address_emits_lo_hi() {
     let bytes = &prg[2..];
     // LDA #$00 (lo of $C800): A9 00
     // LDA #$C8 (hi of $C800): A9 C8
-    assert!(bytes.windows(2).any(|w| w == &[0xA9, 0x00]), "irq $C800 lo byte = 0");
-    assert!(bytes.windows(2).any(|w| w == &[0xA9, 0xC8]), "irq $C800 hi byte = $C8");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xA9, 0x00]),
+        "irq $C800 lo byte = 0"
+    );
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xA9, 0xC8]),
+        "irq $C800 hi byte = $C8"
+    );
 }
 
 #[test]
@@ -2631,7 +3031,10 @@ end\n\
     // The byte just before 8D 14 03 is the handler address lo byte (not 0)
     if let Some(pos) = sta_0314 {
         let lo_byte = bytes[pos - 1]; // byte before STA $0314 is the LDA #<lo> operand
-        assert_ne!(lo_byte, 0x8D, "lo byte should be address, not another opcode");
+        assert_ne!(
+            lo_byte, 0x8D,
+            "lo byte should be address, not another opcode"
+        );
     }
 }
 
@@ -2668,11 +3071,20 @@ fn save_emits_setnam_setlfs_save() {
     let prg = compile_raw("save \"DATA\", $C000, 1024\n");
     let bytes = &prg[2..];
     // SETNAM = JSR $FFBD: 20 BD FF
-    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xBD, 0xFF]), "save: SETNAM (JSR $FFBD) missing");
+    assert!(
+        bytes.windows(3).any(|w| w == &[0x20, 0xBD, 0xFF]),
+        "save: SETNAM (JSR $FFBD) missing"
+    );
     // SETLFS = JSR $FFBA: 20 BA FF
-    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xBA, 0xFF]), "save: SETLFS (JSR $FFBA) missing");
+    assert!(
+        bytes.windows(3).any(|w| w == &[0x20, 0xBA, 0xFF]),
+        "save: SETLFS (JSR $FFBA) missing"
+    );
     // SAVE = JSR $FFD8: 20 D8 FF
-    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xD8, 0xFF]), "save: SAVE (JSR $FFD8) missing");
+    assert!(
+        bytes.windows(3).any(|w| w == &[0x20, 0xD8, 0xFF]),
+        "save: SAVE (JSR $FFD8) missing"
+    );
 }
 
 #[test]
@@ -2692,7 +3104,10 @@ fn save_setnam_length_byte() {
     let bytes = &prg[2..];
     // filename "DEMO" has length 4
     // Find: LDA #4 ($A9 $04) somewhere before JSR $FFBD
-    assert!(bytes.windows(2).any(|w| w == &[0xA9, 4]), "save: LDA #4 (SETNAM length) not found");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xA9, 4]),
+        "save: LDA #4 (SETNAM length) not found"
+    );
 }
 
 // ── cursor statement ─────────────────────────────────────────────────────────
@@ -2702,7 +3117,10 @@ fn cursor_emits_kernal_plot() {
     // cursor 10, 5 → JSR $FFF0
     let prg = compile_raw("cursor 10, 5\n");
     let bytes = &prg[2..];
-    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xF0, 0xFF]), "cursor: JSR $FFF0 (KERNAL PLOT) missing");
+    assert!(
+        bytes.windows(3).any(|w| w == &[0x20, 0xF0, 0xFF]),
+        "cursor: JSR $FFF0 (KERNAL PLOT) missing"
+    );
 }
 
 #[test]
@@ -2713,7 +3131,10 @@ fn cursor_emits_sec_before_plot() {
     let plot_pos = bytes.windows(3).position(|w| w == &[0x20, 0xF0, 0xFF]);
     assert!(plot_pos.is_some(), "cursor: JSR $FFF0 missing");
     let pos = plot_pos.unwrap();
-    assert!(bytes[..pos].contains(&0x18), "cursor: CLC must appear before JSR $FFF0");
+    assert!(
+        bytes[..pos].contains(&0x18),
+        "cursor: CLC must appear before JSR $FFF0"
+    );
 }
 
 #[test]
@@ -2721,7 +3142,10 @@ fn cursor_transfers_y_register() {
     // cursor col, row: col → Y register via TAY ($A8)
     let prg = compile_raw("cursor 20, 10\n");
     let bytes = &prg[2..];
-    assert!(bytes.contains(&0xA8), "cursor: TAY ($A8) to pass column in Y register");
+    assert!(
+        bytes.contains(&0xA8),
+        "cursor: TAY ($A8) to pass column in Y register"
+    );
 }
 
 // ── repeat / until loop ──────────────────────────────────────────────────────
@@ -2731,7 +3155,10 @@ fn repeat_until_emits_body_then_cond() {
     // repeat; var x = x + 1; until x == 10
     let prg = compile_raw("var x = 0\nrepeat\n  x = x + 1\nuntil x == 10\n");
     // Should produce code without panic and be longer than minimal
-    assert!(prg.len() > 20, "repeat/until should produce substantial code");
+    assert!(
+        prg.len() > 20,
+        "repeat/until should produce substantial code"
+    );
 }
 
 #[test]
@@ -2739,7 +3166,10 @@ fn repeat_until_jumps_back() {
     // JMP opcode ($4C) must be present for the loop-back branch
     let prg = compile_raw("var i = 0\nrepeat\n  i = i + 1\nuntil i == 5\n");
     let bytes = &prg[2..];
-    assert!(bytes.contains(&0x4C), "repeat/until: JMP ($4C) for loop-back expected");
+    assert!(
+        bytes.contains(&0x4C),
+        "repeat/until: JMP ($4C) for loop-back expected"
+    );
 }
 
 #[test]
@@ -2747,7 +3177,10 @@ fn repeat_until_cmp_1() {
     // CMP #1 ($C9 $01) is used to test the condition value (0 or 1)
     let prg = compile_raw("var done = 0\nrepeat\n  done = 1\nuntil done == 1\n");
     let bytes = &prg[2..];
-    assert!(bytes.windows(2).any(|w| w == &[0xC9, 0x01]), "repeat/until: CMP #1 for condition test missing");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xC9, 0x01]),
+        "repeat/until: CMP #1 for condition test missing"
+    );
 }
 
 // ── sprite expand x/y ────────────────────────────────────────────────────────
@@ -2758,11 +3191,20 @@ fn sprite_expand_x_on_emits_d01d_ora() {
     let prg = compile_raw("sprite expand x 0, on\n");
     let bytes = &prg[2..];
     // LDA $D01D = AD 1D D0
-    assert!(bytes.windows(3).any(|w| w == &[0xAD, 0x1D, 0xD0]), "expand x on: LDA $D01D missing");
+    assert!(
+        bytes.windows(3).any(|w| w == &[0xAD, 0x1D, 0xD0]),
+        "expand x on: LDA $D01D missing"
+    );
     // ORA #1 = 09 01
-    assert!(bytes.windows(2).any(|w| w == &[0x09, 0x01]), "expand x on: ORA #1 missing");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0x09, 0x01]),
+        "expand x on: ORA #1 missing"
+    );
     // STA $D01D = 8D 1D D0
-    assert!(bytes.windows(3).any(|w| w == &[0x8D, 0x1D, 0xD0]), "expand x on: STA $D01D missing");
+    assert!(
+        bytes.windows(3).any(|w| w == &[0x8D, 0x1D, 0xD0]),
+        "expand x on: STA $D01D missing"
+    );
 }
 
 #[test]
@@ -2770,10 +3212,19 @@ fn sprite_expand_x_off_emits_d01d_and() {
     // sprite expand x 1, off → LDA $D01D; AND #$FD; STA $D01D
     let prg = compile_raw("sprite expand x 1, off\n");
     let bytes = &prg[2..];
-    assert!(bytes.windows(3).any(|w| w == &[0xAD, 0x1D, 0xD0]), "expand x off: LDA $D01D missing");
+    assert!(
+        bytes.windows(3).any(|w| w == &[0xAD, 0x1D, 0xD0]),
+        "expand x off: LDA $D01D missing"
+    );
     // AND #$FD (NOT bit 1 = $FE... wait, sprite 1 = bit 1 = $02, ~$02 = $FD)
-    assert!(bytes.windows(2).any(|w| w == &[0x29, 0xFD]), "expand x off: AND #$FD missing");
-    assert!(bytes.windows(3).any(|w| w == &[0x8D, 0x1D, 0xD0]), "expand x off: STA $D01D missing");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0x29, 0xFD]),
+        "expand x off: AND #$FD missing"
+    );
+    assert!(
+        bytes.windows(3).any(|w| w == &[0x8D, 0x1D, 0xD0]),
+        "expand x off: STA $D01D missing"
+    );
 }
 
 #[test]
@@ -2781,10 +3232,19 @@ fn sprite_expand_y_on_emits_d017() {
     // sprite expand y 2, on → LDA $D017; ORA #4; STA $D017
     let prg = compile_raw("sprite expand y 2, on\n");
     let bytes = &prg[2..];
-    assert!(bytes.windows(3).any(|w| w == &[0xAD, 0x17, 0xD0]), "expand y on: LDA $D017 missing");
+    assert!(
+        bytes.windows(3).any(|w| w == &[0xAD, 0x17, 0xD0]),
+        "expand y on: LDA $D017 missing"
+    );
     // ORA #4 = 09 04
-    assert!(bytes.windows(2).any(|w| w == &[0x09, 0x04]), "expand y on: ORA #4 missing");
-    assert!(bytes.windows(3).any(|w| w == &[0x8D, 0x17, 0xD0]), "expand y on: STA $D017 missing");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0x09, 0x04]),
+        "expand y on: ORA #4 missing"
+    );
+    assert!(
+        bytes.windows(3).any(|w| w == &[0x8D, 0x17, 0xD0]),
+        "expand y on: STA $D017 missing"
+    );
 }
 
 #[test]
@@ -2792,9 +3252,18 @@ fn sprite_expand_y_off_emits_d017_and() {
     // sprite expand y 0, off → LDA $D017; AND #$FE; STA $D017
     let prg = compile_raw("sprite expand y 0, off\n");
     let bytes = &prg[2..];
-    assert!(bytes.windows(3).any(|w| w == &[0xAD, 0x17, 0xD0]), "expand y off: LDA $D017 missing");
-    assert!(bytes.windows(2).any(|w| w == &[0x29, 0xFE]), "expand y off: AND #$FE missing");
-    assert!(bytes.windows(3).any(|w| w == &[0x8D, 0x17, 0xD0]), "expand y off: STA $D017 missing");
+    assert!(
+        bytes.windows(3).any(|w| w == &[0xAD, 0x17, 0xD0]),
+        "expand y off: LDA $D017 missing"
+    );
+    assert!(
+        bytes.windows(2).any(|w| w == &[0x29, 0xFE]),
+        "expand y off: AND #$FE missing"
+    );
+    assert!(
+        bytes.windows(3).any(|w| w == &[0x8D, 0x17, 0xD0]),
+        "expand y off: STA $D017 missing"
+    );
 }
 
 // ── sprite priority ──────────────────────────────────────────────────────────
@@ -2804,9 +3273,18 @@ fn sprite_priority_on_emits_d01b_ora() {
     // sprite priority 0, on → behind bg → LDA $D01B; ORA #1; STA $D01B
     let prg = compile_raw("sprite priority 0, on\n");
     let bytes = &prg[2..];
-    assert!(bytes.windows(3).any(|w| w == &[0xAD, 0x1B, 0xD0]), "priority on: LDA $D01B missing");
-    assert!(bytes.windows(2).any(|w| w == &[0x09, 0x01]), "priority on: ORA #1 missing");
-    assert!(bytes.windows(3).any(|w| w == &[0x8D, 0x1B, 0xD0]), "priority on: STA $D01B missing");
+    assert!(
+        bytes.windows(3).any(|w| w == &[0xAD, 0x1B, 0xD0]),
+        "priority on: LDA $D01B missing"
+    );
+    assert!(
+        bytes.windows(2).any(|w| w == &[0x09, 0x01]),
+        "priority on: ORA #1 missing"
+    );
+    assert!(
+        bytes.windows(3).any(|w| w == &[0x8D, 0x1B, 0xD0]),
+        "priority on: STA $D01B missing"
+    );
 }
 
 #[test]
@@ -2814,9 +3292,18 @@ fn sprite_priority_off_emits_d01b_and() {
     // sprite priority 0, off → in front → LDA $D01B; AND #$FE; STA $D01B
     let prg = compile_raw("sprite priority 0, off\n");
     let bytes = &prg[2..];
-    assert!(bytes.windows(3).any(|w| w == &[0xAD, 0x1B, 0xD0]), "priority off: LDA $D01B missing");
-    assert!(bytes.windows(2).any(|w| w == &[0x29, 0xFE]), "priority off: AND #$FE missing");
-    assert!(bytes.windows(3).any(|w| w == &[0x8D, 0x1B, 0xD0]), "priority off: STA $D01B missing");
+    assert!(
+        bytes.windows(3).any(|w| w == &[0xAD, 0x1B, 0xD0]),
+        "priority off: LDA $D01B missing"
+    );
+    assert!(
+        bytes.windows(2).any(|w| w == &[0x29, 0xFE]),
+        "priority off: AND #$FE missing"
+    );
+    assert!(
+        bytes.windows(3).any(|w| w == &[0x8D, 0x1B, 0xD0]),
+        "priority off: STA $D01B missing"
+    );
 }
 
 // ── plot erase ───────────────────────────────────────────────────────────────
@@ -2834,7 +3321,10 @@ fn plot_erase_emits_jsr_helper() {
     let prg = compile_raw("graphics on\ngcls\nplot erase 10, 20\n");
     let bytes = &prg[2..];
     // A JSR opcode (0x20) must appear
-    assert!(bytes.contains(&0x20), "plot erase: JSR opcode should be emitted");
+    assert!(
+        bytes.contains(&0x20),
+        "plot erase: JSR opcode should be emitted"
+    );
 }
 
 #[test]
@@ -2842,7 +3332,10 @@ fn plot_erase_helper_contains_eor_ff() {
     // The erase helper must invert the mask via EOR #$FF ($49 $FF)
     let prg = compile_raw("graphics on\ngcls\nplot erase 0, 0\n");
     let bytes = &prg[2..];
-    assert!(bytes.windows(2).any(|w| w == &[0x49, 0xFF]), "plot erase helper: EOR #$FF for mask inversion missing");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0x49, 0xFF]),
+        "plot erase helper: EOR #$FF for mask inversion missing"
+    );
 }
 
 #[test]
@@ -2850,7 +3343,10 @@ fn plot_erase_helper_contains_and_zp() {
     // The erase helper uses AND zp ($25) to clear the pixel
     let prg = compile_raw("graphics on\ngcls\nplot erase 0, 0\n");
     let bytes = &prg[2..];
-    assert!(bytes.contains(&0x25), "plot erase helper: AND zp ($25) opcode missing");
+    assert!(
+        bytes.contains(&0x25),
+        "plot erase helper: AND zp ($25) opcode missing"
+    );
 }
 
 // ── plot xor ─────────────────────────────────────────────────────────────────
@@ -2866,7 +3362,10 @@ fn plot_xor_helper_contains_eor_zp() {
     // The xor helper uses EOR zp ($45) to flip the pixel
     let prg = compile_raw("graphics on\ngcls\nplot xor 0, 0\n");
     let bytes = &prg[2..];
-    assert!(bytes.contains(&0x45), "plot xor helper: EOR zp ($45) opcode missing");
+    assert!(
+        bytes.contains(&0x45),
+        "plot xor helper: EOR zp ($45) opcode missing"
+    );
 }
 
 #[test]
@@ -2874,8 +3373,10 @@ fn plot_xor_does_not_contain_eor_ff() {
     // The xor helper should NOT invert the mask (no EOR #$FF)
     let prg = compile_raw("graphics on\ngcls\nplot xor 0, 0\n");
     let bytes = &prg[2..];
-    assert!(!bytes.windows(2).any(|w| w == &[0x49, 0xFF]),
-        "plot xor helper: should not invert mask (EOR #$FF)");
+    assert!(
+        !bytes.windows(2).any(|w| w == &[0x49, 0xFF]),
+        "plot xor helper: should not invert mask (EOR #$FF)"
+    );
 }
 
 #[test]
@@ -2899,8 +3400,14 @@ fn peek16_constant_addr_reads_two_bytes() {
     let prg = compile_raw("var p: word = peek16($D012)");
     let bytes = &prg[2..];
     // LDA $D012 = AD 12 D0 and LDA $D013 = AD 13 D0
-    assert!(bytes.windows(3).any(|w| w == &[0xAD, 0x12, 0xD0]), "peek16 lo: LDA $D012");
-    assert!(bytes.windows(3).any(|w| w == &[0xAD, 0x13, 0xD0]), "peek16 hi: LDA $D013");
+    assert!(
+        bytes.windows(3).any(|w| w == &[0xAD, 0x12, 0xD0]),
+        "peek16 lo: LDA $D012"
+    );
+    assert!(
+        bytes.windows(3).any(|w| w == &[0xAD, 0x13, 0xD0]),
+        "peek16 hi: LDA $D013"
+    );
 }
 
 #[test]
@@ -2909,8 +3416,14 @@ fn poke16_constant_addr_writes_two_bytes() {
     let prg = compile_raw("poke16 $0314, $EA81");
     let bytes = &prg[2..];
     // STA $0314 = 8D 14 03  and  STA $0315 = 8D 15 03
-    assert!(bytes.windows(3).any(|w| w == &[0x8D, 0x14, 0x03]), "poke16: STA $0314 (lo)");
-    assert!(bytes.windows(3).any(|w| w == &[0x8D, 0x15, 0x03]), "poke16: STA $0315 (hi)");
+    assert!(
+        bytes.windows(3).any(|w| w == &[0x8D, 0x14, 0x03]),
+        "poke16: STA $0314 (lo)"
+    );
+    assert!(
+        bytes.windows(3).any(|w| w == &[0x8D, 0x15, 0x03]),
+        "poke16: STA $0315 (hi)"
+    );
 }
 
 #[test]
@@ -2920,9 +3433,15 @@ fn poke16_word_value_emits_both_bytes() {
     let bytes = &prg[2..];
     // Value lo = $34, hi = $12 loaded via LDA zp ($A5)
     let has_lda_zp_twice = bytes.windows(1).filter(|w| *w == &[0xA5]).count() >= 2;
-    assert!(has_lda_zp_twice, "poke16 word var: should LDA zp twice (lo then hi)");
+    assert!(
+        has_lda_zp_twice,
+        "poke16 word var: should LDA zp twice (lo then hi)"
+    );
     // STA $C000 = 8D 00 C0
-    assert!(bytes.windows(3).any(|w| w == &[0x8D, 0x00, 0xC0]), "poke16: STA $C000");
+    assert!(
+        bytes.windows(3).any(|w| w == &[0x8D, 0x00, 0xC0]),
+        "poke16: STA $C000"
+    );
 }
 
 #[test]
@@ -2931,7 +3450,10 @@ fn poke16_word_addr_uses_indirect() {
     let prg = compile_raw("var ptr: word = $C000\npoke16 ptr, 0");
     let bytes = &prg[2..];
     // STA (ptr),Y — opcode $91
-    assert!(bytes.contains(&0x91), "poke16 via word ptr: STA (zp),Y missing");
+    assert!(
+        bytes.contains(&0x91),
+        "poke16 via word ptr: STA (zp),Y missing"
+    );
 }
 
 #[test]
@@ -2940,8 +3462,10 @@ fn word_vardecl_with_add_emits_clc() {
     let prg = compile_raw("var ptr: word = $00FF\nvar ptr2: word = ptr + 1");
     let bytes = &prg[2..];
     assert!(bytes.contains(&0x18), "word VarDecl += should emit CLC");
-    assert!(bytes.windows(2).any(|w| w == &[0x69, 0x00]),
-        "word VarDecl += should propagate carry with ADC #0");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0x69, 0x00]),
+        "word VarDecl += should propagate carry with ADC #0"
+    );
 }
 
 #[test]
@@ -2949,8 +3473,10 @@ fn word_vardecl_sub_emits_sec() {
     let prg = compile_raw("var ptr: word = $0200\nvar ptr2: word = ptr - 5");
     let bytes = &prg[2..];
     assert!(bytes.contains(&0x38), "word VarDecl -= should emit SEC");
-    assert!(bytes.windows(2).any(|w| w == &[0xE9, 0x00]),
-        "word VarDecl -= should propagate borrow with SBC #0");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xE9, 0x00]),
+        "word VarDecl -= should propagate borrow with SBC #0"
+    );
 }
 
 // ── open / close / print# ────────────────────────────────────────────────────
@@ -2961,11 +3487,20 @@ fn open_emits_setnam_setlfs_open() {
     let prg = compile_raw("open 1, 8, 2, \"TEST\"");
     let bytes = &prg[2..];
     // JSR $FFBD = 20 BD FF
-    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xBD, 0xFF]), "open: JSR SETNAM missing");
+    assert!(
+        bytes.windows(3).any(|w| w == &[0x20, 0xBD, 0xFF]),
+        "open: JSR SETNAM missing"
+    );
     // JSR $FFBA = 20 BA FF
-    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xBA, 0xFF]), "open: JSR SETLFS missing");
+    assert!(
+        bytes.windows(3).any(|w| w == &[0x20, 0xBA, 0xFF]),
+        "open: JSR SETLFS missing"
+    );
     // JSR $FFC0 = 20 C0 FF
-    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xC0, 0xFF]), "open: JSR OPEN missing");
+    assert!(
+        bytes.windows(3).any(|w| w == &[0x20, 0xC0, 0xFF]),
+        "open: JSR OPEN missing"
+    );
 }
 
 #[test]
@@ -2974,9 +3509,15 @@ fn close_emits_kernal_close() {
     let prg = compile_raw("close 1");
     let bytes = &prg[2..];
     // LDA #1 = A9 01
-    assert!(bytes.windows(2).any(|w| w == &[0xA9, 0x01]), "close: LDA #1 missing");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xA9, 0x01]),
+        "close: LDA #1 missing"
+    );
     // JSR $FFC3 = 20 C3 FF
-    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xC3, 0xFF]), "close: JSR CLOSE missing");
+    assert!(
+        bytes.windows(3).any(|w| w == &[0x20, 0xC3, 0xFF]),
+        "close: JSR CLOSE missing"
+    );
 }
 
 #[test]
@@ -2987,9 +3528,15 @@ fn print_hash_emits_chkout_clrchn() {
     // TAX = AA (channel → X for CHKOUT)
     assert!(bytes.contains(&0xAA), "print#: TAX missing");
     // JSR $FFC9 = 20 C9 FF
-    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xC9, 0xFF]), "print#: JSR CHKOUT missing");
+    assert!(
+        bytes.windows(3).any(|w| w == &[0x20, 0xC9, 0xFF]),
+        "print#: JSR CHKOUT missing"
+    );
     // JSR $FFCC = 20 CC FF
-    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xCC, 0xFF]), "print#: JSR CLRCHN missing");
+    assert!(
+        bytes.windows(3).any(|w| w == &[0x20, 0xCC, 0xFF]),
+        "print#: JSR CLRCHN missing"
+    );
     // 'H' in PETSCII = $48
     assert!(bytes.contains(&0x48), "print#: 'H' PETSCII byte missing");
 }
@@ -3001,9 +3548,16 @@ fn open_no_filename_emits_empty_setnam() {
     let bytes = &prg[2..];
     // LDA #0 (len=0 for SETNAM) = A9 00 followed by LDX #0, LDY #0
     // Check SETNAM is still called
-    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xBD, 0xFF]), "open no filename: JSR SETNAM missing");
-    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xFFC0u16 as u8, (0xFFC0u16 >> 8) as u8]),
-        "open no filename: JSR OPEN missing");
+    assert!(
+        bytes.windows(3).any(|w| w == &[0x20, 0xBD, 0xFF]),
+        "open no filename: JSR SETNAM missing"
+    );
+    assert!(
+        bytes
+            .windows(3)
+            .any(|w| w == &[0x20, 0xFFC0u16 as u8, (0xFFC0u16 >> 8) as u8]),
+        "open no filename: JSR OPEN missing"
+    );
 }
 
 // ── asm { } inline assembler ─────────────────────────────────────────────────
@@ -3033,7 +3587,10 @@ fn asm_block_lda_immediate() {
     // LDA #$07 → A9 07
     let prg = compile_raw("asm { LDA #$07 }");
     let bytes = &prg[2..];
-    assert!(bytes.windows(2).any(|w| w == &[0xA9, 0x07]), "LDA #$07 = A9 07");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xA9, 0x07]),
+        "LDA #$07 = A9 07"
+    );
 }
 
 #[test]
@@ -3041,7 +3598,10 @@ fn asm_block_sta_absolute() {
     // STA $0286 → 8D 86 02
     let prg = compile_raw("asm { STA $0286 }");
     let bytes = &prg[2..];
-    assert!(bytes.windows(3).any(|w| w == &[0x8D, 0x86, 0x02]), "STA $0286 = 8D 86 02");
+    assert!(
+        bytes.windows(3).any(|w| w == &[0x8D, 0x86, 0x02]),
+        "STA $0286 = 8D 86 02"
+    );
 }
 
 #[test]
@@ -3049,7 +3609,10 @@ fn asm_block_sta_zp() {
     // STA $50 → 85 50 (zero-page because value ≤ 255 and written as 2 hex digits)
     let prg = compile_raw("asm { STA $50 }");
     let bytes = &prg[2..];
-    assert!(bytes.windows(2).any(|w| w == &[0x85, 0x50]), "STA $50 = 85 50 (ZP)");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0x85, 0x50]),
+        "STA $50 = 85 50 (ZP)"
+    );
 }
 
 #[test]
@@ -3057,7 +3620,10 @@ fn asm_block_jsr_absolute() {
     // JSR $FFD2 → 20 D2 FF
     let prg = compile_raw("asm { JSR $FFD2 }");
     let bytes = &prg[2..];
-    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xD2, 0xFF]), "JSR $FFD2 = 20 D2 FF");
+    assert!(
+        bytes.windows(3).any(|w| w == &[0x20, 0xD2, 0xFF]),
+        "JSR $FFD2 = 20 D2 FF"
+    );
 }
 
 #[test]
@@ -3065,7 +3631,10 @@ fn asm_block_jmp_absolute() {
     // JMP $C000 → 4C 00 C0  (no ZP mode for JMP, auto-upgraded)
     let prg = compile_raw("asm { JMP $C000 }");
     let bytes = &prg[2..];
-    assert!(bytes.windows(3).any(|w| w == &[0x4C, 0x00, 0xC0]), "JMP $C000 = 4C 00 C0");
+    assert!(
+        bytes.windows(3).any(|w| w == &[0x4C, 0x00, 0xC0]),
+        "JMP $C000 = 4C 00 C0"
+    );
 }
 
 #[test]
@@ -3076,7 +3645,10 @@ fn asm_block_jmp_current_location() {
     let has_self_jump = bytes.windows(3).enumerate().any(|(offset, window)| {
         window[0] == 0x4C && u16::from_le_bytes([window[1], window[2]]) == load_addr + offset as u16
     });
-    assert!(has_self_jump, "JMP * should target its own instruction address");
+    assert!(
+        has_self_jump,
+        "JMP * should target its own instruction address"
+    );
 }
 
 #[test]
@@ -3085,7 +3657,10 @@ fn asm_block_clc_adc() {
     let prg = compile_raw("asm {\n  CLC\n  ADC #1\n}");
     let bytes = &prg[2..];
     assert!(bytes.contains(&0x18), "CLC = $18");
-    assert!(bytes.windows(2).any(|w| w == &[0x69, 0x01]), "ADC #1 = 69 01");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0x69, 0x01]),
+        "ADC #1 = 69 01"
+    );
 }
 
 #[test]
@@ -3093,7 +3668,10 @@ fn asm_block_indirect_x() {
     // LDA ($50,X) → A1 50
     let prg = compile_raw("asm { LDA ($50,X) }");
     let bytes = &prg[2..];
-    assert!(bytes.windows(2).any(|w| w == &[0xA1, 0x50]), "LDA ($50,X) = A1 50");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xA1, 0x50]),
+        "LDA ($50,X) = A1 50"
+    );
 }
 
 #[test]
@@ -3101,7 +3679,10 @@ fn asm_block_indirect_y() {
     // LDA ($50),Y → B1 50
     let prg = compile_raw("asm { LDA ($50),Y }");
     let bytes = &prg[2..];
-    assert!(bytes.windows(2).any(|w| w == &[0xB1, 0x50]), "LDA ($50),Y = B1 50");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xB1, 0x50]),
+        "LDA ($50),Y = B1 50"
+    );
 }
 
 #[test]
@@ -3109,7 +3690,10 @@ fn asm_block_abs_x_indexed() {
     // LDA $0400,X → BD 00 04
     let prg = compile_raw("asm { LDA $0400,X }");
     let bytes = &prg[2..];
-    assert!(bytes.windows(3).any(|w| w == &[0xBD, 0x00, 0x04]), "LDA $0400,X = BD 00 04");
+    assert!(
+        bytes.windows(3).any(|w| w == &[0xBD, 0x00, 0x04]),
+        "LDA $0400,X = BD 00 04"
+    );
 }
 
 #[test]
@@ -3155,7 +3739,10 @@ fn asm_block_sec_sbc() {
     let prg = compile_raw("asm {\n  SEC\n  SBC #1\n}");
     let bytes = &prg[2..];
     assert!(bytes.contains(&0x38), "SEC = $38");
-    assert!(bytes.windows(2).any(|w| w == &[0xE9, 0x01]), "SBC #1 = E9 01");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xE9, 0x01]),
+        "SBC #1 = E9 01"
+    );
 }
 
 #[test]
@@ -3213,7 +3800,10 @@ fn word_xor_const_emits_eor_imm() {
     let bytes = &prg[2..];
     // EOR immediate = $49
     let eor_count = bytes.windows(1).filter(|w| w[0] == 0x49).count();
-    assert!(eor_count >= 2, "word XOR const: should emit EOR imm twice (lo and hi)");
+    assert!(
+        eor_count >= 2,
+        "word XOR const: should emit EOR imm twice (lo and hi)"
+    );
 }
 
 #[test]
@@ -3223,7 +3813,10 @@ fn word_and_word_var_emits_and_zp() {
     let bytes = &prg[2..];
     // AND zp = $25
     let and_zp_count = bytes.windows(1).filter(|w| w[0] == 0x25).count();
-    assert!(and_zp_count >= 2, "word AND word: should emit AND zp twice (lo and hi)");
+    assert!(
+        and_zp_count >= 2,
+        "word AND word: should emit AND zp twice (lo and hi)"
+    );
 }
 
 #[test]
@@ -3276,7 +3869,10 @@ fn word_shl_8_swaps_bytes() {
     let prg = compile_raw("var p: word = $0042\nvar r: word = p shl 8");
     let bytes = &prg[2..];
     // LDA #0 = A9 00
-    assert!(bytes.windows(2).any(|w| w == &[0xA9, 0x00]), "word SHL 8: LDA #0 missing");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xA9, 0x00]),
+        "word SHL 8: LDA #0 missing"
+    );
 }
 
 #[test]
@@ -3284,7 +3880,10 @@ fn word_shr_8_swaps_bytes() {
     // p shr 8: lo = hi, hi = 0
     let prg = compile_raw("var p: word = $4200\nvar r: word = p shr 8");
     let bytes = &prg[2..];
-    assert!(bytes.windows(2).any(|w| w == &[0xA9, 0x00]), "word SHR 8: LDA #0 missing");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xA9, 0x00]),
+        "word SHR 8: LDA #0 missing"
+    );
 }
 
 #[test]
@@ -3312,9 +3911,18 @@ fn word_mul_const_emits_shift_add_loop() {
     // Should emit LSR mr ($46), BCC ($90), loop structure with DEX ($CA)
     let prg = compile_raw("var p: word = $0064\nvar r: word = p * 3");
     let bytes = &prg[2..];
-    assert!(bytes.contains(&0x46), "word *: LSR zp ($46) missing (shift multiplier)");
-    assert!(bytes.contains(&0x90), "word *: BCC ($90) missing (skip add if bit=0)");
-    assert!(bytes.contains(&0xCA), "word *: DEX ($CA) missing (loop counter)");
+    assert!(
+        bytes.contains(&0x46),
+        "word *: LSR zp ($46) missing (shift multiplier)"
+    );
+    assert!(
+        bytes.contains(&0x90),
+        "word *: BCC ($90) missing (skip add if bit=0)"
+    );
+    assert!(
+        bytes.contains(&0xCA),
+        "word *: DEX ($CA) missing (loop counter)"
+    );
 }
 
 #[test]
@@ -3335,7 +3943,10 @@ fn word_div_const_emits_division_loop() {
     // Division uses 16-iteration loop: LDX #16 ($A2 $10), INC num_lo ($E6)
     let prg = compile_raw("var p: word = $012C\nvar r: word = p / 7");
     let bytes = &prg[2..];
-    assert!(bytes.windows(2).any(|w| w == &[0xA2, 0x10]), "word /: LDX #16 missing");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xA2, 0x10]),
+        "word /: LDX #16 missing"
+    );
     // INC zp = $E6 (setting quotient bit)
     assert!(bytes.contains(&0xE6), "word /: INC zp ($E6) missing");
     // STY = $84 (storing lo result of subtraction)
@@ -3345,11 +3956,16 @@ fn word_div_const_emits_division_loop() {
 #[test]
 fn word_div_word_var() {
     // var a: word = $0064 \n var b: word = 10 \n var r: word = a / b
-    let res = compile("var a: word = $0064\nvar b: word = 10\nvar r: word = a / b",
-                      &CompileOptions { basic_stub: false });
+    let res = compile(
+        "var a: word = $0064\nvar b: word = 10\nvar r: word = a / b",
+        &CompileOptions { basic_stub: false },
+    );
     assert!(res.errors.is_empty(), "word / word: {:?}", res.errors);
     let bytes = &res.prg[2..];
-    assert!(bytes.windows(2).any(|w| w == &[0xA2, 0x10]), "word / word: LDX #16 missing");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xA2, 0x10]),
+        "word / word: LDX #16 missing"
+    );
 }
 
 // ── 16-bit word MOD ──────────────────────────────────────────────────────────
@@ -3360,14 +3976,19 @@ fn word_mod_const_emits_division_loop() {
     // Same division machinery but stores rem instead of quo
     let prg = compile_raw("var p: word = $012C\nvar r: word = p mod 7");
     let bytes = &prg[2..];
-    assert!(bytes.windows(2).any(|w| w == &[0xA2, 0x10]), "word mod: LDX #16 missing");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xA2, 0x10]),
+        "word mod: LDX #16 missing"
+    );
     assert!(bytes.contains(&0xE6), "word mod: INC zp ($E6) missing");
 }
 
 #[test]
 fn word_mod_word_var() {
-    let res = compile("var a: word = $012C\nvar b: word = 7\nvar r: word = a mod b",
-                      &CompileOptions { basic_stub: false });
+    let res = compile(
+        "var a: word = $012C\nvar b: word = 7\nvar r: word = a mod b",
+        &CompileOptions { basic_stub: false },
+    );
     assert!(res.errors.is_empty(), "word mod word: {:?}", res.errors);
 }
 
@@ -3375,7 +3996,10 @@ fn word_mod_word_var() {
 
 #[test]
 fn word_array_decl_compiles() {
-    let res = compile("var tbl = array_word(4)", &CompileOptions { basic_stub: false });
+    let res = compile(
+        "var tbl = array_word(4)",
+        &CompileOptions { basic_stub: false },
+    );
     assert!(res.errors.is_empty(), "array_word decl: {:?}", res.errors);
 }
 
@@ -3385,11 +4009,15 @@ fn word_array_set_const_index_emits_two_stas() {
     let prg = compile_raw("var tbl = array_word(4)\nvar v: word = $1234\ntbl[0] = v");
     let bytes = &prg[2..];
     // STA $C000 = 8D 00 C0
-    assert!(bytes.windows(3).any(|w| w == &[0x8D, 0x00, 0xC0]),
-        "word_array set [0]: STA $C000 missing");
+    assert!(
+        bytes.windows(3).any(|w| w == &[0x8D, 0x00, 0xC0]),
+        "word_array set [0]: STA $C000 missing"
+    );
     // STA $C001 = 8D 01 C0
-    assert!(bytes.windows(3).any(|w| w == &[0x8D, 0x01, 0xC0]),
-        "word_array set [0]: STA $C001 missing");
+    assert!(
+        bytes.windows(3).any(|w| w == &[0x8D, 0x01, 0xC0]),
+        "word_array set [0]: STA $C001 missing"
+    );
 }
 
 #[test]
@@ -3397,10 +4025,14 @@ fn word_array_get_const_index_emits_two_ldas() {
     // word arr: r = tbl[0] → LDA $C000 and LDA $C001
     let prg = compile_raw("var tbl = array_word(4)\nvar r: word = tbl[0]");
     let bytes = &prg[2..];
-    assert!(bytes.windows(3).any(|w| w == &[0xAD, 0x00, 0xC0]),
-        "word_array get [0]: LDA $C000 missing");
-    assert!(bytes.windows(3).any(|w| w == &[0xAD, 0x01, 0xC0]),
-        "word_array get [0]: LDA $C001 missing");
+    assert!(
+        bytes.windows(3).any(|w| w == &[0xAD, 0x00, 0xC0]),
+        "word_array get [0]: LDA $C000 missing"
+    );
+    assert!(
+        bytes.windows(3).any(|w| w == &[0xAD, 0x01, 0xC0]),
+        "word_array get [0]: LDA $C001 missing"
+    );
 }
 
 #[test]
@@ -3408,10 +4040,14 @@ fn word_array_get_const_index_1_uses_stride_2() {
     // tbl[1] → base $C000 + 1*2 = $C002/$C003
     let prg = compile_raw("var tbl = array_word(4)\nvar r: word = tbl[1]");
     let bytes = &prg[2..];
-    assert!(bytes.windows(3).any(|w| w == &[0xAD, 0x02, 0xC0]),
-        "word_array get [1]: LDA $C002 (stride 2) missing");
-    assert!(bytes.windows(3).any(|w| w == &[0xAD, 0x03, 0xC0]),
-        "word_array get [1]: LDA $C003 missing");
+    assert!(
+        bytes.windows(3).any(|w| w == &[0xAD, 0x02, 0xC0]),
+        "word_array get [1]: LDA $C002 (stride 2) missing"
+    );
+    assert!(
+        bytes.windows(3).any(|w| w == &[0xAD, 0x03, 0xC0]),
+        "word_array get [1]: LDA $C003 missing"
+    );
 }
 
 #[test]
@@ -3420,7 +4056,10 @@ fn word_array_var_index_emits_asl_for_stride() {
     let prg = compile_raw("var tbl = array_word(4)\nvar i = 1\nvar r: word = tbl[i]");
     let bytes = &prg[2..];
     // ASL A = $0A
-    assert!(bytes.contains(&0x0A), "word_array var index: ASL A ($0A) for stride missing");
+    assert!(
+        bytes.contains(&0x0A),
+        "word_array var index: ASL A ($0A) for stride missing"
+    );
 }
 
 #[test]
@@ -3429,7 +4068,10 @@ fn word_array_set_var_index_emits_iny() {
     let prg = compile_raw("var tbl = array_word(4)\nvar i = 0\nvar v: word = $0042\ntbl[i] = v");
     let bytes = &prg[2..];
     // INY = $C8
-    assert!(bytes.contains(&0xC8), "word_array set var index: INY ($C8) missing");
+    assert!(
+        bytes.contains(&0xC8),
+        "word_array set var index: INY ($C8) missing"
+    );
 }
 
 // ── Backward compat: plot4/block removed — tests below kept as compile-only ─
@@ -3438,8 +4080,12 @@ fn graphics_on_block_emits_correct_d018() {
     // Direct write $1A to $D018 to set screen@$0400 and charset@$2800.
     let prg = compile_raw("graphics on block");
     let bytes = &prg[2..];
-    assert!(bytes.windows(5).any(|w| w == &[0xA9, 0x1A, 0x8D, 0x18, 0xD0]),
-        "graphics on block should emit LDA #$1A; STA $D018 ($A9 $1A $8D $18 $D0) to set screen@$0400 and charset@$2800");
+    assert!(
+        bytes
+            .windows(5)
+            .any(|w| w == &[0xA9, 0x1A, 0x8D, 0x18, 0xD0]),
+        "graphics on block should emit LDA #$1A; STA $D018 ($A9 $1A $8D $18 $D0) to set screen@$0400 and charset@$2800"
+    );
 }
 
 // ─── U64 Speed ───────────────────────────────────────────────────────────────
@@ -3449,10 +4095,17 @@ fn speed_constant_compiles() {
     // speed 4 → index 3; expect LDA $D031, AND #$F0, ORA #3, STA $D031
     let prg = compile_raw("speed 4");
     let bytes = &prg[2..];
-    assert!(bytes.windows(6).any(|w| w == &[0xAD, 0x31, 0xD0, 0x29, 0xF0, 0x09]),
-        "speed 4 should emit LDA $D031, AND #$F0, ORA #... sequence");
+    assert!(
+        bytes
+            .windows(6)
+            .any(|w| w == &[0xAD, 0x31, 0xD0, 0x29, 0xF0, 0x09]),
+        "speed 4 should emit LDA $D031, AND #$F0, ORA #... sequence"
+    );
     // ORA byte should be 3 (index for 4 MHz)
-    let pos = bytes.windows(6).position(|w| w == &[0xAD, 0x31, 0xD0, 0x29, 0xF0, 0x09]).unwrap();
+    let pos = bytes
+        .windows(6)
+        .position(|w| w == &[0xAD, 0x31, 0xD0, 0x29, 0xF0, 0x09])
+        .unwrap();
     assert_eq!(bytes[pos + 6], 0x03, "speed 4 should OR index 3 into $D031");
 }
 
@@ -3461,9 +4114,18 @@ fn speed_max_compiles() {
     // speed max → index 15
     let prg = compile_raw("speed max");
     let bytes = &prg[2..];
-    let pos = bytes.windows(6).position(|w| w == &[0xAD, 0x31, 0xD0, 0x29, 0xF0, 0x09]);
-    assert!(pos.is_some(), "speed max should emit LDA $D031, AND #$F0, ORA #...");
-    assert_eq!(bytes[pos.unwrap() + 6], 0x0F, "speed max should OR index 15");
+    let pos = bytes
+        .windows(6)
+        .position(|w| w == &[0xAD, 0x31, 0xD0, 0x29, 0xF0, 0x09]);
+    assert!(
+        pos.is_some(),
+        "speed max should emit LDA $D031, AND #$F0, ORA #..."
+    );
+    assert_eq!(
+        bytes[pos.unwrap() + 6],
+        0x0F,
+        "speed max should OR index 15"
+    );
 }
 
 #[test]
@@ -3472,8 +4134,12 @@ fn speed_off_compiles() {
     let prg = compile_raw("speed off");
     let bytes = &prg[2..];
     // LDA $D031 (AD 31 D0), AND #$F0 (29 F0), STA $D031 (8D 31 D0)
-    assert!(bytes.windows(8).any(|w| w == &[0xAD, 0x31, 0xD0, 0x29, 0xF0, 0x8D, 0x31, 0xD0]),
-        "speed off should emit LDA $D031, AND #$F0, STA $D031 with no ORA");
+    assert!(
+        bytes
+            .windows(8)
+            .any(|w| w == &[0xAD, 0x31, 0xD0, 0x29, 0xF0, 0x8D, 0x31, 0xD0]),
+        "speed off should emit LDA $D031, AND #$F0, STA $D031 with no ORA"
+    );
 }
 
 #[test]
@@ -3481,8 +4147,12 @@ fn badlines_off_compiles() {
     // badlines off → ORA #$80 into $D031 (set bit 7)
     let prg = compile_raw("badlines off");
     let bytes = &prg[2..];
-    assert!(bytes.windows(8).any(|w| w == &[0xAD, 0x31, 0xD0, 0x09, 0x80, 0x8D, 0x31, 0xD0]),
-        "badlines off should emit LDA $D031, ORA #$80, STA $D031");
+    assert!(
+        bytes
+            .windows(8)
+            .any(|w| w == &[0xAD, 0x31, 0xD0, 0x09, 0x80, 0x8D, 0x31, 0xD0]),
+        "badlines off should emit LDA $D031, ORA #$80, STA $D031"
+    );
 }
 
 #[test]
@@ -3490,16 +4160,24 @@ fn badlines_on_compiles() {
     // badlines on → AND #$7F into $D031 (clear bit 7)
     let prg = compile_raw("badlines on");
     let bytes = &prg[2..];
-    assert!(bytes.windows(8).any(|w| w == &[0xAD, 0x31, 0xD0, 0x29, 0x7F, 0x8D, 0x31, 0xD0]),
-        "badlines on should emit LDA $D031, AND #$7F, STA $D031");
+    assert!(
+        bytes
+            .windows(8)
+            .any(|w| w == &[0xAD, 0x31, 0xD0, 0x29, 0x7F, 0x8D, 0x31, 0xD0]),
+        "badlines on should emit LDA $D031, AND #$7F, STA $D031"
+    );
 }
 
 #[test]
 fn graphics_on_block_sets_vic_bank_0() {
     let prg = compile_raw("graphics on block");
     let bytes = &prg[2..];
-    assert!(bytes.windows(10).any(|w| w == &[0xAD, 0x00, 0xDD, 0x29, 0xFC, 0x09, 0x03, 0x8D, 0x00, 0xDD]),
-        "graphics on block should emit LDA $DD00; AND #$FC; ORA #$03; STA $DD00 to select VIC bank 0");
+    assert!(
+        bytes
+            .windows(10)
+            .any(|w| w == &[0xAD, 0x00, 0xDD, 0x29, 0xFC, 0x09, 0x03, 0x8D, 0x00, 0xDD]),
+        "graphics on block should emit LDA $DD00; AND #$FC; ORA #$03; STA $DD00 to select VIC bank 0"
+    );
 }
 
 #[test]
@@ -3508,8 +4186,12 @@ fn turbo_compiles() {
     let prg = compile_raw("var t = turbo()");
     let bytes = &prg[2..];
     // LDA $D031 (AD 31 D0), AND #$0F (29 0F), BEQ +2 (F0 02), LDA #1 (A9 01)
-    assert!(bytes.windows(8).any(|w| w == &[0xAD, 0x31, 0xD0, 0x29, 0x0F, 0xF0, 0x02, 0xA9]),
-        "turbo() should emit LDA $D031; AND #$0F; BEQ +2; LDA #1 sequence");
+    assert!(
+        bytes
+            .windows(8)
+            .any(|w| w == &[0xAD, 0x31, 0xD0, 0x29, 0x0F, 0xF0, 0x02, 0xA9]),
+        "turbo() should emit LDA $D031; AND #$0F; BEQ +2; LDA #1 sequence"
+    );
 }
 
 #[test]
@@ -3521,8 +4203,10 @@ fn float_expr_infers_float_type() {
     let prg = compile_raw("var dd = 3.5 + 78.4\nprint dd");
     let bytes = &prg[2..];
     // print_fixed emits LDA #$2E ('.'): A9 2E
-    assert!(bytes.windows(2).any(|w| w == &[0xA9, 0x2E]),
-        "var dd = 3.5 + 78.4 should infer float type and print via print_fixed (emits LDA #$2E for '.')");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xA9, 0x2E]),
+        "var dd = 3.5 + 78.4 should infer float type and print via print_fixed (emits LDA #$2E for '.')"
+    );
 }
 
 #[test]
@@ -3533,8 +4217,10 @@ fn float_mul_float_uses_16x16() {
     // The Mul code for float×float should emit LDX #16.
     let prg = compile_raw("var f: float = 3.5\nvar g: float = f * 1.5");
     let bytes = &prg[2..];
-    assert!(bytes.windows(2).any(|w| w == &[0xA2, 0x10]),
-        "float * float should emit LDX #16 for 16×16 Russian Peasant");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xA2, 0x10]),
+        "float * float should emit LDX #16 for 16×16 Russian Peasant"
+    );
 }
 
 #[test]
@@ -3546,11 +4232,15 @@ fn float_mul_small_fraction_correct() {
     let prg = compile_raw("var g: float = 0.5 * 3.5\nprint g");
     let bytes = &prg[2..];
     // print_fixed emits LDA #$2E ('.'): A9 2E
-    assert!(bytes.windows(2).any(|w| w == &[0xA9, 0x2E]),
-        "0.5 * 3.5 should infer float type and print via print_fixed");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xA9, 0x2E]),
+        "0.5 * 3.5 should infer float type and print via print_fixed"
+    );
     // Should use 16×16 path (LDX #16, not LDX #8)
-    assert!(bytes.windows(2).any(|w| w == &[0xA2, 0x10]),
-        "float × float should emit LDX #16 for 16×16 Russian Peasant");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xA2, 0x10]),
+        "float × float should emit LDX #16 for 16×16 Russian Peasant"
+    );
 }
 
 #[test]
@@ -3561,11 +4251,15 @@ fn float_div_int_compiles() {
     let prg = compile_raw("var f: float = 7.0\nvar g: float = f / 2");
     let bytes = &prg[2..];
     // The Div loop uses INC dlo (E6 xx) to set quotient bits — unique to the div routine.
-    assert!(bytes.windows(1).any(|w| w == &[0xE6]),
-        "float / int should emit INC dlo (E6) for quotient bit in long division");
+    assert!(
+        bytes.windows(1).any(|w| w == &[0xE6]),
+        "float / int should emit INC dlo (E6) for quotient bit in long division"
+    );
     // Uses LDX #16 for 16-iteration loop
-    assert!(bytes.windows(2).any(|w| w == &[0xA2, 0x10]),
-        "float / int should emit LDX #16");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xA2, 0x10]),
+        "float / int should emit LDX #16"
+    );
 }
 
 #[test]
@@ -3573,8 +4267,10 @@ fn float_div_result_is_float() {
     // var g: float = 7.0 / 2 — result printed as float (has decimal point)
     let prg = compile_raw("var g: float = 7.0 / 2\nprint g");
     let bytes = &prg[2..];
-    assert!(bytes.windows(2).any(|w| w == &[0xA9, 0x2E]),
-        "float / int should print result via print_fixed (LDA #'.')");
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xA9, 0x2E]),
+        "float / int should print result via print_fixed (LDA #'.')"
+    );
 }
 
 #[test]
@@ -3582,24 +4278,34 @@ fn graphics_on_block_copies_charset_to_2800() {
     // STA $2800,X = 9D 00 28
     let prg = compile_raw("graphics on block");
     let bytes = &prg[2..];
-    assert!(bytes.windows(3).any(|w| w == &[0x9D, 0x00, 0x28]),
-        "graphics on block should emit STA $2800,X ($9D $00 $28) for charset copy");
+    assert!(
+        bytes.windows(3).any(|w| w == &[0x9D, 0x00, 0x28]),
+        "graphics on block should emit STA $2800,X ($9D $00 $28) for charset copy"
+    );
 }
 
 #[test]
 fn graphics_on_block_emits_canonical_blanked_d011() {
     let prg = compile_raw("graphics on block");
     let bytes = &prg[2..];
-    assert!(bytes.windows(5).any(|w| w == &[0xA9, 0x0B, 0x8D, 0x11, 0xD0]),
-        "graphics on block should emit LDA #$0B; STA $D011 to force canonical blanked text-mode VIC state");
+    assert!(
+        bytes
+            .windows(5)
+            .any(|w| w == &[0xA9, 0x0B, 0x8D, 0x11, 0xD0]),
+        "graphics on block should emit LDA #$0B; STA $D011 to force canonical blanked text-mode VIC state"
+    );
 }
 
 #[test]
 fn graphics_on_block_canonicalizes_d011_before_display_on() {
     let prg = compile_raw("graphics on block\ndisplay on");
     let bytes = &prg[2..];
-    assert!(bytes.windows(5).any(|w| w == &[0xA9, 0x0B, 0x8D, 0x11, 0xD0]),
-        "graphics on block should emit LDA #$0B; STA $D011 before display on so block mode starts from a canonical blanked text state");
+    assert!(
+        bytes
+            .windows(5)
+            .any(|w| w == &[0xA9, 0x0B, 0x8D, 0x11, 0xD0]),
+        "graphics on block should emit LDA #$0B; STA $D011 before display on so block mode starts from a canonical blanked text state"
+    );
 }
 
 #[test]
@@ -3607,8 +4313,10 @@ fn plot4_emits_ora_pnt() {
     // ORA zero-page (opcode $05) for the set-pixel operation
     let prg = compile_raw("graphics on block\nplot4 10, 5");
     let bytes = &prg[2..];
-    assert!(bytes.iter().any(|&b| b == 0x05),
-        "plot4 should emit ORA zp ($05) in the set-pixel helper");
+    assert!(
+        bytes.iter().any(|&b| b == 0x05),
+        "plot4 should emit ORA zp ($05) in the set-pixel helper"
+    );
 }
 
 #[test]
@@ -3616,8 +4324,10 @@ fn plot4_emits_lda_indirect_y() {
     // LDA (ptr),Y = $B1
     let prg = compile_raw("graphics on block\nplot4 10, 5");
     let bytes = &prg[2..];
-    assert!(bytes.iter().any(|&b| b == 0xB1),
-        "plot4 should emit LDA (ptr_lo),Y ($B1) for screen char read");
+    assert!(
+        bytes.iter().any(|&b| b == 0xB1),
+        "plot4 should emit LDA (ptr_lo),Y ($B1) for screen char read"
+    );
 }
 
 #[test]
@@ -3625,8 +4335,10 @@ fn plot4_emits_sta_indirect_y() {
     // STA (ptr),Y = $91
     let prg = compile_raw("graphics on block\nplot4 10, 5");
     let bytes = &prg[2..];
-    assert!(bytes.iter().any(|&b| b == 0x91),
-        "plot4 should emit STA (ptr_lo),Y ($91) for screen char write");
+    assert!(
+        bytes.iter().any(|&b| b == 0x91),
+        "plot4 should emit STA (ptr_lo),Y ($91) for screen char write"
+    );
 }
 
 #[test]
@@ -3635,8 +4347,11 @@ fn plot4_erase_emits_eor_ff() {
     let prg = compile_raw("graphics on block\nplot4 erase 10, 5");
     let bytes = &prg[2..];
     let count = bytes.windows(2).filter(|w| *w == &[0x49, 0xFF]).count();
-    assert!(count >= 2,
-        "plot4 erase should emit EOR #$FF ($49 $FF) twice for De Morgan NOT, got {}", count);
+    assert!(
+        count >= 2,
+        "plot4 erase should emit EOR #$FF ($49 $FF) twice for De Morgan NOT, got {}",
+        count
+    );
 }
 
 #[test]
@@ -3644,8 +4359,10 @@ fn gcls_in_block_mode_fills_screen_ram() {
     // In block mode, gcls fills $0400-$07E7 with 0 → STA $0400,X = 9D 00 04
     let prg = compile_raw("graphics on block\ngcls");
     let bytes = &prg[2..];
-    assert!(bytes.windows(3).any(|w| w == &[0x9D, 0x00, 0x04]),
-        "gcls in block mode should emit STA $0400,X ($9D $00 $04)");
+    assert!(
+        bytes.windows(3).any(|w| w == &[0x9D, 0x00, 0x04]),
+        "gcls in block mode should emit STA $0400,X ($9D $00 $04)"
+    );
 }
 
 #[test]
@@ -3653,8 +4370,10 @@ fn gcls_in_block_mode_fills_color_ram() {
     // Also fills color RAM $D800-$DBE7 → STA $D800,X = 9D 00 D8
     let prg = compile_raw("graphics on block\ngcls");
     let bytes = &prg[2..];
-    assert!(bytes.windows(3).any(|w| w == &[0x9D, 0x00, 0xD8]),
-        "gcls in block mode should emit STA $D800,X ($9D $00 $D8) for color RAM");
+    assert!(
+        bytes.windows(3).any(|w| w == &[0x9D, 0x00, 0xD8]),
+        "gcls in block mode should emit STA $D800,X ($9D $00 $D8) for color RAM"
+    );
 }
 
 #[test]
@@ -3665,59 +4384,75 @@ fn plot4_fullscreen_fill_reaches_bottom_rows_in_emulation() {
     cpu.run_until_main_rts(2_000_000);
 
     let screen = &cpu.mem[0x0400..=0x07E7];
-    assert!(screen.iter().all(|&b| b == 0x0F),
+    assert!(
+        screen.iter().all(|&b| b == 0x0F),
         "expected full screen RAM fill to end at $0F in every cell, last row was {:02X?}",
-        &cpu.mem[0x07C0..=0x07E7]);
+        &cpu.mem[0x07C0..=0x07E7]
+    );
 }
 
-    #[test]
-    fn sin_pattern_populates_bottom_block_rows() {
-        // Verify that a sin interference pattern (same formula as block_demo.ub)
-        // writes non-zero screen RAM values in the bottom character rows (chars 17-24,
-        // covering block y=34..49). This catches the "bottom third empty" regression.
-        let src = "graphics on block\ngcls\n\
+#[test]
+fn sin_pattern_populates_bottom_block_rows() {
+    // Verify that a sin interference pattern (same formula as block_demo.ub)
+    // writes non-zero screen RAM values in the bottom character rows (chars 17-24,
+    // covering block y=34..49). This catches the "bottom third empty" regression.
+    let src = "graphics on block\ngcls\n\
             var x = 0\nvar y = 0\nvar v = 0\n\
             y = 0\n\
             while y < 50\n  x = 0\n  while x < 80\n\
                 v = sin(x * 11 + y * 7)\n\
                 if v > 128 then\n  plot4 x, y\n  end\n\
                 x = x + 1\n  end\n  y = y + 1\nend";
-        let prg = compile_raw(src);
-        let mut cpu = TestCpu::new(&prg);
-        cpu.run_until_main_rts(4_000_000);
+    let prg = compile_raw(src);
+    let mut cpu = TestCpu::new(&prg);
+    cpu.run_until_main_rts(4_000_000);
 
-        // Block rows 34-49 map to character rows 17-24 → screen offset $440 to $7E7
-        let bottom = &cpu.mem[0x0400 + 17 * 40..=0x07E7];
-        let non_zero = bottom.iter().filter(|&&b| b != 0).count();
-        assert!(non_zero > 50,
-            "expected sin pattern to write to bottom block rows, got {} non-zero cells; \
+    // Block rows 34-49 map to character rows 17-24 → screen offset $440 to $7E7
+    let bottom = &cpu.mem[0x0400 + 17 * 40..=0x07E7];
+    let non_zero = bottom.iter().filter(|&&b| b != 0).count();
+    assert!(
+        non_zero > 50,
+        "expected sin pattern to write to bottom block rows, got {} non-zero cells; \
              first row of bottom section: {:02X?}",
-            non_zero, &cpu.mem[0x0400 + 17 * 40..0x0400 + 17 * 40 + 40]);
-    }
+        non_zero,
+        &cpu.mem[0x0400 + 17 * 40..0x0400 + 17 * 40 + 40]
+    );
+}
 
-    #[test]
-    fn direct_block_fill_reaches_full_screen_in_emulation() {
-        let src = "graphics on block\ngcls\ndisplay on\nfill $0400, 1000, 15";
-        let prg = compile_raw(src);
-        let mut cpu = TestCpu::new(&prg);
-        cpu.run_until_main_rts(2_000_000);
+#[test]
+fn direct_block_fill_reaches_full_screen_in_emulation() {
+    let src = "graphics on block\ngcls\ndisplay on\nfill $0400, 1000, 15";
+    let prg = compile_raw(src);
+    let mut cpu = TestCpu::new(&prg);
+    cpu.run_until_main_rts(2_000_000);
 
-        let screen = &cpu.mem[0x0400..=0x07E7];
-        assert!(screen.iter().all(|&b| b == 0x0F),
+    let screen = &cpu.mem[0x0400..=0x07E7];
+    assert!(
+        screen.iter().all(|&b| b == 0x0F),
         "expected direct block fill to write $0F across the full screen matrix, last row was {:02X?}",
-            &cpu.mem[0x07C0..=0x07E7]);
-    }
+        &cpu.mem[0x07C0..=0x07E7]
+    );
+}
 
 #[test]
 fn graphics_on_block_parser_sets_block_flag() {
     // Parser test: `graphics on block` should parse to Graphics { on: true, block: true, multi: false }
-    use ultimate_basic::compiler::parser::Parser;
-    use ultimate_basic::compiler::lexer::Lexer;
     use ultimate_basic::compiler::ast::Stmt;
+    use ultimate_basic::compiler::lexer::Lexer;
+    use ultimate_basic::compiler::parser::Parser;
     let tokens = Lexer::new("graphics on block").tokenize();
     let stmts = Parser::new(tokens).parse();
-    assert!(matches!(&stmts[0], Stmt::Graphics { on: true, multi: false, block: true }),
-        "graphics on block should parse to Graphics {{ on:true, multi:false, block:true }}");
+    assert!(
+        matches!(
+            &stmts[0],
+            Stmt::Graphics {
+                on: true,
+                multi: false,
+                block: true
+            }
+        ),
+        "graphics on block should parse to Graphics {{ on:true, multi:false, block:true }}"
+    );
 }
 
 #[test]
@@ -3734,9 +4469,15 @@ fn var_auto_promotes_to_word_when_gt255() {
     let prg = compile_raw("var b = 12345");
     let bytes = &prg[2..];
     // LDA #0x39 (lo of 12345)
-    assert!(bytes.windows(2).any(|w| w == [0xA9, 0x39]), "should store lo byte 0x39 (12345 & 0xFF)");
+    assert!(
+        bytes.windows(2).any(|w| w == [0xA9, 0x39]),
+        "should store lo byte 0x39 (12345 & 0xFF)"
+    );
     // LDA #0x30 (hi of 12345 = 12345 >> 8 = 0x30)
-    assert!(bytes.windows(2).any(|w| w == [0xA9, 0x30]), "should store hi byte 0x30 (12345 >> 8)");
+    assert!(
+        bytes.windows(2).any(|w| w == [0xA9, 0x30]),
+        "should store hi byte 0x30 (12345 >> 8)"
+    );
 }
 
 #[test]
@@ -3745,7 +4486,10 @@ fn print_word_var_large_constant() {
     let prg = compile_raw("var b = 12345\nprint b");
     let bytes = &prg[2..];
     // Should contain the 16-bit digit-loop pattern (CMP #0x27 = hi of 10000)
-    assert!(bytes.windows(2).any(|w| w == [0xC9, 0x27]), "should emit 16-bit digit compare for 10000");
+    assert!(
+        bytes.windows(2).any(|w| w == [0xC9, 0x27]),
+        "should emit 16-bit digit compare for 10000"
+    );
 }
 
 #[test]
@@ -3754,7 +4498,10 @@ fn print_word_sum_with_int_var() {
     let prg = compile_raw("var a = 122\nvar b = 12345\nprint a+b");
     let bytes = &prg[2..];
     // 16-bit digit loop: CMP #0x27 (hi of 10000)
-    assert!(bytes.windows(2).any(|w| w == [0xC9, 0x27]), "should emit 16-bit digit compare for 10000");
+    assert!(
+        bytes.windows(2).any(|w| w == [0xC9, 0x27]),
+        "should emit 16-bit digit compare for 10000"
+    );
 }
 
 // ── inc / dec statements ─────────────────────────────────────────────────────
@@ -3764,7 +4511,10 @@ fn inc_emits_inc_zp() {
     let prg = compile_raw("var x = 0\ninc x");
     let bytes = &prg[2..];
     // INC zp opcode is 0xE6
-    assert!(bytes.windows(1).any(|w| w == [0xE6]), "inc should emit INC zp (0xE6)");
+    assert!(
+        bytes.windows(1).any(|w| w == [0xE6]),
+        "inc should emit INC zp (0xE6)"
+    );
 }
 
 #[test]
@@ -3772,7 +4522,10 @@ fn dec_emits_dec_zp() {
     let prg = compile_raw("var x = 5\ndec x");
     let bytes = &prg[2..];
     // DEC zp opcode is 0xC6
-    assert!(bytes.windows(1).any(|w| w == [0xC6]), "dec should emit DEC zp (0xC6)");
+    assert!(
+        bytes.windows(1).any(|w| w == [0xC6]),
+        "dec should emit DEC zp (0xC6)"
+    );
 }
 
 #[test]
@@ -3782,7 +4535,11 @@ fn inc_word_emits_inc_bne_inc() {
     let bytes = &prg[2..];
     // Look for 6-byte window: INC(0xE6), <zp_lo>, BNE(0xD0), 0x02, INC(0xE6), <zp_hi=zp_lo+1>
     assert!(
-        bytes.windows(6).any(|w| w[0] == 0xE6 && w[2] == 0xD0 && w[3] == 0x02 && w[4] == 0xE6 && w[5] == w[1].wrapping_add(1)),
+        bytes.windows(6).any(|w| w[0] == 0xE6
+            && w[2] == 0xD0
+            && w[3] == 0x02
+            && w[4] == 0xE6
+            && w[5] == w[1].wrapping_add(1)),
         "16-bit inc: INC lo; BNE +2; INC hi — not found"
     );
 }
@@ -3794,7 +4551,9 @@ fn dec_word_emits_lda_bne_dec_dec() {
     let bytes = &prg[2..];
     // Pattern: 0xA5 (LDA zp), <zp>, 0xD0 (BNE), 0x02, 0xC6 (DEC hi), <zp+1>
     assert!(
-        bytes.windows(4).any(|w| w[0] == 0xD0 && w[1] == 0x02 && w[2] == 0xC6),
+        bytes
+            .windows(4)
+            .any(|w| w[0] == 0xD0 && w[1] == 0x02 && w[2] == 0xC6),
         "16-bit dec: BNE +2; DEC hi — not found"
     );
 }
@@ -3806,7 +4565,10 @@ fn plus_eq_assigns_sum() {
     let prg = compile_raw("var x = 10\nx += 5");
     let bytes = &prg[2..];
     // x += 5 evaluates rhs (5) into A: LDA #5 = [0xA9, 0x05], then ADC zp
-    assert!(bytes.windows(2).any(|w| w == [0xA9, 0x05]), "+= 5 should load #5 into A");
+    assert!(
+        bytes.windows(2).any(|w| w == [0xA9, 0x05]),
+        "+= 5 should load #5 into A"
+    );
 }
 
 #[test]
@@ -3814,7 +4576,10 @@ fn minus_eq_assigns_diff() {
     let prg = compile_raw("var x = 10\nx -= 3");
     let bytes = &prg[2..];
     // x -= 3 evaluates rhs (3) into A: LDA #3 = [0xA9, 0x03], then SBC tmp
-    assert!(bytes.windows(2).any(|w| w == [0xA9, 0x03]), "-= 3 should load #3 into A");
+    assert!(
+        bytes.windows(2).any(|w| w == [0xA9, 0x03]),
+        "-= 3 should load #3 into A"
+    );
 }
 
 #[test]
@@ -3822,8 +4587,14 @@ fn and_eq_assigns_masked() {
     let prg = compile_raw("var x = 255\nx and= 15");
     let bytes = &prg[2..];
     // x and= 15: eval(x)→tmp, eval(15)→LDA #$0F, AND tmp (0x25)
-    assert!(bytes.windows(2).any(|w| w == [0xA9, 0x0F]), "and= 15 should load #$0F into A");
-    assert!(bytes.windows(1).any(|w| w == [0x25]), "and= should emit AND zp (0x25)");
+    assert!(
+        bytes.windows(2).any(|w| w == [0xA9, 0x0F]),
+        "and= 15 should load #$0F into A"
+    );
+    assert!(
+        bytes.windows(1).any(|w| w == [0x25]),
+        "and= should emit AND zp (0x25)"
+    );
 }
 
 #[test]
@@ -3831,8 +4602,14 @@ fn or_eq_assigns_combined() {
     let prg = compile_raw("var x = 0\nx or= 64");
     let bytes = &prg[2..];
     // x or= 64: eval(x)→tmp, eval(64)→LDA #$40, ORA tmp (0x05)
-    assert!(bytes.windows(2).any(|w| w == [0xA9, 0x40]), "or= 64 should load #$40 into A");
-    assert!(bytes.windows(1).any(|w| w == [0x05]), "or= should emit ORA zp (0x05)");
+    assert!(
+        bytes.windows(2).any(|w| w == [0xA9, 0x40]),
+        "or= 64 should load #$40 into A"
+    );
+    assert!(
+        bytes.windows(1).any(|w| w == [0x05]),
+        "or= should emit ORA zp (0x05)"
+    );
 }
 
 #[test]
@@ -3840,8 +4617,14 @@ fn xor_eq_assigns_toggled() {
     let prg = compile_raw("var x = 255\nx xor= 85");
     let bytes = &prg[2..];
     // x xor= 85: eval(x)→tmp, eval(85)→LDA #$55, EOR tmp (0x45)
-    assert!(bytes.windows(2).any(|w| w == [0xA9, 0x55]), "xor= 85 should load #$55 into A");
-    assert!(bytes.windows(1).any(|w| w == [0x45]), "xor= should emit EOR zp (0x45)");
+    assert!(
+        bytes.windows(2).any(|w| w == [0xA9, 0x55]),
+        "xor= 85 should load #$55 into A"
+    );
+    assert!(
+        bytes.windows(1).any(|w| w == [0x45]),
+        "xor= should emit EOR zp (0x45)"
+    );
 }
 
 // ── screen col, row, char ─────────────────────────────────────────────────────
@@ -3852,8 +4635,14 @@ fn screen_constant_emits_sta_abs_screen_ram() {
     let prg = compile_raw("screen 0, 0, 65");
     let bytes = &prg[2..];
     // STA $0400 = 0x8D 0x00 0x04; LDA #65 = 0xA9 0x41
-    assert!(bytes.windows(2).any(|w| w == [0xA9, 0x41]), "char 65 should emit LDA #$41");
-    assert!(bytes.windows(3).any(|w| w == [0x8D, 0x00, 0x04]), "should STA to $0400");
+    assert!(
+        bytes.windows(2).any(|w| w == [0xA9, 0x41]),
+        "char 65 should emit LDA #$41"
+    );
+    assert!(
+        bytes.windows(3).any(|w| w == [0x8D, 0x00, 0x04]),
+        "should STA to $0400"
+    );
 }
 
 #[test]
@@ -3861,8 +4650,14 @@ fn screen_with_color_emits_color_ram_store() {
     // screen 0, 0, 65, 7  → STA $0400, STA $D800
     let prg = compile_raw("screen 0, 0, 65, 7");
     let bytes = &prg[2..];
-    assert!(bytes.windows(3).any(|w| w == [0x8D, 0x00, 0x04]), "should STA char to $0400");
-    assert!(bytes.windows(3).any(|w| w == [0x8D, 0x00, 0xD8]), "should STA color to $D800");
+    assert!(
+        bytes.windows(3).any(|w| w == [0x8D, 0x00, 0x04]),
+        "should STA char to $0400"
+    );
+    assert!(
+        bytes.windows(3).any(|w| w == [0x8D, 0x00, 0xD8]),
+        "should STA color to $D800"
+    );
 }
 
 #[test]
@@ -3870,7 +4665,10 @@ fn screen_offset_row1_col2_correct_address() {
     // screen 2, 1, 65  → offset = 1*40+2 = 42 → addr = $0400+42 = $042A
     let prg = compile_raw("screen 2, 1, 65");
     let bytes = &prg[2..];
-    assert!(bytes.windows(3).any(|w| w == [0x8D, 0x2A, 0x04]), "row1 col2 should STA to $042A");
+    assert!(
+        bytes.windows(3).any(|w| w == [0x8D, 0x2A, 0x04]),
+        "row1 col2 should STA to $042A"
+    );
 }
 
 // ── spc(n) in print ──────────────────────────────────────────────────────────
@@ -3881,8 +4679,14 @@ fn spc_emits_chrout_loop() {
     let prg = compile_raw("print spc(3)");
     let bytes = &prg[2..];
     // Should contain LDA #$20 (space = 0xA9 0x20) and JSR CHROUT (0x20 0xD2 0xFF)
-    assert!(bytes.windows(2).any(|w| w == [0xA9, 0x20]), "spc should load space char $20");
-    assert!(bytes.windows(3).any(|w| w == [0x20, 0xD2, 0xFF]), "spc should JSR $FFD2 (CHROUT)");
+    assert!(
+        bytes.windows(2).any(|w| w == [0xA9, 0x20]),
+        "spc should load space char $20"
+    );
+    assert!(
+        bytes.windows(3).any(|w| w == [0x20, 0xD2, 0xFF]),
+        "spc should JSR $FFD2 (CHROUT)"
+    );
 }
 
 // ── tab(n) in print ──────────────────────────────────────────────────────────
@@ -3893,8 +4697,15 @@ fn tab_emits_plot_calls() {
     let prg = compile_raw("print tab(10)");
     let bytes = &prg[2..];
     // Should contain JSR $FFF0 (0x20 0xF0 0xFF) at least twice (read + write cursor)
-    let count = bytes.windows(3).filter(|w| *w == [0x20, 0xF0, 0xFF]).count();
-    assert!(count >= 2, "tab should call PLOT ($FFF0) twice; found {} times", count);
+    let count = bytes
+        .windows(3)
+        .filter(|w| *w == [0x20, 0xF0, 0xFF])
+        .count();
+    assert!(
+        count >= 2,
+        "tab should call PLOT ($FFF0) twice; found {} times",
+        count
+    );
 }
 
 // ── rnd(n) ───────────────────────────────────────────────────────────────────
@@ -3922,7 +4733,10 @@ fn rnd_n_different_from_rnd() {
     // rnd() and rnd(10) should produce different byte sequences
     let prg_rnd = compile_raw("var x = rnd()");
     let prg_rndn = compile_raw("var x = rnd(10)");
-    assert_ne!(prg_rnd, prg_rndn, "rnd() and rnd(10) should produce different code");
+    assert_ne!(
+        prg_rnd, prg_rndn,
+        "rnd() and rnd(10) should produce different code"
+    );
 }
 
 // ── continue ─────────────────────────────────────────────────────────────────
@@ -3970,21 +4784,27 @@ fn continue_emits_jmp_forward() {
     let bytes = &prg[2..];
     // At least two JMP instructions: one for continue, one for loop back
     let jmp_count = bytes.iter().filter(|&&b| b == 0x4C).count();
-    assert!(jmp_count >= 2, "continue should emit extra JMP; got {}", jmp_count);
+    assert!(
+        jmp_count >= 2,
+        "continue should emit extra JMP; got {}",
+        jmp_count
+    );
 }
 
 // ── select/case/else/end ─────────────────────────────────────────────────────
 
 #[test]
 fn select_basic_compiles_ok() {
-    let src = "var x = 2\nselect x\n  case 1:\n    print \"ONE\"\n  case 2:\n    print \"TWO\"\nend";
+    let src =
+        "var x = 2\nselect x\n  case 1:\n    print \"ONE\"\n  case 2:\n    print \"TWO\"\nend";
     let prg = compile_raw(src);
     assert!(prg.len() > 2, "select/case should compile");
 }
 
 #[test]
 fn select_with_else_compiles_ok() {
-    let src = "var x = 5\nselect x\n  case 1:\n    print \"ONE\"\n  else:\n    print \"OTHER\"\nend";
+    let src =
+        "var x = 5\nselect x\n  case 1:\n    print \"ONE\"\n  else:\n    print \"OTHER\"\nend";
     let prg = compile_raw(src);
     assert!(prg.len() > 2, "select/else should compile");
 }
@@ -4002,7 +4822,11 @@ fn select_emits_cmp_for_each_case() {
     let bytes = &prg[2..];
     // CMP zp = 0xC5; should appear at least 2 times (once per case)
     let cmp_count = bytes.iter().filter(|&&b| b == 0xC5).count();
-    assert!(cmp_count >= 2, "select should emit CMP for each case; got {}", cmp_count);
+    assert!(
+        cmp_count >= 2,
+        "select should emit CMP for each case; got {}",
+        cmp_count
+    );
 }
 
 #[test]
@@ -4023,10 +4847,17 @@ fn bnot_emits_eor_ff() {
     let bytes = &prg[2..];
     // Either EOR zp ($45) or EOR imm ($49) must be present
     let has_eor = bytes.iter().any(|&b| b == 0x45 || b == 0x49);
-    assert!(has_eor, "bnot should emit an EOR instruction; got bytes {:?}", bytes);
+    assert!(
+        has_eor,
+        "bnot should emit an EOR instruction; got bytes {:?}",
+        bytes
+    );
     // The constant 255 ($FF) must appear as an operand
-    assert!(bytes.iter().any(|&b| b == 0xFF),
-        "bnot should use operand $FF (255); got bytes {:?}", bytes);
+    assert!(
+        bytes.iter().any(|&b| b == 0xFF),
+        "bnot should use operand $FF (255); got bytes {:?}",
+        bytes
+    );
 }
 
 #[test]
@@ -4034,8 +4865,11 @@ fn bnot_const_folds_correctly() {
     // bnot 0 → const-folded to 255; stored as LDA #$FF
     let prg = compile_raw("var y = bnot 0");
     let bytes = &prg[2..];
-    assert!(bytes.windows(2).any(|w| w == &[0xA9, 0xFF]),
-        "bnot 0 should const-fold to LDA #$FF; got bytes {:?}", bytes);
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xA9, 0xFF]),
+        "bnot 0 should const-fold to LDA #$FF; got bytes {:?}",
+        bytes
+    );
 }
 
 #[test]
@@ -4044,7 +4878,11 @@ fn clamp_emits_compare_instructions() {
     let prg = compile_raw("var x = 15\nvar lo = 10\nvar hi = 20\nvar r = clamp(x, lo, hi)");
     let bytes = &prg[2..];
     let cmp_count = bytes.iter().filter(|&&b| b == 0xC5).count(); // CMP zp = $C5
-    assert!(cmp_count >= 2, "clamp should emit at least 2 CMP zp; got {}", cmp_count);
+    assert!(
+        cmp_count >= 2,
+        "clamp should emit at least 2 CMP zp; got {}",
+        cmp_count
+    );
 }
 
 #[test]
@@ -4053,8 +4891,11 @@ fn clamp_compiles_with_constants() {
     let prg = compile_raw("var r = clamp(200, 10, 100)");
     let bytes = &prg[2..];
     // const-folded result is 100 ($64); should see LDA #$64
-    assert!(bytes.windows(2).any(|w| w == &[0xA9, 0x64]),
-        "clamp(200,10,100) should const-fold to LDA #100; got {:?}", bytes);
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xA9, 0x64]),
+        "clamp(200,10,100) should const-fold to LDA #100; got {:?}",
+        bytes
+    );
 }
 
 #[test]
@@ -4062,10 +4903,16 @@ fn color_screen_const_emits_sta_d800() {
     // color screen 0, 0, 7  →  LDA #7; STA $D800
     let prg = compile_raw("color screen 0, 0, 7");
     let bytes = &prg[2..];
-    assert!(bytes.windows(3).any(|w| w == &[0x8D, 0x00, 0xD8]),
-        "color screen 0,0,7 should emit STA $D800; got {:?}", bytes);
-    assert!(bytes.windows(2).any(|w| w == &[0xA9, 0x07]),
-        "color screen should load color 7 into A; got {:?}", bytes);
+    assert!(
+        bytes.windows(3).any(|w| w == &[0x8D, 0x00, 0xD8]),
+        "color screen 0,0,7 should emit STA $D800; got {:?}",
+        bytes
+    );
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xA9, 0x07]),
+        "color screen should load color 7 into A; got {:?}",
+        bytes
+    );
 }
 
 #[test]
@@ -4074,8 +4921,11 @@ fn color_screen_var_emits_sta_indirect() {
     let prg = compile_raw("var c = 5\nvar r = 3\ncolor screen c, r, 7");
     let bytes = &prg[2..];
     // STA (ptr),Y = $91
-    assert!(bytes.iter().any(|&b| b == 0x91),
-        "color screen with vars should emit STA (ptr),Y ($91); got {:?}", bytes);
+    assert!(
+        bytes.iter().any(|&b| b == 0x91),
+        "color screen with vars should emit STA (ptr),Y ($91); got {:?}",
+        bytes
+    );
 }
 
 #[test]
@@ -4083,8 +4933,11 @@ fn wait_key_emits_jsr_ffe4() {
     // wait key  →  JSR $FFE4 loop (20 E4 FF)
     let prg = compile_raw("wait key");
     let bytes = &prg[2..];
-    assert!(bytes.windows(3).any(|w| w == &[0x20, 0xE4, 0xFF]),
-        "wait key should emit JSR $FFE4; got {:?}", bytes);
+    assert!(
+        bytes.windows(3).any(|w| w == &[0x20, 0xE4, 0xFF]),
+        "wait key should emit JSR $FFE4; got {:?}",
+        bytes
+    );
 }
 
 #[test]
@@ -4092,10 +4945,16 @@ fn wait_key_loops_on_zero() {
     // The loop must also check CMP #0 and BEQ back
     let prg = compile_raw("wait key");
     let bytes = &prg[2..];
-    assert!(bytes.windows(2).any(|w| w == &[0xC9, 0x00]),
-        "wait key should emit CMP #$00; got {:?}", bytes);
-    assert!(bytes.iter().any(|&b| b == 0xF0),
-        "wait key should emit BEQ; got {:?}", bytes);
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xC9, 0x00]),
+        "wait key should emit CMP #$00; got {:?}",
+        bytes
+    );
+    assert!(
+        bytes.iter().any(|&b| b == 0xF0),
+        "wait key should emit BEQ; got {:?}",
+        bytes
+    );
 }
 
 #[test]
@@ -4104,8 +4963,11 @@ fn string_index_write_emits_sta_indirect_y() {
     let prg = compile_raw("var msg = \"ABC\"\nmsg[0] = 65");
     let bytes = &prg[2..];
     // STA (zp),Y opcode = $91
-    assert!(bytes.iter().any(|&b| b == 0x91),
-        "string[i]=c should emit STA (ptr),Y ($91); got {:?}", bytes);
+    assert!(
+        bytes.iter().any(|&b| b == 0x91),
+        "string[i]=c should emit STA (ptr),Y ($91); got {:?}",
+        bytes
+    );
 }
 
 #[test]
@@ -4114,10 +4976,16 @@ fn string_index_write_var_index_emits_tay() {
     let prg = compile_raw("var msg = \"ABC\"\nvar i = 1\nmsg[i] = 65");
     let bytes = &prg[2..];
     // TAY = $A8
-    assert!(bytes.iter().any(|&b| b == 0xA8),
-        "string[i]=c with var index should emit TAY ($A8); got {:?}", bytes);
-    assert!(bytes.iter().any(|&b| b == 0x91),
-        "string[i]=c should emit STA (ptr),Y ($91); got {:?}", bytes);
+    assert!(
+        bytes.iter().any(|&b| b == 0xA8),
+        "string[i]=c with var index should emit TAY ($A8); got {:?}",
+        bytes
+    );
+    assert!(
+        bytes.iter().any(|&b| b == 0x91),
+        "string[i]=c should emit STA (ptr),Y ($91); got {:?}",
+        bytes
+    );
 }
 
 #[test]
@@ -4126,11 +4994,17 @@ fn string_index_read_const_emits_lda_indirect_y() {
     let prg = compile_raw("var msg = \"ABC\"\nvar c = msg[0]");
     let bytes = &prg[2..];
     // LDA (zp),Y opcode = $B1
-    assert!(bytes.iter().any(|&b| b == 0xB1),
-        "string[0] read should emit LDA (ptr),Y ($B1); got {:?}", bytes);
+    assert!(
+        bytes.iter().any(|&b| b == 0xB1),
+        "string[0] read should emit LDA (ptr),Y ($B1); got {:?}",
+        bytes
+    );
     // LDY #0 = A0 00
-    assert!(bytes.windows(2).any(|w| w == &[0xA0, 0x00]),
-        "string[0] read should emit LDY #0 ($A0 $00); got {:?}", bytes);
+    assert!(
+        bytes.windows(2).any(|w| w == &[0xA0, 0x00]),
+        "string[0] read should emit LDY #0 ($A0 $00); got {:?}",
+        bytes
+    );
 }
 
 #[test]
@@ -4139,10 +5013,16 @@ fn string_index_read_var_index_emits_tay() {
     let prg = compile_raw("var msg = \"ABC\"\nvar i = 1\nvar c = msg[i]");
     let bytes = &prg[2..];
     // TAY = $A8; LDA (zp),Y = $B1
-    assert!(bytes.iter().any(|&b| b == 0xA8),
-        "string[i] read with var index should emit TAY ($A8); got {:?}", bytes);
-    assert!(bytes.iter().any(|&b| b == 0xB1),
-        "string[i] read should emit LDA (ptr),Y ($B1); got {:?}", bytes);
+    assert!(
+        bytes.iter().any(|&b| b == 0xA8),
+        "string[i] read with var index should emit TAY ($A8); got {:?}",
+        bytes
+    );
+    assert!(
+        bytes.iter().any(|&b| b == 0xB1),
+        "string[i] read should emit LDA (ptr),Y ($B1); got {:?}",
+        bytes
+    );
 }
 
 // ─── sprite_x / sprite_y ───────────────────────────────────────────────────
@@ -4152,8 +5032,11 @@ fn sprite_x_const_emits_lda_d000() {
     // sprite_x(0) → LDA $D000 (=$AD $00 $D0)
     let prg = compile_raw("var x = sprite_x(0)");
     let bytes = &prg[2..];
-    assert!(bytes.windows(3).any(|w| w == [0xAD, 0x00, 0xD0]),
-        "sprite_x(0) should emit LDA $D000; got {:?}", bytes);
+    assert!(
+        bytes.windows(3).any(|w| w == [0xAD, 0x00, 0xD0]),
+        "sprite_x(0) should emit LDA $D000; got {:?}",
+        bytes
+    );
 }
 
 #[test]
@@ -4161,8 +5044,11 @@ fn sprite_y_const_emits_lda_d001() {
     // sprite_y(0) → LDA $D001 (=$AD $01 $D0)
     let prg = compile_raw("var y = sprite_y(0)");
     let bytes = &prg[2..];
-    assert!(bytes.windows(3).any(|w| w == [0xAD, 0x01, 0xD0]),
-        "sprite_y(0) should emit LDA $D001; got {:?}", bytes);
+    assert!(
+        bytes.windows(3).any(|w| w == [0xAD, 0x01, 0xD0]),
+        "sprite_y(0) should emit LDA $D001; got {:?}",
+        bytes
+    );
 }
 
 #[test]
@@ -4170,8 +5056,11 @@ fn sprite_x_const_id3_emits_lda_d006() {
     // sprite_x(3) → LDA $D006 (=$AD $06 $D0)
     let prg = compile_raw("var x = sprite_x(3)");
     let bytes = &prg[2..];
-    assert!(bytes.windows(3).any(|w| w == [0xAD, 0x06, 0xD0]),
-        "sprite_x(3) should emit LDA $D006; got {:?}", bytes);
+    assert!(
+        bytes.windows(3).any(|w| w == [0xAD, 0x06, 0xD0]),
+        "sprite_x(3) should emit LDA $D006; got {:?}",
+        bytes
+    );
 }
 
 #[test]
@@ -4179,10 +5068,16 @@ fn sprite_x_var_emits_asl_and_lda_indirect() {
     // sprite_x(id) with variable → ASL A (×2) + LDA (ptr),Y
     let prg = compile_raw("var id = 2\nvar x = sprite_x(id)");
     let bytes = &prg[2..];
-    assert!(bytes.iter().any(|&b| b == 0x0A), // ASL A
-        "sprite_x(var) should emit ASL A ($0A); got {:?}", bytes);
-    assert!(bytes.iter().any(|&b| b == 0xB1), // LDA (ptr),Y
-        "sprite_x(var) should emit LDA (ptr),Y ($B1); got {:?}", bytes);
+    assert!(
+        bytes.iter().any(|&b| b == 0x0A), // ASL A
+        "sprite_x(var) should emit ASL A ($0A); got {:?}",
+        bytes
+    );
+    assert!(
+        bytes.iter().any(|&b| b == 0xB1), // LDA (ptr),Y
+        "sprite_x(var) should emit LDA (ptr),Y ($B1); got {:?}",
+        bytes
+    );
 }
 
 #[test]
@@ -4191,8 +5086,11 @@ fn sprite_y_var_emits_iny_before_lda_indirect() {
     let prg = compile_raw("var id = 2\nvar y = sprite_y(id)");
     let bytes = &prg[2..];
     // look for INY ($C8) followed by LDA (ptr),Y ($B1)
-    assert!(bytes.windows(2).any(|w| w == [0xC8, 0xB1]),
-        "sprite_y(var) should emit INY($C8) then LDA indirect ($B1); got {:?}", bytes);
+    assert!(
+        bytes.windows(2).any(|w| w == [0xC8, 0xB1]),
+        "sprite_y(var) should emit INY($C8) then LDA indirect ($B1); got {:?}",
+        bytes
+    );
 }
 
 // ─── fill screen / fill color ──────────────────────────────────────────────
@@ -4202,18 +5100,33 @@ fn fill_screen_emits_sta_0400() {
     // fill screen 32 → STA $0400,X (=$9D $00 $04)
     let prg = compile_raw("fill screen 32");
     let bytes = &prg[2..];
-    assert!(bytes.windows(3).any(|w| w == [0x9D, 0x00, 0x04]),
-        "fill screen should emit STA $0400,X; got {:?}", bytes);
+    assert!(
+        bytes.windows(3).any(|w| w == [0x9D, 0x00, 0x04]),
+        "fill screen should emit STA $0400,X; got {:?}",
+        bytes
+    );
 }
 
 #[test]
 fn fill_screen_emits_sta_all_4_pages() {
     let prg = compile_raw("fill screen 0");
     let bytes = &prg[2..];
-    assert!(bytes.windows(3).any(|w| w == [0x9D, 0x00, 0x04]), "missing STA $0400,X");
-    assert!(bytes.windows(3).any(|w| w == [0x9D, 0x00, 0x05]), "missing STA $0500,X");
-    assert!(bytes.windows(3).any(|w| w == [0x9D, 0x00, 0x06]), "missing STA $0600,X");
-    assert!(bytes.windows(3).any(|w| w == [0x9D, 0x00, 0x07]), "missing STA $0700,X");
+    assert!(
+        bytes.windows(3).any(|w| w == [0x9D, 0x00, 0x04]),
+        "missing STA $0400,X"
+    );
+    assert!(
+        bytes.windows(3).any(|w| w == [0x9D, 0x00, 0x05]),
+        "missing STA $0500,X"
+    );
+    assert!(
+        bytes.windows(3).any(|w| w == [0x9D, 0x00, 0x06]),
+        "missing STA $0600,X"
+    );
+    assert!(
+        bytes.windows(3).any(|w| w == [0x9D, 0x00, 0x07]),
+        "missing STA $0700,X"
+    );
 }
 
 #[test]
@@ -4221,18 +5134,33 @@ fn fill_color_emits_sta_d800() {
     // fill color 7 → STA $D800,X (=$9D $00 $D8)
     let prg = compile_raw("fill color 7");
     let bytes = &prg[2..];
-    assert!(bytes.windows(3).any(|w| w == [0x9D, 0x00, 0xD8]),
-        "fill color should emit STA $D800,X; got {:?}", bytes);
+    assert!(
+        bytes.windows(3).any(|w| w == [0x9D, 0x00, 0xD8]),
+        "fill color should emit STA $D800,X; got {:?}",
+        bytes
+    );
 }
 
 #[test]
 fn fill_color_emits_sta_all_4_pages() {
     let prg = compile_raw("fill color 0");
     let bytes = &prg[2..];
-    assert!(bytes.windows(3).any(|w| w == [0x9D, 0x00, 0xD8]), "missing STA $D800,X");
-    assert!(bytes.windows(3).any(|w| w == [0x9D, 0x00, 0xD9]), "missing STA $D900,X");
-    assert!(bytes.windows(3).any(|w| w == [0x9D, 0x00, 0xDA]), "missing STA $DA00,X");
-    assert!(bytes.windows(3).any(|w| w == [0x9D, 0x00, 0xDB]), "missing STA $DB00,X");
+    assert!(
+        bytes.windows(3).any(|w| w == [0x9D, 0x00, 0xD8]),
+        "missing STA $D800,X"
+    );
+    assert!(
+        bytes.windows(3).any(|w| w == [0x9D, 0x00, 0xD9]),
+        "missing STA $D900,X"
+    );
+    assert!(
+        bytes.windows(3).any(|w| w == [0x9D, 0x00, 0xDA]),
+        "missing STA $DA00,X"
+    );
+    assert!(
+        bytes.windows(3).any(|w| w == [0x9D, 0x00, 0xDB]),
+        "missing STA $DB00,X"
+    );
 }
 
 // ─── times N ... end ───────────────────────────────────────────────────────
@@ -4243,19 +5171,28 @@ fn times_loop_compiles() {
     let prg = compile_raw("times 5\n  poke $D020, 6\nend");
     let bytes = &prg[2..];
     // Should emit STA $D020 in loop body
-    assert!(bytes.windows(3).any(|w| w == [0x8D, 0x20, 0xD0]),
-        "times loop body should contain STA $D020 ($8D $20 $D0); got {:?}", bytes);
+    assert!(
+        bytes.windows(3).any(|w| w == [0x8D, 0x20, 0xD0]),
+        "times loop body should contain STA $D020 ($8D $20 $D0); got {:?}",
+        bytes
+    );
     // The counted loop emits DEC zp (not DEX; uses permanent ZP counter)
-    assert!(bytes.iter().any(|&b| b == 0xC6), // DEC zp
-        "times loop should emit DEC zp ($C6); got {:?}", bytes);
+    assert!(
+        bytes.iter().any(|&b| b == 0xC6), // DEC zp
+        "times loop should emit DEC zp ($C6); got {:?}",
+        bytes
+    );
 }
 
 #[test]
 fn times_loop_same_as_loop_n() {
     // times N and loop N must produce identical code (same Stmt::Loop)
     let prg_times = compile_raw("times 3\n  poke $D021, 0\nend");
-    let prg_loop  = compile_raw("loop 3\n  poke $D021, 0\nend");
-    assert_eq!(prg_times, prg_loop, "times N and loop N should produce identical bytecode");
+    let prg_loop = compile_raw("loop 3\n  poke $D021, 0\nend");
+    assert_eq!(
+        prg_times, prg_loop,
+        "times N and loop N should produce identical bytecode"
+    );
 }
 
 // ─── array_word variable index store ──────────────────────────────────────
@@ -4266,20 +5203,32 @@ fn array_word_var_index_store_emits_asl_and_sta_indirect() {
     let prg = compile_raw("var warray = array_word(8)\nvar i = 2\nwarray[i] = $1234");
     let bytes = &prg[2..];
     // ASL A (×2 stride), TAY, STA (ptr),Y
-    assert!(bytes.iter().any(|&b| b == 0x0A), // ASL A
-        "array_word var index store should emit ASL A; got {:?}", bytes);
-    assert!(bytes.iter().any(|&b| b == 0x91), // STA (ptr),Y
-        "array_word var index store should emit STA (ptr),Y; got {:?}", bytes);
+    assert!(
+        bytes.iter().any(|&b| b == 0x0A), // ASL A
+        "array_word var index store should emit ASL A; got {:?}",
+        bytes
+    );
+    assert!(
+        bytes.iter().any(|&b| b == 0x91), // STA (ptr),Y
+        "array_word var index store should emit STA (ptr),Y; got {:?}",
+        bytes
+    );
 }
 
 #[test]
 fn array_word_var_index_load_emits_asl_and_lda_indirect() {
     let prg = compile_raw("var warray = array_word(8)\nvar i = 2\nvar v: word = warray[i]");
     let bytes = &prg[2..];
-    assert!(bytes.iter().any(|&b| b == 0x0A), // ASL A
-        "array_word var index load should emit ASL A; got {:?}", bytes);
-    assert!(bytes.iter().any(|&b| b == 0xB1), // LDA (ptr),Y
-        "array_word var index load should emit LDA (ptr),Y; got {:?}", bytes);
+    assert!(
+        bytes.iter().any(|&b| b == 0x0A), // ASL A
+        "array_word var index load should emit ASL A; got {:?}",
+        bytes
+    );
+    assert!(
+        bytes.iter().any(|&b| b == 0xB1), // LDA (ptr),Y
+        "array_word var index load should emit LDA (ptr),Y; got {:?}",
+        bytes
+    );
 }
 
 // ── gosub / return ────────────────────────────────────────────────────────
@@ -4289,8 +5238,11 @@ fn gosub_emits_jsr() {
     // gosub should emit JSR ($20) to the label address
     let prg = compile_raw("label target\n  var x = 1\ngosub target");
     let bytes = &prg[2..];
-    assert!(bytes.iter().any(|&b| b == 0x20), // JSR
-        "gosub should emit JSR ($20); got {:?}", bytes);
+    assert!(
+        bytes.iter().any(|&b| b == 0x20), // JSR
+        "gosub should emit JSR ($20); got {:?}",
+        bytes
+    );
 }
 
 #[test]
@@ -4299,8 +5251,11 @@ fn gosub_forward_ref_resolves() {
     let prg = compile_raw("gosub my_label\nlabel my_label\n  var x = 5");
     let bytes = &prg[2..];
     // Must have JSR
-    assert!(bytes.iter().any(|&b| b == 0x20),
-        "gosub forward ref should emit JSR; got {:?}", bytes);
+    assert!(
+        bytes.iter().any(|&b| b == 0x20),
+        "gosub forward ref should emit JSR; got {:?}",
+        bytes
+    );
 }
 
 #[test]
@@ -4308,8 +5263,11 @@ fn return_emits_rts() {
     // return emits RTS ($60)
     let prg = compile_raw("label lbl\n  return");
     let bytes = &prg[2..];
-    assert!(bytes.iter().any(|&b| b == 0x60), // RTS
-        "return should emit RTS ($60); got {:?}", bytes);
+    assert!(
+        bytes.iter().any(|&b| b == 0x60), // RTS
+        "return should emit RTS ($60); got {:?}",
+        bytes
+    );
 }
 
 #[test]
@@ -4330,11 +5288,17 @@ fn sprite_frame_const_emits_lda_imm_and_sta_07f8() {
     let prg = compile_raw("sprite_frame 0, $2000");
     let bytes = &prg[2..];
     // LDA #$80 = $A9 $80
-    assert!(bytes.windows(2).any(|w| w == [0xA9, 0x80]),
-        "sprite_frame const: should LDA #$80 ($2000>>6); got {:?}", bytes);
+    assert!(
+        bytes.windows(2).any(|w| w == [0xA9, 0x80]),
+        "sprite_frame const: should LDA #$80 ($2000>>6); got {:?}",
+        bytes
+    );
     // STA $07F8 = $8D $F8 $07
-    assert!(bytes.windows(3).any(|w| w == [0x8D, 0xF8, 0x07]),
-        "sprite_frame const: should STA $07F8; got {:?}", bytes);
+    assert!(
+        bytes.windows(3).any(|w| w == [0x8D, 0xF8, 0x07]),
+        "sprite_frame const: should STA $07F8; got {:?}",
+        bytes
+    );
 }
 
 #[test]
@@ -4342,8 +5306,11 @@ fn sprite_frame_const_id1_emits_sta_07f9() {
     // sprite_frame 1, $2000 → STA $07F9 ($07F8 + 1)
     let prg = compile_raw("sprite_frame 1, $2000");
     let bytes = &prg[2..];
-    assert!(bytes.windows(3).any(|w| w == [0x8D, 0xF9, 0x07]),
-        "sprite_frame id=1: should STA $07F9; got {:?}", bytes);
+    assert!(
+        bytes.windows(3).any(|w| w == [0x8D, 0xF9, 0x07]),
+        "sprite_frame id=1: should STA $07F9; got {:?}",
+        bytes
+    );
 }
 
 #[test]
@@ -4352,12 +5319,21 @@ fn sprite_frame_word_var_addr_emits_shift_logic() {
     // Should emit ASL, ORA for addr>>6 computation
     let prg = compile_raw("var ptr: word = $2000\nsprite_frame 0, ptr");
     let bytes = &prg[2..];
-    assert!(bytes.iter().any(|&b| b == 0x0A), // ASL A
-        "sprite_frame word var: should emit ASL for hi*4; got {:?}", bytes);
-    assert!(bytes.iter().any(|&b| b == 0x4A), // LSR A
-        "sprite_frame word var: should emit LSR for lo>>6; got {:?}", bytes);
-    assert!(bytes.windows(3).any(|w| w == [0x8D, 0xF8, 0x07]),
-        "sprite_frame word var: should STA $07F8; got {:?}", bytes);
+    assert!(
+        bytes.iter().any(|&b| b == 0x0A), // ASL A
+        "sprite_frame word var: should emit ASL for hi*4; got {:?}",
+        bytes
+    );
+    assert!(
+        bytes.iter().any(|&b| b == 0x4A), // LSR A
+        "sprite_frame word var: should emit LSR for lo>>6; got {:?}",
+        bytes
+    );
+    assert!(
+        bytes.windows(3).any(|w| w == [0x8D, 0xF8, 0x07]),
+        "sprite_frame word var: should STA $07F8; got {:?}",
+        bytes
+    );
 }
 
 #[test]
@@ -4366,8 +5342,11 @@ fn sprite_frame_var_id_emits_sta_07f8_x() {
     let prg = compile_raw("var spid = 2\nsprite_frame spid, $2000");
     let bytes = &prg[2..];
     // STA $07F8,X = $9D $F8 $07
-    assert!(bytes.windows(3).any(|w| w == [0x9D, 0xF8, 0x07]),
-        "sprite_frame var id: should emit STA $07F8,X ($9D $F8 $07); got {:?}", bytes);
+    assert!(
+        bytes.windows(3).any(|w| w == [0x9D, 0xF8, 0x07]),
+        "sprite_frame var id: should emit STA $07F8,X ($9D $F8 $07); got {:?}",
+        bytes
+    );
 }
 
 // ── chardef ───────────────────────────────────────────────────────────────
@@ -4379,16 +5358,28 @@ fn chardef_emits_jmp_and_copy_loop() {
     let prg = compile_raw(src);
     let bytes = &prg[2..];
     // JMP opcode ($4C)
-    assert!(bytes.iter().any(|&b| b == 0x4C), "chardef: should emit JMP ($4C)");
+    assert!(
+        bytes.iter().any(|&b| b == 0x4C),
+        "chardef: should emit JMP ($4C)"
+    );
     // LDY #7 = $A0 $07
-    assert!(bytes.windows(2).any(|w| w == [0xA0, 0x07]),
-        "chardef: should emit LDY #7; got {:?}", bytes);
+    assert!(
+        bytes.windows(2).any(|w| w == [0xA0, 0x07]),
+        "chardef: should emit LDY #7; got {:?}",
+        bytes
+    );
     // LDA abs,Y = $B9
-    assert!(bytes.iter().any(|&b| b == 0xB9),
-        "chardef: should emit LDA abs,Y ($B9) for copy loop; got {:?}", bytes);
+    assert!(
+        bytes.iter().any(|&b| b == 0xB9),
+        "chardef: should emit LDA abs,Y ($B9) for copy loop; got {:?}",
+        bytes
+    );
     // STA abs,Y = $99
-    assert!(bytes.iter().any(|&b| b == 0x99),
-        "chardef: should emit STA abs,Y ($99) for copy loop; got {:?}", bytes);
+    assert!(
+        bytes.iter().any(|&b| b == 0x99),
+        "chardef: should emit STA abs,Y ($99) for copy loop; got {:?}",
+        bytes
+    );
 }
 
 #[test]
@@ -4399,8 +5390,11 @@ fn chardef_copies_to_default_charset_base() {
     let prg = compile_raw(src);
     let bytes = &prg[2..];
     // STA $3800,Y = $99 $00 $38
-    assert!(bytes.windows(3).any(|w| w == [0x99, 0x00, 0x38]),
-        "chardef id=0: should STA $3800,Y; got {:?}", bytes);
+    assert!(
+        bytes.windows(3).any(|w| w == [0x99, 0x00, 0x38]),
+        "chardef id=0: should STA $3800,Y; got {:?}",
+        bytes
+    );
 }
 
 #[test]
@@ -4410,8 +5404,11 @@ fn chardef_charset_base_changes_destination() {
     let prg = compile_raw(src);
     let bytes = &prg[2..];
     // STA $3000,Y = $99 $00 $30
-    assert!(bytes.windows(3).any(|w| w == [0x99, 0x00, 0x30]),
-        "charset $3000: chardef should STA $3000,Y; got {:?}", bytes);
+    assert!(
+        bytes.windows(3).any(|w| w == [0x99, 0x00, 0x30]),
+        "charset $3000: chardef should STA $3000,Y; got {:?}",
+        bytes
+    );
 }
 
 #[test]
@@ -4421,8 +5418,11 @@ fn chardef_char_id_offsets_destination() {
     let prg = compile_raw(src);
     let bytes = &prg[2..];
     // STA $3808,Y = $99 $08 $38
-    assert!(bytes.windows(3).any(|w| w == [0x99, 0x08, 0x38]),
-        "chardef id=1: should STA $3808,Y ($3800+1*8); got {:?}", bytes);
+    assert!(
+        bytes.windows(3).any(|w| w == [0x99, 0x08, 0x38]),
+        "chardef id=1: should STA $3808,Y ($3800+1*8); got {:?}",
+        bytes
+    );
 }
 
 #[test]
@@ -4431,8 +5431,13 @@ fn chardef_data_bytes_embedded_in_code() {
     let src = "chardef 65\n  $AA\n  $BB\n  $CC\n  $DD\n  $EE\n  $FF\n  $11\n  $22\nend";
     let prg = compile_raw(src);
     let bytes = &prg[2..];
-    assert!(bytes.windows(8).any(|w| w == [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22]),
-        "chardef: data bytes should appear verbatim in PRG; got {:?}", bytes);
+    assert!(
+        bytes
+            .windows(8)
+            .any(|w| w == [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22]),
+        "chardef: data bytes should appear verbatim in PRG; got {:?}",
+        bytes
+    );
 }
 
 #[test]
@@ -4441,8 +5446,13 @@ fn chardef_zero_pads_short_definition() {
     let src = "chardef 0\n  $FF\n  $AA\nend";
     let prg = compile_raw(src);
     let bytes = &prg[2..];
-    assert!(bytes.windows(8).any(|w| w == [0xFF, 0xAA, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
-        "chardef: short def should be zero-padded; got {:?}", bytes);
+    assert!(
+        bytes
+            .windows(8)
+            .any(|w| w == [0xFF, 0xAA, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+        "chardef: short def should be zero-padded; got {:?}",
+        bytes
+    );
 }
 
 // ── mplot ─────────────────────────────────────────────────────────────────────
@@ -4461,9 +5471,18 @@ fn mplot_emits_cia_color_args() {
     // Verify the args are loaded: LDA #10 ($A9 $0A), LDA #20 ($A9 $14), LDA #2 ($A9 $02)
     let prg = compile_raw("graphics on\nmplot 10, 20, 2\n");
     let bytes = &prg[2..];
-    assert!(bytes.windows(2).any(|w| w == [0xA9, 10]), "mplot: expected LDA #10 for x");
-    assert!(bytes.windows(2).any(|w| w == [0xA9, 20]), "mplot: expected LDA #20 for y");
-    assert!(bytes.windows(2).any(|w| w == [0xA9, 2]),  "mplot: expected LDA #2 for color");
+    assert!(
+        bytes.windows(2).any(|w| w == [0xA9, 10]),
+        "mplot: expected LDA #10 for x"
+    );
+    assert!(
+        bytes.windows(2).any(|w| w == [0xA9, 20]),
+        "mplot: expected LDA #20 for y"
+    );
+    assert!(
+        bytes.windows(2).any(|w| w == [0xA9, 2]),
+        "mplot: expected LDA #2 for color"
+    );
 }
 
 // ── music stop / pause / resume ──────────────────────────────────────────────
@@ -4477,21 +5496,39 @@ fn music_stop_compiles() {
     assert!(bytes.contains(&0x78), "music stop: expected SEI ($78)");
     assert!(bytes.contains(&0x58), "music stop: expected CLI ($58)");
     // LDA #$7F = $A9 $7F — disable CIA1 IRQs
-    assert!(bytes.windows(2).any(|w| w == [0xA9, 0x7F]), "music stop: expected LDA #$7F");
+    assert!(
+        bytes.windows(2).any(|w| w == [0xA9, 0x7F]),
+        "music stop: expected LDA #$7F"
+    );
     // STA $DC0D = $8D $0D $DC
-    assert!(bytes.windows(3).any(|w| w == [0x8D, 0x0D, 0xDC]), "music stop: expected STA $DC0D");
+    assert!(
+        bytes.windows(3).any(|w| w == [0x8D, 0x0D, 0xDC]),
+        "music stop: expected STA $DC0D"
+    );
     // LDX #24 ($A2 $18) — loop counter for SID zero-fill
-    assert!(bytes.windows(2).any(|w| w == [0xA2, 0x18]), "music stop: expected LDX #24 for SID zero loop");
+    assert!(
+        bytes.windows(2).any(|w| w == [0xA2, 0x18]),
+        "music stop: expected LDX #24 for SID zero loop"
+    );
     // STA $D400,X = $9D $00 $D4
-    assert!(bytes.windows(3).any(|w| w == [0x9D, 0x00, 0xD4]), "music stop: expected STA $D400,X");
+    assert!(
+        bytes.windows(3).any(|w| w == [0x9D, 0x00, 0xD4]),
+        "music stop: expected STA $D400,X"
+    );
 }
 
 #[test]
 fn music_pause_compiles() {
     let prg = compile_raw("music pause\n");
     let bytes = &prg[2..];
-    assert!(bytes.windows(2).any(|w| w == [0xA9, 0x7F]), "music pause: expected LDA #$7F");
-    assert!(bytes.windows(3).any(|w| w == [0x8D, 0x0D, 0xDC]), "music pause: expected STA $DC0D");
+    assert!(
+        bytes.windows(2).any(|w| w == [0xA9, 0x7F]),
+        "music pause: expected LDA #$7F"
+    );
+    assert!(
+        bytes.windows(3).any(|w| w == [0x8D, 0x0D, 0xDC]),
+        "music pause: expected STA $DC0D"
+    );
 }
 
 #[test]
@@ -4499,8 +5536,14 @@ fn music_resume_compiles() {
     let prg = compile_raw("music resume\n");
     let bytes = &prg[2..];
     // LDA #$81 = $A9 $81 — re-enable CIA1 timer A
-    assert!(bytes.windows(2).any(|w| w == [0xA9, 0x81]), "music resume: expected LDA #$81");
-    assert!(bytes.windows(3).any(|w| w == [0x8D, 0x0D, 0xDC]), "music resume: expected STA $DC0D");
+    assert!(
+        bytes.windows(2).any(|w| w == [0xA9, 0x81]),
+        "music resume: expected LDA #$81"
+    );
+    assert!(
+        bytes.windows(3).any(|w| w == [0x8D, 0x0D, 0xDC]),
+        "music resume: expected STA $DC0D"
+    );
 }
 
 // ── onerr goto ───────────────────────────────────────────────────────────────
@@ -4511,11 +5554,15 @@ fn onerr_goto_compiles() {
     let prg = compile_raw("onerr goto err_handler\nlabel err_handler\n");
     let bytes = &prg[2..];
     // STA $0300 = $8D $00 $03
-    assert!(bytes.windows(3).any(|w| w == [0x8D, 0x00, 0x03]),
-        "onerr goto: expected STA $0300 ($8D $00 $03); bytes={bytes:?}");
+    assert!(
+        bytes.windows(3).any(|w| w == [0x8D, 0x00, 0x03]),
+        "onerr goto: expected STA $0300 ($8D $00 $03); bytes={bytes:?}"
+    );
     // STA $0301 = $8D $01 $03
-    assert!(bytes.windows(3).any(|w| w == [0x8D, 0x01, 0x03]),
-        "onerr goto: expected STA $0301 ($8D $01 $03)");
+    assert!(
+        bytes.windows(3).any(|w| w == [0x8D, 0x01, 0x03]),
+        "onerr goto: expected STA $0301 ($8D $01 $03)"
+    );
 }
 
 #[test]
@@ -4523,8 +5570,12 @@ fn onerr_forward_ref_patches() {
     // Forward reference: label defined after onerr goto
     let prg = compile_raw("onerr goto my_err\nvar x = 1\nlabel my_err\n");
     let bytes = &prg[2..];
-    assert!(bytes.windows(3).any(|w| w == [0x8D, 0x00, 0x03]),
-        "onerr forward-ref: expected STA $0300");
-    assert!(bytes.windows(3).any(|w| w == [0x8D, 0x01, 0x03]),
-        "onerr forward-ref: expected STA $0301");
+    assert!(
+        bytes.windows(3).any(|w| w == [0x8D, 0x00, 0x03]),
+        "onerr forward-ref: expected STA $0300"
+    );
+    assert!(
+        bytes.windows(3).any(|w| w == [0x8D, 0x01, 0x03]),
+        "onerr forward-ref: expected STA $0301"
+    );
 }
