@@ -54,8 +54,8 @@ Keywords and identifiers are **case-insensitive**: `PRINT`, `Print`, and `print`
 ```basic
 # hash comment
 rem this is also a comment
-var x = 5  ; inline semicolon comment
-var x = 5  : var y = 6  # colon separates statements on one line
+var x = 5  # inline comment
+var x = 5 : var y = 6  # colon separates statements on one line
 ```
 
 ### Operators
@@ -909,7 +909,7 @@ done:
 - `#<label` / `#>label` yield the lo / hi byte of a label's address.
 - `*` yields the current instruction address, so `JMP *` assembles as a self-loop.
 - Lines starting with `$`, `%`, or a digit are emitted as raw bytes (backward-compatible).
-- Comments: `;` or `//` to end of line. (`#` is the immediate prefix, not a comment.)
+- Inside `asm { }`, comments are `;` or `//` to end of line. (`#` is the immediate prefix, not a comment.)
 
 **Mixing `asm { }` with subroutine parameters**
 

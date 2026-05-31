@@ -1,0 +1,112 @@
+# text_scroll_demo.ub
+# Smooth one-line text scroller using VIC-II horizontal fine scroll.
+
+cls fast
+color border 0
+color bg 0
+color text 1
+fill $D800, 1000, 1
+
+scroll x 7
+asm {
+  LDA #$07
+  STA $D016        ; 38-column mode plus x-scroll 7 hides the incoming column
+}
+
+var msg = array(40)
+var pos = 0
+var phase = 7
+var key = 0
+
+# Screen codes: A=1 ... Z=26, space=32.
+# " ULTIMATE BASIC PIXEL SCROLL DEMO       "
+msg[0] = 32
+msg[1] = 21
+msg[2] = 12
+msg[3] = 20
+msg[4] = 9
+msg[5] = 13
+msg[6] = 1
+msg[7] = 20
+msg[8] = 5
+msg[9] = 32
+msg[10] = 2
+msg[11] = 1
+msg[12] = 19
+msg[13] = 9
+msg[14] = 3
+msg[15] = 32
+msg[16] = 16
+msg[17] = 9
+msg[18] = 24
+msg[19] = 5
+msg[20] = 12
+msg[21] = 32
+msg[22] = 19
+msg[23] = 3
+msg[24] = 18
+msg[25] = 15
+msg[26] = 12
+msg[27] = 12
+msg[28] = 32
+msg[29] = 4
+msg[30] = 5
+msg[31] = 13
+msg[32] = 15
+msg[33] = 32
+msg[34] = 32
+msg[35] = 32
+msg[36] = 32
+msg[37] = 32
+msg[38] = 32
+msg[39] = 32
+
+fill $05E0, 40, 32
+
+# Preload the visible row so the scroller starts with text already on screen.
+var i = 0
+while i < 40
+  screen i, 12, msg[i], 1
+  i = i + 1
+end
+
+label scroll_loop
+# Update the scroll register and row data in the lower border. If this runs
+# during visible drawing, the row can appear to wobble for part of a frame.
+wait raster 250
+
+if phase == 0 then
+  phase = 7
+
+  asm {
+    LDX #$00
+  shift_row:
+    LDA $05E1,X
+    STA $05E0,X
+    INX
+    CPX #$27
+    BNE shift_row
+  }
+
+  screen 39, 12, msg[pos], 1
+  pos = pos + 1
+  if pos == 40 then pos = 0 end
+else
+  dec phase
+end
+
+scroll x phase
+
+key = inkey()
+if key != 0 then goto done end
+
+goto scroll_loop
+
+label done
+scroll x 0
+asm {
+  LDA #$08
+  STA $D016        ; restore normal 40-column text mode
+}
+cls
+bye

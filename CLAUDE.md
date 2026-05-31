@@ -692,11 +692,11 @@ Requires a real REU or emulated REU (VICE: enable Georam/REU). The transfer is s
 ```basic
 # hash comment (existing)
 rem this is also a comment
-var x = 5  ; inline comment
+var x = 5  # inline comment
 poke $D020, 6 : color border 6  # colon separates two statements on one line
 ```
 
-`rem` and `;` are treated identically to `#` — everything to end of line is ignored.
+`rem` and `#` are comments — everything to end of line is ignored.
 `:` separates multiple statements on one line (like C64 BASIC).
 
 ### Compile-time File Embedding
@@ -1111,7 +1111,7 @@ done:
 - `#<label` / `#>label` yield the lo / hi byte of a label's address.
 - `*` yields the current instruction address, so `JMP *` assembles as a self-loop.
 - Lines starting with `$`, `%`, or a digit are emitted as raw bytes (backward-compatible with the old `asm { $A9 $07 }` form).
-- Comments: `;` or `//` to end of line. (`#` is the immediate prefix, not a comment.)
+- Inside `asm { }`, comments are `;` or `//` to end of line. (`#` is the immediate prefix, not a comment.)
 - The `asm $EA, $EA` single-line raw-byte form is unchanged.
 
 **Mixing `asm { }` with subroutine parameters**
