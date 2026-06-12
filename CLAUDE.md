@@ -39,6 +39,9 @@ examples/
   sprite_orbit_demo.ub – 8 hardware sprites in circular orbit via sin/cos
   reu_bitmap_demo.ub   – REU stash/fetch with bitmap graphics
   tenprint.ub          – 5 TENPRINT maze implementations with menu; demos lowercase charset mode
+  text_scroll_demo.ub – hardware horizontal fine scroll text scroller
+  fn_demo.ub          – text scroller rewritten with fn + typed string params
+  function_demo.ub    – fn return value demo (square, add, max, clamp)
 ```
 
 ## Architecture
@@ -53,9 +56,9 @@ examples/
 
 ### Two-Pass Compilation
 
-1. **Pass 1** – every statement except `SubDef` → main program body
+1. **Pass 1** – every statement except `SubDef` / `FnDef` → main program body
 2. `RTS` — end of main program  
-3. **Pass 2** – only `SubDef` statements → subroutines appended after main
+3. **Pass 2** – only `SubDef` / `FnDef` statements → subroutines/functions appended after main
 
 Sub bodies are never executed at startup. Forward references (`Call` to an
 unknown name, `Goto` to an unknown label) are recorded and patched by
@@ -64,8 +67,9 @@ unknown name, `Goto` to an unknown label) are recorded and patched by
 ### Pre-Scan
 
 Before either pass, `pre_scan()` walks the AST to:
-- Allocate zero-page slots for every subroutine's parameters
+- Allocate zero-page slots for every subroutine's and function's parameters
 - Register arrays and assign their base addresses (`$C000+`)
+- Allocate a 2-byte ZP return-value slot (`fn_ret_zp`) if any `fn` has a `: word` or `: float` return type
 
 ### Zero Page Layout
 
@@ -75,7 +79,8 @@ Before either pass, `pre_scan()` walks the AST to:
 | `$02–$4F` | **Permanent**: variables, loop counters, for-limit/step, sub params (`perm_zp`) |
 | `$50–$7F` | **Scratch**: expression evaluation, reset before each statement (`tmp_zp`) |
 | `$FB` | RNG seed (LCG) |
-| `$FC–$FE` | Free for future use |
+| `$FC–$FD` | `fn_ret_zp` (2 bytes, if word/float fn present), else free |
+| `$FE` | free |
 
 `tmp_zp` is reset to `$50` at the start of every statement in `gen_stmts()`.
 This prevents zero-page overflow into the KERNAL area (`$7A–$7B` = BASIC
@@ -309,6 +314,42 @@ add(10, 20)
 
 Parameters are passed via dedicated zero-page slots (allocated in pre-scan).
 Recursion is **not** supported (ZP slots are static).
+
+Typed parameters are preserved end-to-end:
+```basic
+sub copy(src:string)    # src gets 2-byte ZP pointer pair
+  var c = src[i]        # string indexing → LDA (ptr),Y
+end
+```
+
+### Functions (fn)
+
+```basic
+fn square(x)
+  return x * x
+end
+
+fn add(a, b)
+  return a + b
+end
+
+fn clamp(val, lo, hi)
+  if val < lo then return lo end
+  if val > hi then return hi end
+  return val
+end
+
+var s = square(9)         # fn call as expression, result in A
+print add(10, 20)         # usable inline in print
+var c: word = get_ptr()   # word return type supported
+```
+
+Functions support optional `: word` or `: float` return type annotation. 16-bit
+return values are stored in a dedicated ZP pair (`fn_ret_zp`, allocated in pre-scan)
+before RTS. The caller reads from that pair after JSR.
+
+`fn` is emitted in pass 2 (same as `sub`), so function bodies are never executed
+at startup. Forward references are fully supported.
 
 ### Arrays
 
@@ -1233,3 +1274,6 @@ data pointer) and a full hex dump of the generated machine code.
 | `chr$` | No PETSCII↔ASCII mapping — n is passed as-is to CHROUT |
 | `music play` | Requires `load sid`; emits one shared wrapper (last `music play` wins if called multiple times) |
 | Error reporting | Compile-time only; `onerr goto` handles KERNAL I/O errors at runtime |
+| `poke`/`peek` with offset | `poke ptr + i, val` truncates `ptr+i` to 8 bits when `i` is a variable; use `msg[i]` for 16-bit-safe indexed access |
+| `fn` return values | 8-bit return works in all expression contexts; `: word` return works for `var w: word = fn()` but 16-bit fn calls in 8-bit contexts read only the lo byte |
+| `fn` bodies inside `sub` | Not scanned recursively by pre_scan helpers (has_plot_stmt, etc.) — any required ZP helpers must be detected at the top level |
