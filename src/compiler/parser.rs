@@ -265,6 +265,40 @@ impl Parser {
         }
     }
 
+    fn parse_param_list(&mut self) -> Vec<(String, Option<VarType>)> {
+        let mut params = vec![];
+        if self.peek() == &Token::LParen {
+            self.advance(); // (
+            while !matches!(self.peek(), Token::RParen | Token::Eof) {
+                if let Token::Ident(p) = self.peek().clone() {
+                    self.advance();
+                    let ptype = if self.peek() == &Token::Colon {
+                        self.advance();
+                        match self.peek() {
+                            Token::Int => { self.advance(); Some(VarType::Int) }
+                            Token::Str => { self.advance(); Some(VarType::Str) }
+                            Token::Float => { self.advance(); Some(VarType::Float) }
+                            Token::Word => { self.advance(); Some(VarType::Word) }
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+                    params.push((p, ptype));
+                } else {
+                    self.advance();
+                }
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
+            }
+            if self.peek() == &Token::RParen {
+                self.advance();
+            } // )
+        }
+        params
+    }
+
     fn reject_stmt(&mut self, message: &str) -> Option<Stmt> {
         self.errors.push(format!("line {}: {}", self.line, message));
         while !matches!(self.peek(), Token::Newline | Token::Eof) {
@@ -1076,24 +1110,7 @@ impl Parser {
                     return None;
                 };
                 // parse optional parameter list: (p1, p2, ...)
-                let mut params = vec![];
-                if self.peek() == &Token::LParen {
-                    self.advance(); // (
-                    while !matches!(self.peek(), Token::RParen | Token::Eof) {
-                        if let Token::Ident(p) = self.peek().clone() {
-                            self.advance();
-                            params.push(p);
-                        } else {
-                            self.advance();
-                        }
-                        if self.peek() == &Token::Comma {
-                            self.advance();
-                        }
-                    }
-                    if self.peek() == &Token::RParen {
-                        self.advance();
-                    } // )
-                }
+                let params = self.parse_param_list();
                 self.expect_newline();
                 let mut body = vec![];
                 loop {
@@ -1111,10 +1128,54 @@ impl Parser {
                 self.expect_newline();
                 Some(Stmt::SubDef(name, params, body))
             }
+            Token::Fn => {
+                self.advance();
+                let name = if let Token::Ident(n) = self.advance() {
+                    n
+                } else {
+                    return None;
+                };
+                // parse optional parameter list: (p1, p2, ...)
+                let params = self.parse_param_list();
+                // parse optional return type: : type
+                let ret_type = if self.peek() == &Token::Colon {
+                    self.advance();
+                    match self.peek() {
+                        Token::Int => { self.advance(); Some(VarType::Int) }
+                        Token::Str => { self.advance(); Some(VarType::Str) }
+                        Token::Float => { self.advance(); Some(VarType::Float) }
+                        Token::Word => { self.advance(); Some(VarType::Word) }
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                self.expect_newline();
+                let mut body = vec![];
+                loop {
+                    self.skip_newlines();
+                    if matches!(self.peek(), Token::End | Token::Eof) {
+                        break;
+                    }
+                    if let Some(s) = self.parse_stmt() {
+                        body.push(s);
+                    }
+                }
+                if self.peek() == &Token::End {
+                    self.advance();
+                }
+                self.expect_newline();
+                Some(Stmt::FnDef(name, params, ret_type, body))
+            }
             Token::Return => {
                 self.advance();
+                let expr = if matches!(self.peek(), Token::Newline | Token::Eof | Token::Colon | Token::Else) {
+                    None
+                } else {
+                    Some(self.parse_expr())
+                };
                 self.expect_newline();
-                Some(Stmt::Return)
+                Some(Stmt::Return(expr))
             }
             Token::Const => {
                 self.advance();
@@ -2253,6 +2314,20 @@ impl Parser {
                         self.advance();
                     } // ]
                     Expr::ArrayGet(n, Box::new(idx))
+                } else if self.peek() == &Token::LParen {
+                    // fn_call(args) expression
+                    self.advance(); // (
+                    let mut args = vec![];
+                    while !matches!(self.peek(), Token::RParen | Token::Eof | Token::Newline) {
+                        args.push(self.parse_expr());
+                        if self.peek() == &Token::Comma {
+                            self.advance();
+                        }
+                    }
+                    if self.peek() == &Token::RParen {
+                        self.advance();
+                    } // )
+                    Expr::FnCall(n, args)
                 } else {
                     Expr::Var(n)
                 }
@@ -2919,10 +2994,14 @@ mod tests {
 
     #[test]
     fn sub_def_with_params() {
-        let stmts = parse("sub draw(x, y)\n  print x\nend");
+        let stmts = parse("sub draw(x, y:string)\n  print x\nend");
         if let Stmt::SubDef(name, params, _) = &stmts[0] {
             assert_eq!(name, "draw");
-            assert_eq!(params, &vec!["x".to_string(), "y".to_string()]);
+            assert_eq!(params.len(), 2);
+            assert_eq!(params[0].0, "x");
+            assert!(params[0].1.is_none());
+            assert_eq!(params[1].0, "y");
+            assert!(matches!(params[1].1, Some(VarType::Str)));
         } else {
             panic!("Expected SubDef");
         }
@@ -2948,7 +3027,7 @@ mod tests {
     #[test]
     fn return_stmt() {
         let stmts = parse("return");
-        assert!(matches!(&stmts[0], Stmt::Return));
+        assert!(matches!(&stmts[0], Stmt::Return(_)));
     }
 
     // ── Graphics / Screen ────────────────────────────────────────────────

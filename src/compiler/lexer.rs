@@ -8,6 +8,7 @@ pub enum Token {
     // Keywords
     Var,
     Sub,
+    Fn,
     End,
     If,
     Then,
@@ -471,6 +472,7 @@ impl Lexer {
             }
             "var" => Token::Var,
             "sub" => Token::Sub,
+            "fn" => Token::Fn,
             "end" => Token::End,
             "if" => Token::If,
             "then" => Token::Then,

@@ -42,6 +42,7 @@ pub enum Expr {
     Val(Box<Expr>), // val(s) — runtime PETSCII decimal string → 8-bit int
     FixedLit(u16), // Q8.8 fixed-point literal (e.g. 3.5 → hi=3, lo=128)
     FixedToInt(Box<Expr>), // int(f) — extract integer part (hi byte) of a float variable
+    FnCall(String, Vec<Expr>), // fn_name(args) — call a function, result in A
 }
 
 #[derive(Debug, Clone)]
@@ -162,9 +163,10 @@ pub enum Stmt {
         target: ColorTarget,
         expr: Expr,
     },
-    SubDef(String, Vec<String>, Vec<Stmt>), // name, params, body
+    SubDef(String, Vec<(String, Option<VarType>)>, Vec<Stmt>), // name, params, body
+    FnDef(String, Vec<(String, Option<VarType>)>, Option<VarType>, Vec<Stmt>), // name, params, return_type, body
     Call(String, Vec<Expr>, usize),         // name, args, line
-    Return,
+    Return(Option<Expr>),
     Const(String, Expr),
     Label(String),
     Goto(String, usize), // label name, line
