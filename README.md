@@ -227,6 +227,45 @@ set_color(6)
 ```
 
 Parameters are passed via dedicated zero-page slots. No recursion (slots are static).
+Typed parameters are supported: `sub draw(x, y:int)` or `sub copy(src:string)` — string
+parameters receive a 2-byte pointer so the callee can index the source string via `src[i]`.
+
+### Functions (return values)
+
+```basic
+fn square(x)
+  return x * x
+end
+
+fn add(a, b)
+  return a + b
+end
+
+fn clamp(val, lo, hi)
+  if val < lo then return lo end
+  if val > hi then return hi end
+  return val
+end
+
+var s = square(9)         # s = 81  — fn call as expression
+var c = clamp(joy, 0, 39) # c = clamped value
+print add(10, 20)         # 30  — usable inline in print
+```
+
+Functions support an optional `: word` return type for 16-bit values:
+
+```basic
+fn get_addr(): word
+  return $C000
+end
+
+var ptr: word = get_addr()  # ptr = $C000
+poke ptr, 42                 # STA (ptr),Y — valid indirect addressing
+var v = peek(ptr)            # LDA (ptr),Y
+```
+
+`fn` is emitted in pass 2 (same as `sub`), so function bodies are never executed at startup.
+Forward references are fully supported.
 
 ### Arrays
 

@@ -37,6 +37,10 @@ fn init_message(src:string)
   return count
 end
 
+fn screen_addr(col, row)
+  return $0400 + row * 40 + col
+end
+
 var chars = init_message(message)
 rem print "Converted: ", chars
 
