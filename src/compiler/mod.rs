@@ -43,6 +43,7 @@ pub struct MemoryMap {
     pub sin_table_addr: Option<u16>, // absolute address of 256-byte sin/cos table
     pub data_zp: Option<u8>,         // 2-byte ZP pair for data/read pointer
     pub code_bytes: Vec<u8>,         // raw machine code (for verbose hex dump)
+    pub unused_vars: Vec<String>,    // variables declared but never read
 }
 
 pub struct CompileResult {

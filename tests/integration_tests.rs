@@ -290,7 +290,9 @@ impl TestCpu {
                 self.pc.wrapping_sub(1)
             ),
         }
+
         true
+
     }
 
     fn fetch_byte(&mut self) -> u8 {
@@ -5021,6 +5023,58 @@ fn string_index_read_var_index_emits_tay() {
     assert!(
         bytes.iter().any(|&b| b == 0xB1),
         "string[i] read should emit LDA (ptr),Y ($B1); got {:?}",
+        bytes
+    );
+}
+
+#[test]
+fn typed_string_sub_param_compiles_and_copies_pointer() {
+    let prg = compile_raw(
+        "var message = \"ABC\"\nsub init_message(msg:string)\n  var i = 0\n  while i < 1\n    if msg[i] == 0 then\n      msg[i] = 32\n    end\n    i = i + 1\n  end\nend\ninit_message(message)",
+    );
+    let bytes = &prg[2..];
+    assert!(
+        bytes.iter().any(|&b| b == 0xB1),
+        "typed string param should allow string indexing with LDA (ptr),Y; got {:?}",
+        bytes
+    );
+    assert!(
+        bytes.iter().any(|&b| b == 0x91),
+        "typed string param call should copy pointer bytes into the param slot; got {:?}",
+        bytes
+    );
+}
+
+#[test]
+fn fn_with_return_value_compiles_and_emits_jsr() {
+    // fn square(x) — return x*x — called as var s = square(5)
+    let prg = compile_raw(
+        "fn square(x)\n  return x * x\nend\nvar s = square(5)",
+    );
+    let bytes = &prg[2..];
+    // Should emit JSR ($20) to call the function
+    assert!(
+        bytes.iter().any(|&b| b == 0x20),
+        "fn call should emit JSR; got {:?}",
+        bytes
+    );
+    // Should emit RTS ($60) in the function body
+    assert!(
+        bytes.iter().any(|&b| b == 0x60),
+        "fn body should emit RTS; got {:?}",
+        bytes
+    );
+}
+
+#[test]
+fn fn_with_word_return_compiles() {
+    let prg = compile_raw(
+        "fn double(x:word)\n  var result:word = x * 2\n  return result\nend\nvar w:word = double(5)",
+    );
+    let bytes = &prg[2..];
+    assert!(
+        bytes.iter().any(|&b| b == 0x20),
+        "fn call should emit JSR; got {:?}",
         bytes
     );
 }

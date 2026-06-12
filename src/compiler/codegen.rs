@@ -549,7 +549,8 @@ pub struct Codegen {
     var_types: HashMap<String, VarType>,
     subs: HashMap<String, u16>,
     sub_patches: Vec<(usize, String, usize)>,
-    sub_params: HashMap<String, Vec<u8>>, // sub_name → [zp_addr per param]
+    sub_params: HashMap<String, Vec<(u8, Option<VarType>)>>, // sub_name → [(zp_addr, type) per param]
+    fn_ret_types: HashMap<String, VarType>, // fn_name → return type (for word/float fns)
     labels: HashMap<String, u16>,
     goto_patches: Vec<(usize, String, usize)>,
     gosub_patches: Vec<(usize, String, usize)>, // (code_pos, label_name, src_line) for gosub forward refs
@@ -601,6 +602,9 @@ pub struct Codegen {
     strn_tmp_zp: Option<u8>, // 1-byte perm ZP working scratch for strn_helper digit extraction
     strn_helper_patches: Vec<usize>, // code positions of JSR targets to patch to strn_helper
     charset_lowercase: bool, // compile-time mode: true after 'lowercase', false after 'uppercase'
+    fn_ret_zp: Option<u8>,    // 2-byte ZP pair for fn return value (word/float fns)
+    fn_ret_type: Option<VarType>, // return type of the fn currently being generated
+    used_vars: std::collections::HashSet<String>, // variables that have been read
 }
 
 /// Carry SID metadata through pre_scan → compile().
@@ -619,6 +623,7 @@ impl Codegen {
             subs: HashMap::new(),
             sub_patches: vec![],
             sub_params: HashMap::new(),
+            fn_ret_types: HashMap::new(),
             labels: HashMap::new(),
             goto_patches: vec![],
             gosub_patches: vec![],
@@ -670,6 +675,9 @@ impl Codegen {
             strn_tmp_zp: None,
             strn_helper_patches: vec![],
             charset_lowercase: false,
+            fn_ret_zp: None,
+            fn_ret_type: None,
+            used_vars: std::collections::HashSet::new(),
         }
     }
 
@@ -682,7 +690,7 @@ impl Codegen {
                 | Stmt::PlotErase(..)
                 | Stmt::PlotXor(..)
                 | Stmt::Paint(..) => return true,
-                Stmt::SubDef(_, _, body) => {
+                Stmt::SubDef(_, _, body) | Stmt::FnDef(_, _, _, body) => {
                     if Self::has_plot_stmt(body) {
                         return true;
                     }
@@ -718,7 +726,7 @@ impl Codegen {
         for stmt in stmts {
             match stmt {
                 Stmt::Circle { .. } => return true,
-                Stmt::SubDef(_, _, body) => {
+                Stmt::SubDef(_, _, body) | Stmt::FnDef(_, _, _, body) => {
                     if Self::has_circle_stmt(body) {
                         return true;
                     }
@@ -754,7 +762,7 @@ impl Codegen {
         for stmt in stmts {
             match stmt {
                 Stmt::Mplot { .. } => return true,
-                Stmt::SubDef(_, _, body) => {
+                Stmt::SubDef(_, _, body) | Stmt::FnDef(_, _, _, body) => {
                     if Self::has_mplot_stmt(body) {
                         return true;
                     }
@@ -827,7 +835,7 @@ impl Codegen {
                 }
                 Stmt::Assign(_, e) => Self::expr_has_strn(e),
                 Stmt::VarDecl { expr, .. } => Self::expr_has_strn(expr),
-                Stmt::SubDef(_, _, body) => Self::has_strn_expr(body),
+                Stmt::SubDef(_, _, body) | Stmt::FnDef(_, _, _, body) => Self::has_strn_expr(body),
                 Stmt::If(cond, then_b, else_b) => {
                     Self::expr_has_strn(cond)
                         || Self::has_strn_expr(then_b)
@@ -866,7 +874,7 @@ impl Codegen {
         for stmt in stmts {
             match stmt {
                 Stmt::Line { .. } => return true,
-                Stmt::SubDef(_, _, body) => {
+                Stmt::SubDef(_, _, body) | Stmt::FnDef(_, _, _, body) => {
                     if Self::has_line_stmt(body) {
                         return true;
                     }
@@ -902,7 +910,7 @@ impl Codegen {
         for stmt in stmts {
             match stmt {
                 Stmt::Plot4(..) | Stmt::Plot4Erase(..) | Stmt::Circle4 { .. } => return true,
-                Stmt::SubDef(_, _, body) => {
+                Stmt::SubDef(_, _, body) | Stmt::FnDef(_, _, _, body) => {
                     if Self::has_plot4_stmt(body) {
                         return true;
                     }
@@ -937,7 +945,7 @@ impl Codegen {
         for stmt in stmts {
             match stmt {
                 Stmt::Circle4 { .. } => return true,
-                Stmt::SubDef(_, _, body) => {
+                Stmt::SubDef(_, _, body) | Stmt::FnDef(_, _, _, body) => {
                     if Self::has_circle4_stmt(body) {
                         return true;
                     }
@@ -973,7 +981,7 @@ impl Codegen {
         for stmt in stmts {
             match stmt {
                 Stmt::Paint(..) => return true,
-                Stmt::SubDef(_, _, body) => {
+                Stmt::SubDef(_, _, body) | Stmt::FnDef(_, _, _, body) => {
                     if Self::has_paint_stmt(body) {
                         return true;
                     }
@@ -1008,7 +1016,7 @@ impl Codegen {
         for stmt in stmts {
             match stmt {
                 Stmt::Data(_) | Stmt::Read(_) => return true,
-                Stmt::SubDef(_, _, body) => {
+                Stmt::SubDef(_, _, body) | Stmt::FnDef(_, _, _, body) => {
                     if Self::has_data_or_read(body) {
                         return true;
                     }
@@ -1050,7 +1058,7 @@ impl Codegen {
                         }
                     }
                 }
-                Stmt::SubDef(_, _, body) => bytes.extend(Self::collect_data_bytes(body)),
+                Stmt::SubDef(_, _, body) | Stmt::FnDef(_, _, _, body) => bytes.extend(Self::collect_data_bytes(body)),
                 Stmt::If(_, then_b, else_b) => {
                     bytes.extend(Self::collect_data_bytes(then_b));
                     if let Some(eb) = else_b {
@@ -1142,12 +1150,12 @@ impl Codegen {
 
         for stmt in stmts {
             match stmt {
-                Stmt::SubDef(name, params, _) => {
+                Stmt::SubDef(name, params, _) | Stmt::FnDef(name, params, _, _) => {
                     let mut addrs = vec![];
-                    for _ in params {
+                    for (_, ptype) in params {
                         let addr = self.perm_zp;
-                        self.perm_zp += 2; // 2 bytes per slot (consistent with other vars)
-                        addrs.push(addr);
+                        self.perm_zp += 2; // 2 bytes per slot (pointer/value pair)
+                        addrs.push((addr, ptype.clone()));
                     }
                     self.sub_params.insert(name.clone(), addrs);
                 }
@@ -1201,6 +1209,17 @@ impl Codegen {
                 _ => {}
             }
         }
+
+        // Allocate 2-byte ZP pair for word/float fn return values
+        for stmt in stmts {
+            if let Stmt::FnDef(name, _, Some(ret_ty @ (VarType::Word | VarType::Float)), _) = stmt {
+                if self.fn_ret_zp.is_none() {
+                    self.fn_ret_zp = Some(self.perm_zp);
+                    self.perm_zp += 2;
+                }
+                self.fn_ret_types.insert(name.clone(), ret_ty.clone());
+            }
+        }
     }
 
     fn emit(&mut self, byte: u8) {
@@ -1228,6 +1247,10 @@ impl Codegen {
 
     fn var_addr(&self, name: &str) -> Option<u8> {
         self.vars.get(name).copied()
+    }
+
+    fn mark_used(&mut self, name: &str) {
+        self.used_vars.insert(name.to_string());
     }
 
     // Helpers for 16-bit register operations (reserved for future use)
@@ -1273,6 +1296,7 @@ impl Codegen {
                 self.emit(0x00);
             }
             Expr::Var(name) => {
+                self.mark_used(name);
                 if let Some(zp) = self.var_addr(name) {
                     self.emit(0xA5);
                     self.emit(zp); // LDA zp
@@ -1428,6 +1452,51 @@ impl Codegen {
                 self.emit(0x00);
                 self.patch_bxx(beq_off, loop_addr);
                 // A = raw $DC01 value on exit (column bits; 0 bit = key pressed)
+            }
+            Expr::FnCall(name, args) => {
+                // Store args into the function's parameter ZP slots, then JSR.
+                if let Some(param_addrs) = self.sub_params.get(name).cloned() {
+                    for (i, arg) in args.iter().enumerate() {
+                        if let Some((zp, ptype)) = param_addrs.get(i).cloned() {
+                            let arg = arg.clone();
+                            if matches!(ptype, Some(VarType::Str)) {
+                                if let Expr::Var(arg_name) = &arg {
+                                    self.mark_used(arg_name);
+                                    if let Some(arg_zp) = self.var_addr(arg_name) {
+                                        self.emit(0xA5);
+                                        self.emit(arg_zp);
+                                        self.emit(0x85);
+                                        self.emit(zp);
+                                        self.emit(0xA5);
+                                        self.emit(arg_zp + 1);
+                                        self.emit(0x85);
+                                        self.emit(zp + 1);
+                                        continue;
+                                    }
+                                }
+                            }
+                            self.eval_expr(&arg);
+                            self.emit(0x85);
+                            self.emit(zp); // STA param_zp
+                        }
+                    }
+                }
+                self.emit(0x20); // JSR
+                if let Some(&addr) = self.subs.get(name) {
+                    self.emit16(addr);
+                } else {
+                    let patch = self.code.len();
+                    self.emit16(0x0000);
+                    self.sub_patches.push((patch, name.clone(), 0));
+                }
+                // For word/float return fns, read lo byte from fn_ret_zp (hi ignored in 8-bit context)
+                if matches!(self.fn_ret_types.get(name), Some(VarType::Word | VarType::Float)) {
+                    if let Some(ret_zp) = self.fn_ret_zp {
+                        self.emit(0xA5);
+                        self.emit(ret_zp); // LDA fn_ret_zp (lo byte)
+                    }
+                }
+                // For 8-bit return fns, result is already in A from callee's RTS
             }
             Expr::StrLen(inner) => {
                 let inner = inner.clone();
@@ -1695,6 +1764,7 @@ impl Codegen {
             Expr::ArrayGet(arr_name, idx_expr) => {
                 if matches!(self.var_types.get(arr_name.as_str()), Some(VarType::Str)) {
                     // String character access: s[i] → LDA (str_ptr),Y
+                    self.mark_used(arr_name);
                     if let Some(ptr) = self.var_addr(arr_name) {
                         match idx_expr.as_ref() {
                             Expr::Number(n) => {
@@ -6415,6 +6485,7 @@ impl Codegen {
             }
             Expr::Var(name) => {
                 let name = name.clone();
+                self.mark_used(&name);
                 if matches!(self.var_types.get(&name), Some(VarType::Str)) {
                     if let Some(zp) = self.var_addr(&name) {
                         self.print_str_via_ptr(zp);
@@ -7494,6 +7565,59 @@ impl Codegen {
                     }
                 }
             }
+            // ── FnCall → call fn, then read 16-bit result from fn_ret_zp ──────
+            Expr::FnCall(name, args)
+                if matches!(self.fn_ret_types.get(name), Some(VarType::Word | VarType::Float)) =>
+            {
+                // Store args into param ZP slots
+                if let Some(param_addrs) = self.sub_params.get(name).cloned() {
+                    for (i, arg) in args.iter().enumerate() {
+                        if let Some((zp, ptype)) = param_addrs.get(i).cloned() {
+                            let arg = arg.clone();
+                            if matches!(ptype, Some(VarType::Str)) {
+                                if let Expr::Var(arg_name) = &arg {
+                                    self.mark_used(arg_name);
+                                    if let Some(arg_zp) = self.var_addr(arg_name) {
+                                        self.emit(0xA5);
+                                        self.emit(arg_zp);
+                                        self.emit(0x85);
+                                        self.emit(zp);
+                                        self.emit(0xA5);
+                                        self.emit(arg_zp + 1);
+                                        self.emit(0x85);
+                                        self.emit(zp + 1);
+                                        continue;
+                                    }
+                                }
+                            }
+                            self.eval_expr(&arg);
+                            self.emit(0x85);
+                            self.emit(zp);
+                        }
+                    }
+                }
+                // JSR to the fn
+                self.emit(0x20);
+                if let Some(&addr) = self.subs.get(name) {
+                    self.emit16(addr);
+                } else {
+                    let patch = self.code.len();
+                    self.emit16(0x0000);
+                    self.sub_patches.push((patch, name.clone(), 0));
+                }
+                // Read 16-bit result from fn_ret_zp
+                if let Some(ret_zp) = self.fn_ret_zp {
+                    self.emit(0xA5);
+                    self.emit(ret_zp); // LDA lo
+                    self.emit(0x85);
+                    self.emit(dst_zp); // STA dst_lo
+                    self.emit(0xA5);
+                    self.emit(ret_zp + 1); // LDA hi
+                    self.emit(0x85);
+                    self.emit(dst_zp + 1); // STA dst_hi
+                }
+                return true;
+            }
             _ => false,
         }
     }
@@ -8466,21 +8590,60 @@ impl Codegen {
                 self.subs.insert(name.clone(), addr);
                 // Register params as vars with their pre-allocated ZP addresses
                 if let Some(param_addrs) = self.sub_params.get(name).cloned() {
-                    for (i, param_name) in params.iter().enumerate() {
-                        if let Some(&zp) = param_addrs.get(i) {
+                    for (i, (param_name, _ptype)) in params.iter().enumerate() {
+                        if let Some((zp, ptype)) = param_addrs.get(i).cloned() {
                             self.vars.insert(param_name.clone(), zp);
+                            if let Some(ptype) = ptype {
+                                self.var_types.insert(param_name.clone(), ptype);
+                            }
                         }
                     }
                 }
                 self.gen_stmts(body);
                 self.emit(0x60); // RTS
             }
+            Stmt::FnDef(name, params, ret_type, body) => {
+                let addr = self.current_addr();
+                self.subs.insert(name.clone(), addr);
+                // Register params as vars with their pre-allocated ZP addresses
+                if let Some(param_addrs) = self.sub_params.get(name).cloned() {
+                    for (i, (param_name, _ptype)) in params.iter().enumerate() {
+                        if let Some((zp, ptype)) = param_addrs.get(i).cloned() {
+                            self.vars.insert(param_name.clone(), zp);
+                            if let Some(ptype) = ptype {
+                                self.var_types.insert(param_name.clone(), ptype);
+                            }
+                        }
+                    }
+                }
+                let prev_ret_type = self.fn_ret_type.clone();
+                self.fn_ret_type = ret_type.clone();
+                self.gen_stmts(body);
+                self.fn_ret_type = prev_ret_type;
+                self.emit(0x60); // RTS
+            }
             Stmt::Call(name, args, src_line) => {
                 // Store args into the sub's parameter ZP slots before calling
                 if let Some(param_addrs) = self.sub_params.get(name).cloned() {
                     for (i, arg) in args.iter().enumerate() {
-                        if let Some(&zp) = param_addrs.get(i) {
+                        if let Some((zp, ptype)) = param_addrs.get(i).cloned() {
                             let arg = arg.clone();
+                            if matches!(ptype, Some(VarType::Str)) {
+                                if let Expr::Var(arg_name) = &arg {
+                                    self.mark_used(arg_name);
+                                    if let Some(arg_zp) = self.var_addr(arg_name) {
+                                        self.emit(0xA5);
+                                        self.emit(arg_zp);
+                                        self.emit(0x85);
+                                        self.emit(zp);
+                                        self.emit(0xA5);
+                                        self.emit(arg_zp + 1);
+                                        self.emit(0x85);
+                                        self.emit(zp + 1);
+                                        continue;
+                                    }
+                                }
+                            }
                             self.eval_expr(&arg);
                             self.emit(0x85);
                             self.emit(zp); // STA param_zp
@@ -8497,7 +8660,28 @@ impl Codegen {
                     self.sub_patches.push((patch, name.clone(), *src_line));
                 }
             }
-            Stmt::Return => {
+            Stmt::Return(expr_opt) => {
+                if let Some(expr) = expr_opt {
+                    let expr = expr.clone();
+                    if matches!(self.fn_ret_type, Some(VarType::Word | VarType::Float)) {
+                        if let Some(ret_zp) = self.fn_ret_zp {
+                            if !self.gen_word_assign(ret_zp, &expr) {
+                                // Fallback: 8-bit eval, hi=0
+                                self.eval_expr(&expr);
+                                self.emit(0x85);
+                                self.emit(ret_zp);
+                                self.emit(0xA9);
+                                self.emit(0x00);
+                                self.emit(0x85);
+                                self.emit(ret_zp + 1);
+                            }
+                        } else {
+                            self.eval_expr(&expr);
+                        }
+                    } else {
+                        self.eval_expr(&expr);
+                    }
+                }
                 self.emit(0x60); // RTS
             }
             Stmt::Const(..) => {
@@ -8521,6 +8705,7 @@ impl Codegen {
             Stmt::ArraySet(arr_name, idx_expr, val_expr) => {
                 // String character write: s[i] = c — STA (ptr),Y into inline string buffer
                 if matches!(self.var_types.get(arr_name.as_str()), Some(VarType::Str)) {
+                    self.mark_used(arr_name);
                     if let Some(ptr) = self.var_addr(arr_name) {
                         let val = val_expr.clone();
                         let idx = idx_expr.clone();
@@ -10823,6 +11008,7 @@ impl Codegen {
             }
             // ── inc var / dec var ──────────────────────────────────────────────
             Stmt::Inc(name) => {
+                self.mark_used(name);
                 let name = name.clone();
                 if let Some(zp) = self.var_addr(&name) {
                     if matches!(self.var_types.get(name.as_str()), Some(VarType::Word)) {
@@ -10841,6 +11027,7 @@ impl Codegen {
                 }
             }
             Stmt::Dec(name) => {
+                self.mark_used(name);
                 let name = name.clone();
                 if let Some(zp) = self.var_addr(&name) {
                     if matches!(self.var_types.get(name.as_str()), Some(VarType::Word)) {
@@ -11404,7 +11591,7 @@ impl Codegen {
 
         // Pass 1: everything except SubDef
         for stmt in stmts {
-            if !matches!(stmt, Stmt::SubDef(..)) {
+            if !matches!(stmt, Stmt::SubDef(..) | Stmt::FnDef(..)) {
                 self.tmp_zp = TMP_BASE; // reset scratch ZP per statement (same as gen_stmts)
                 self.gen_stmt(stmt);
             }
@@ -11413,7 +11600,7 @@ impl Codegen {
 
         // Pass 2: subroutine definitions (after main, so they aren't executed at startup)
         for stmt in stmts {
-            if matches!(stmt, Stmt::SubDef(..)) {
+            if matches!(stmt, Stmt::SubDef(..) | Stmt::FnDef(..)) {
                 self.tmp_zp = TMP_BASE; // reset scratch ZP per statement
                 self.gen_stmt(stmt);
             }
@@ -11717,6 +11904,12 @@ impl Codegen {
             sin_table_addr: self.sin_table_addr,
             data_zp: self.data_zp,
             code_bytes: self.code.clone(),
+            unused_vars: self
+                .vars
+                .keys()
+                .filter(|name| !self.used_vars.contains(*name))
+                .cloned()
+                .collect(),
         }
     }
 }

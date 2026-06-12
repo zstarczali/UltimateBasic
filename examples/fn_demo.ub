@@ -1,0 +1,83 @@
+# text_scroll_demo.ub
+# Smooth one-line text scroller using VIC-II horizontal fine scroll.
+# Uses fn — init_message returns the number of characters converted.
+
+cls fast
+color border 0
+color bg 0
+color text 1
+fill $D800, 1000, 1
+
+scroll x 7 narrow
+
+var msg = array(40)
+var pos = 0
+var phase = 7
+var key = 0
+var message = " ULTIMATE BASIC PIXEL SCROLL DEMO       "
+
+# Copy the message string into screen-code memory.
+# Returns how many non-space characters were converted.
+fn init_message(src:string)
+  var i = 0
+  var count = 0
+  while i < 40
+    if src[i] == 0 then
+      msg[i] = 32
+    else
+      if src[i] == 32 then
+        msg[i] = 32
+      else
+        msg[i] = src[i] - 64
+        inc count
+      end
+    end
+    i = i + 1
+  end
+  return count
+end
+
+fn screen_addr(col, row)
+  return $0400 + row * 40 + col
+end
+
+var chars = init_message(message)
+rem print "Converted: ", chars
+
+fill $05E0, 40, 32
+
+# Preload the visible row so the scroller starts with text already on screen.
+var i = 0
+while i < 40
+  screen i, 12, msg[i], 1
+  i = i + 1
+end
+
+label scroll_loop
+# Update the scroll register and row data in the lower border. If this runs
+# during visible drawing, the row can appear to wobble for part of a frame.
+wait raster 250
+
+if phase == 0 then
+  phase = 7
+
+  scroll row 12 left
+
+  screen 39, 12, msg[pos], 1
+  pos = pos + 1
+  if pos == 40 then pos = 0 end
+else
+  dec phase
+end
+
+scroll x phase
+
+key = inkey()
+if key != 0 then goto done end
+
+goto scroll_loop
+
+label done
+scroll x 0 wide
+cls
+bye

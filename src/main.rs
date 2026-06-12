@@ -216,6 +216,14 @@ fn print_memory_map(map: &MemoryMap, verbose: bool) {
         }
     }
 
+    if !map.unused_vars.is_empty() {
+        println!();
+        println!("  Unused variables:");
+        for name in &map.unused_vars {
+            println!("    {}", name);
+        }
+    }
+
     if verbose {
         println!();
         println!("  Internal ZP:");

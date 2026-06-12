@@ -1,0 +1,38 @@
+# function_demo.ub — Function return value demo
+# Demonstrates fn (function with return value) vs sub (void subroutine)
+
+cls
+color border 6
+color text 14
+
+# ── fn: returns a value via A register ──
+fn square(x)
+  return x * x
+end
+
+fn add(a, b)
+  return a + b
+end
+
+fn max_of_two(a, b)
+  if a > b then
+    return a
+  else
+    return b
+  end
+end
+
+# ── Use the functions ──
+var sq = square(9)
+print "9^2 = ", sq
+print ""
+
+var s = add(sq, 1)
+print "82 = ", s
+print ""
+
+var m = max_of_two(7, 12)
+print "max = ", m
+print ""
+
+bye

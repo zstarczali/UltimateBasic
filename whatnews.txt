@@ -1,3 +1,31 @@
+Ultimate Basic v1.4.3 – Release Notes
+======================================
+
+Recent development notes (2026-06-12)
+--------------------------------------------------
+
+2026-06-12
+  - Added `fn` keyword — functions with return values.
+      fn square(x)       → 8-bit return (result in A register)
+        return x * x
+      end
+      fn get_ptr(): word → 16-bit return (result in fn_ret_zp pair)
+        return $C000
+      end
+      var s = square(9)          # fn call as expression
+      var ptr: word = get_ptr()  # word return
+  - Typed subroutine parameters are now preserved end-to-end:
+      sub init_message(src:string)
+        var c = src[i]     # string indexing → LDA (ptr),Y
+      end
+    The parser, AST, and codegen all propagate string, int, word,
+    float annotations on sub/fn parameters.
+  - Unused variable reporting: the build output now lists variables that
+    are declared but never read (tracked via mark_used across all variable
+    read paths — eval_expr, print, inc/dec, array get/set, string params).
+  - New example: examples/function_demo.ub — demonstrates fn with multiple
+    return paths, word params, and expression-context calls.
+
 Ultimate Basic v1.4.2 – Release Notes
 ======================================
 
