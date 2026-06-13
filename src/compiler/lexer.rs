@@ -98,7 +98,8 @@ pub enum Token {
     Gcls,
     Bye,
     Joy,
-    MouseX,   // mouse_x()  — SID $D419 POT X
+    MouseX,   // mouse_x()  — SID $D419 POT X (8-bit accumulated)
+    MouseXHi, // mouse_x_hi() — MSB of 9-bit X position
     MouseY,   // mouse_y()  — SID $D41A POT Y
     MouseBtn, // mouse_btn() — CIA1 $DC00 fire+up bits, bit0=left, bit1=right
     Paint,    // paint x, y — 4-connected flood fill
@@ -582,6 +583,7 @@ impl Lexer {
             "bye" => Token::Bye,
             "joy" => Token::Joy,
             "mouse_x" => Token::MouseX,
+            "mouse_x_hi" => Token::MouseXHi,
             "mouse_y" => Token::MouseY,
             "mouse_btn" => Token::MouseBtn,
             "paint" => Token::Paint,

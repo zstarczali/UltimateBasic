@@ -2482,6 +2482,15 @@ impl Parser {
                 }
                 Expr::MouseX
             }
+            Token::MouseXHi => {
+                if self.peek() == &Token::LParen {
+                    self.advance();
+                }
+                if self.peek() == &Token::RParen {
+                    self.advance();
+                }
+                Expr::MouseXHi
+            }
             Token::MouseY => {
                 if self.peek() == &Token::LParen {
                     self.advance();

@@ -1,0 +1,99 @@
+# mouse_demo.ub – 1351 Proportional Mouse Demo
+#
+# Sprite 0 (arrow cursor) tracks a Commodore 1351 mouse connected to port 1.
+# mouse_x() / mouse_y() internally handle:
+#   – CIA1 $DC00 capacitor charging
+#   – LDX#$67 delay loop (~516 cycles)
+#   – SID POT X/Y register read ($D419/$D41A)
+#   – Signed 7-bit delta computation
+#   – Y-axis EOR #$FF inversion
+#   – Accumulated position tracking (permanent ZP state)
+#
+# Controls:
+#   Move mouse  – arrow sprite follows
+#   Left button  – border flashes red
+#   Right button – background toggles blue
+#   Q            – quit
+
+# ── Mouse pointer sprite (arrow cursor, 24×21 px) ──────────────────────
+sprdef 0
+  192, 0, 0
+  224, 0, 0
+  240, 0, 0
+  216, 0, 0
+  204, 0, 0
+  198, 0, 0
+  195, 0, 0
+  193, 128, 0
+  192, 192, 0
+  192, 96, 0
+  192, 48, 0
+  192, 24, 0
+  195, 252, 0
+  198, 0, 0
+  204, 0, 0
+  248, 0, 0
+  240, 0, 0
+  192, 0, 0
+  0, 0, 0
+  0, 0, 0
+  0, 0, 0
+end
+
+# Disable all interrupts — same as working PRG's SEI at $0880
+asm { SEI }
+
+# ── Screen setup ────────────────────────────────────────────────────────
+cls
+color border 0          # black border
+color bg 0              # black background
+color text 1            # white text
+
+print ""
+print "     MOUSE DEMO"
+print ""
+print "  1351 MOUSE ON PORT 1"
+print "  SPRITE TRACKS MOUSE"
+print "  SID POTX/Y INPUT"
+print ""
+print "  LEFT  BTN: RED BORDER"
+print "  RIGHT BTN: BLUE SCREEN"
+
+# ── Sprite 0 initialisation ─────────────────────────────────────────────
+var sx: word = 152      # word var: compiler handles 9-bit X via $D010
+var sy = 100            # Y position (0–255)
+
+sprite 0, sx, sy
+sprite color 0, 1       # white
+sprite on 0
+
+# Disable CIA1 timer interrupts — KERNAL IRQ touches $DC00 → corrupts POT!
+poke $DC0D, $7F
+
+# Zero mouse helper ZP state ($02-$08) — init_flag must start at 0
+fill $02, 7, 0
+
+# ── Main loop ───────────────────────────────────────────────────────────
+label gameloop
+  wait raster 248       # sync to bottom of screen
+
+  sx = mouse_x()
+  sy = mouse_y()
+
+  sprite 0, sx, sy
+
+  # ── Mouse button feedback ────────────────────────────────────────────
+  var mb = mouse_btn()   # bit0=left, bit1=right
+  if mb and 1 then
+    color border 2       # left button → red border
+  else
+    if mb and 2 then
+      color bg 6         # right button → blue background
+    else
+      color border 0     # no button → black
+      color bg 0
+    end
+  end
+
+  goto gameloop
+

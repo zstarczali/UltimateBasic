@@ -487,7 +487,7 @@ var j = joy(1)           # read joystick port 1 (CIA1 $DC01)
                          # bit0=up(1), bit1=down(2), bit2=left(4), bit3=right(8), bit4=fire(16)
 var mx = mouse_x()       # 1351 mouse X position (SID POT X, $D419); 0-255
 var my = mouse_y()       # 1351 mouse Y position (SID POT Y, $D41A); 0-255
-var mb = mouse_btn()     # mouse buttons: bit0=left (fire, $DC00 bit4), bit1=right (up-pin, $DC00 bit0)
+var mb = mouse_btn()     # mouse buttons: bit0=left (fire, $DC01 bit4), bit1=right (up-pin, $DC01 bit0)
 ```
 
 `getch()` busy-loops until a key is pressed. `inkey()` returns immediately with 0 if no key is available — use it in game loops.

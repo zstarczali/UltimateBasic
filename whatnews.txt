@@ -1,3 +1,29 @@
+Ultimate Basic v1.4.4 – Release Notes
+======================================
+
+2026-06-14 – Mouse support + fixes
+--------------------------------------------------
+  - 1351 proportional mouse support via mouse_x(), mouse_y(), mouse_btn()
+    Built-in mouse_read_helper assembly subroutine handles:
+      CIA1 $DC00 capacitor charging, LDX#$67 delay, SID POT X/Y read,
+      signed 7-bit delta computation, Y-axis EOR#$FF inversion,
+      accumulated position tracking, and dual-sample per frame.
+  - mouse_btn() reads $DC01 (control port 1) — bit0=left, bit1=right.
+  - mouse_x() returns accum_x via JSR to helper; mouse_y() reads accum_y
+    directly (avoids double-update per frame).
+  - Word var assignment (sx: word = mouse_x()) sets both lo/hi bytes
+    for proper $D010 MSB handling by the sprite command.
+  - 9-bit X carry/borrow via accum_x_hi (INC/DEC on overflow).
+  - Demo: examples/mouse_demo.ub — 1351 mouse pointer sprite with
+    button feedback (left=red border, right=blue background).
+  - Fixed: KERNAL IRQ touches $DC00 during keyboard scan → corrupts POT;
+    demo disables CIA1 interrupts (poke $DC0D, $7F + asm { SEI }).
+  - Fixed: helper RTS must return LDA accum_x (not leftover raw_y).
+  - Fixed: mouse helper ZP zeroed before game loop (fill $02, 7, 0).
+  - Fixed: helper init uses same charge_delay as do_delta for
+    consistent POT readings (no initial delta jump).
+  - Fixed: prev_raw only updated when delta != 0 (matches original).
+
 Ultimate Basic v1.4.3 – Release Notes
 ======================================
 

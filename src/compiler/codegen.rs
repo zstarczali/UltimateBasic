@@ -596,6 +596,8 @@ pub struct Codegen {
     sid_play_addr: Option<u16>, // play address from last load sid (for music play)
     mplot_zp: Option<u8>, // base of 7-byte ZP block for mplot (multicolor pixel) helper
     mplot_patches: Vec<usize>, // JSR targets to patch to mplot_helper
+    mouse_zp: Option<u8>,              // base of 6-byte ZP block for mouse helper
+    mouse_patches: Vec<usize>,         // JSR targets to patch to mouse_read_helper
     music_wrap_patches: Vec<(usize, usize)>, // (lo_pos, hi_pos) in music play setup code
     onerr_patches: Vec<(usize, usize, String, usize)>, // (lo_pos, hi_pos, label, src_line)
     strn_zp: Option<u8>,  // 2-byte ZP ptr pair for str$() result (lo=strn_zp, hi=strn_zp+1)
@@ -669,6 +671,8 @@ impl Codegen {
             sid_play_addr: None,
             mplot_zp: None,
             mplot_patches: vec![],
+            mouse_zp: None,
+            mouse_patches: vec![],
             music_wrap_patches: vec![],
             onerr_patches: vec![],
             strn_zp: None,
@@ -858,6 +862,81 @@ impl Codegen {
                         || else_body
                             .as_ref()
                             .map(|b| Self::has_strn_expr(b))
+                            .unwrap_or(false)
+                }
+                _ => false,
+            };
+            if found {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn expr_has_mouse(expr: &Expr) -> bool {
+        match expr {
+            Expr::MouseX | Expr::MouseY => true,
+            Expr::BinOp(l, _, r) => Self::expr_has_mouse(l) || Self::expr_has_mouse(r),
+            Expr::Not(e)
+            | Expr::Abs(e)
+            | Expr::Sgn(e)
+            | Expr::StrLen(e)
+            | Expr::Asc(e)
+            | Expr::ChrStr(e)
+            | Expr::Sin(e)
+            | Expr::Cos(e)
+            | Expr::HexFmt(e)
+            | Expr::BinFmt(e)
+            | Expr::FixedToInt(e)
+            | Expr::Peek(e)
+            | Expr::Peek16(e)
+            | Expr::Spc(e)
+            | Expr::Tab(e)
+            | Expr::Val(e)
+            | Expr::StrN(e)
+            | Expr::SpriteX(e)
+            | Expr::SpriteY(e)
+            | Expr::RndN(e) => Self::expr_has_mouse(e),
+            Expr::DecFmt(e, w) => Self::expr_has_mouse(e) || Self::expr_has_mouse(w),
+            Expr::Min(a, b) | Expr::Max(a, b) => Self::expr_has_mouse(a) || Self::expr_has_mouse(b),
+            Expr::Clamp(a, b, c) => {
+                Self::expr_has_mouse(a) || Self::expr_has_mouse(b) || Self::expr_has_mouse(c)
+            }
+            _ => false,
+        }
+    }
+
+    fn has_mouse_expr(stmts: &[Stmt]) -> bool {
+        for stmt in stmts {
+            let found = match stmt {
+                Stmt::Print { args, .. } | Stmt::PrintAt { args, .. } => {
+                    args.iter().any(|a| Self::expr_has_mouse(a))
+                }
+                Stmt::Assign(_, e) => Self::expr_has_mouse(e),
+                Stmt::VarDecl { expr, .. } => Self::expr_has_mouse(expr),
+                Stmt::SubDef(_, _, body) | Stmt::FnDef(_, _, _, body) => Self::has_mouse_expr(body),
+                Stmt::If(cond, then_b, else_b) => {
+                    Self::expr_has_mouse(cond)
+                        || Self::has_mouse_expr(then_b)
+                        || else_b
+                            .as_ref()
+                            .map(|b| Self::has_mouse_expr(b))
+                            .unwrap_or(false)
+                }
+                Stmt::ForLoop { body, .. } | Stmt::Loop(_, body) | Stmt::WhileLoop(_, body) => {
+                    Self::has_mouse_expr(body)
+                }
+                Stmt::RepeatLoop(body, _) => Self::has_mouse_expr(body),
+                Stmt::Select {
+                    expr,
+                    cases,
+                    else_body,
+                } => {
+                    Self::expr_has_mouse(expr)
+                        || cases.iter().any(|(_, b)| Self::has_mouse_expr(b))
+                        || else_body
+                            .as_ref()
+                            .map(|b| Self::has_mouse_expr(b))
                             .unwrap_or(false)
                 }
                 _ => false,
@@ -1116,6 +1195,14 @@ impl Codegen {
             self.perm_zp += 3; // lo=zp, hi=zp+1, scratch=zp+2
             self.strn_zp = Some(zp);
             self.strn_tmp_zp = Some(zp + 2);
+        }
+
+        // Reserve 8 ZP bytes for the mouse helper: accum_x, accum_y, prev_raw_x,
+        // prev_raw_y, init_flag, tmp, accum_x_hi.
+        if Self::has_mouse_expr(stmts) {
+            let zp = self.perm_zp;
+            self.perm_zp += 8;
+            self.mouse_zp = Some(zp);
         }
 
         // Reserve 2 ZP bytes for the data pointer (lo/hi) if data/read is used.
@@ -1637,26 +1724,36 @@ impl Codegen {
                 self.emit(0x49);
                 self.emit(0x1F); // EOR #$1F  (invert: 1 = pressed)
             }
+            Expr::MouseXHi => {
+                let zp = self.mouse_zp.expect("mouse_x_hi: mouse helper not allocated");
+                self.emit(0xA5); // LDA zp
+                self.emit(zp + 6); // accum_x_hi (0 or 1)
+            }
             Expr::MouseX => {
-                // 1351 mouse POT X — SID register $D419
-                self.emit(0xAD);
-                self.emit(0x19);
-                self.emit(0xD4); // LDA $D419
+                // 1351 mouse — JSR to helper, return accum_x (8-bit)
+                let zp = self.mouse_zp.expect("mouse_x: mouse helper not allocated (pre_scan bug)");
+                self.emit(0x20); // JSR
+                let pos = self.code.len();
+                self.emit16(0x0000); // placeholder
+                self.mouse_patches.push(pos);
+                self.emit(0xA5); // LDA zp
+                self.emit(zp);   // accum_x
             }
             Expr::MouseY => {
-                // 1351 mouse POT Y — SID register $D41A
-                self.emit(0xAD);
-                self.emit(0x1A);
-                self.emit(0xD4); // LDA $D41A
+                // 1351 mouse — just return accum_y (helper already ran via mouse_x)
+                let zp = self.mouse_zp.expect("mouse_y: mouse helper not allocated (pre_scan bug)");
+                self.emit(0xA5); // LDA zp
+                self.emit(zp + 1); // accum_y
             }
             Expr::MouseBtn => {
-                // CIA1 $DC00: bit4=fire (left button, active-low), bit0=up direction (right button, active-low).
+                // CIA1 $DC01 (control port 1): bit4=fire (left button, active-low),
+                // bit0=up direction (right button, active-low for 1351 mouse).
                 // Result: bit0 = left pressed, bit1 = right pressed (both active-high).
                 let tmp = self.tmp_zp;
                 self.tmp_zp += 1;
                 self.emit(0xAD);
-                self.emit(0x00);
-                self.emit(0xDC); // LDA $DC00
+                self.emit(0x01);
+                self.emit(0xDC); // LDA $DC01
                 self.emit(0x49);
                 self.emit(0xFF); // EOR #$FF  (invert: active-high)
                 self.emit(0x29);
@@ -1668,8 +1765,8 @@ impl Codegen {
                 self.emit(0x85);
                 self.emit(tmp); // STA tmp  (left button in bit0)
                 self.emit(0xAD);
-                self.emit(0x00);
-                self.emit(0xDC); // LDA $DC00
+                self.emit(0x01);
+                self.emit(0xDC); // LDA $DC01
                 self.emit(0x49);
                 self.emit(0xFF); // EOR #$FF  (invert)
                 self.emit(0x29);
@@ -4378,6 +4475,403 @@ impl Codegen {
         self.emit(0x60); // RTS
     }
 
+    /// 1351 mouse read helper.
+    ///
+    /// On first call: primes prev_raw_x / prev_raw_y from current POT values.
+    /// On subsequent calls: charges SID POT capacitor, reads raw X/Y from
+    /// $D419/$D41A, computes signed 7-bit deltas, updates accum_x / accum_y.
+    ///
+    /// Uses mouse_zp (6 bytes):
+    ///   zp+0 = accum_x    (8-bit accumulated X position)
+    ///   zp+1 = accum_y    (8-bit accumulated Y position, with EOR #$FF inversion)
+    ///   zp+2 = prev_raw_x
+    ///   zp+3 = prev_raw_y
+    ///   zp+4 = init_flag  (0 = need init, 1 = ready)
+    ///   zp+5 = tmp
+    ///
+    /// Trashes A, X, Y.
+    fn emit_mouse_read_helper(&mut self) {
+        let zp = self.mouse_zp.expect("mouse_read_helper: no ZP allocated");
+
+        // ── Check init flag ──────────────────────────────────────────────
+        self.emit(0xA5);
+        self.emit(zp + 4); // LDA init_flag
+        self.emit(0xD0);   // BNE @do_delta
+        let bne_do_delta = self.code.len();
+        self.emit(0x00);   // placeholder
+
+        // ── First call: prime prev values + set default cursor position ──
+        // JSR charge_delay (same charge method as do_delta for consistent POT)
+        self.emit(0x20); // JSR
+        let jsr_charge1 = self.code.len();
+        self.emit16(0x0000); // placeholder → @charge_delay
+        self.emit(0xA9);
+        self.emit(152);    // LDA #152
+        self.emit(0x85);
+        self.emit(zp);     // STA accum_x
+        self.emit(0xA9);
+        self.emit(0x00);
+        self.emit(0x85);
+        self.emit(zp + 6); // STA accum_x_hi
+        self.emit(0xA9);
+        self.emit(100);    // LDA #100
+        self.emit(0x85);
+        self.emit(zp + 1); // STA accum_y
+        self.emit(0xAD);
+        self.emit(0x19);
+        self.emit(0xD4);   // LDA $D419
+        self.emit(0x85);
+        self.emit(zp + 2); // STA prev_raw_x
+        self.emit(0xAD);
+        self.emit(0x1A);
+        self.emit(0xD4);   // LDA $D41A
+        self.emit(0x85);
+        self.emit(zp + 3); // STA prev_raw_y
+        self.emit(0xE6);
+        self.emit(zp + 4); // INC init_flag
+        self.emit(0xA5);
+        self.emit(zp);     // LDA accum_x
+        self.emit(0x60);   // RTS
+
+        // ── @do_delta ────────────────────────────────────────────────────
+        // Charge + delay + read — exactly like original game loop.
+        let do_delta = self.current_addr();
+        self.patch_bxx(bne_do_delta, do_delta);
+
+        // jsr @charge_delay (charge $DC00 + ~516 cycle delay)
+        self.emit(0x20); // JSR
+        let jsr_charge2 = self.code.len();
+        self.emit16(0x0000); // placeholder → @charge_delay
+
+        // Read raw values
+        self.emit(0xAD);
+        self.emit(0x19);
+        self.emit(0xD4); // LDA $D419
+        self.emit(0x85);
+        self.emit(zp + 5); // STA tmp = raw_x
+        self.emit(0xAD);
+        self.emit(0x1A);
+        self.emit(0xD4); // LDA $D41A
+        self.emit(0xAA);   // TAX  (raw_y → X)
+
+        // ── X delta ──────────────────────────────────────────────────────
+        self.emit(0xA5);
+        self.emit(zp + 5); // LDA raw_x
+        self.emit(0x38);   // SEC
+        self.emit(0xE5);
+        self.emit(zp + 2); // SBC prev_raw_x
+        self.emit(0x29);
+        self.emit(0x7F);   // AND #$7F
+        self.emit(0xC9);
+        self.emit(0x40);   // CMP #$40
+        self.emit(0xB0);   // BCS @x_neg
+        let bcs_x_neg = self.code.len();
+        self.emit(0x00);   // placeholder
+
+        // X positive: accum_x += delta >> 1  (update prev only if moved)
+        self.emit(0x4A);   // LSR
+        self.emit(0xF0);   // BEQ @x_done  (delta=0 → skip)
+        let beq_x_pos = self.code.len();
+        self.emit(0x00);
+        self.emit(0x18);   // CLC
+        self.emit(0x65);
+        self.emit(zp);     // ADC accum_x
+        self.emit(0x85);
+        self.emit(zp);     // STA accum_x
+        self.emit(0x90);   // BCC @x_nocarry
+        let bcc_x_carry = self.code.len();
+        self.emit(0x00);
+        self.emit(0xE6);
+        self.emit(zp + 6); // INC accum_x_hi
+        // @x_nocarry:
+        let x_nocarry = self.current_addr();
+        self.patch_bxx(bcc_x_carry, x_nocarry);
+        // Update prev_raw_x (only when moved)
+        self.emit(0xA5);
+        self.emit(zp + 5); // LDA raw_x
+        self.emit(0x85);
+        self.emit(zp + 2); // STA prev_raw_x
+        self.emit(0x4C);   // JMP @x_done
+        let jmp_x_pos = self.code.len();
+        self.emit16(0x0000);
+
+        // @x_neg:
+        let x_neg = self.current_addr();
+        self.patch_bxx(bcs_x_neg, x_neg);
+        self.emit(0x09);
+        self.emit(0xC0);   // ORA #$C0
+        self.emit(0xC9);
+        self.emit(0xFF);   // CMP #$FF
+        self.emit(0xF0);   // BEQ @x_done ($FF = no movement)
+        let beq_x_neg = self.code.len();
+        self.emit(0x00);
+        self.emit(0x38);   // SEC
+        self.emit(0x6A);   // ROR (sign-extended)
+        self.emit(0x18);   // CLC
+        self.emit(0x65);
+        self.emit(zp);     // ADC accum_x
+        self.emit(0x85);
+        self.emit(zp);     // STA accum_x
+        self.emit(0xB0);   // BCS @x_noborrow (carry = no borrow)
+        let bcs_x_borrow = self.code.len();
+        self.emit(0x00);
+        self.emit(0xC6);
+        self.emit(zp + 6); // DEC accum_x_hi (borrow)
+        // @x_noborrow:
+        let x_noborrow = self.current_addr();
+        self.patch_bxx(bcs_x_borrow, x_noborrow);
+        // Update prev_raw_x (only when moved)
+        self.emit(0xA5);
+        self.emit(zp + 5); // LDA raw_x
+        self.emit(0x85);
+        self.emit(zp + 2); // STA prev_raw_x
+
+        // @x_done:
+        let x_done = self.current_addr();
+        self.patch_bxx(beq_x_pos, x_done);
+        self.patch_bxx(beq_x_neg, x_done);
+        self.patch_abs(jmp_x_pos, x_done);
+
+        // ── Y delta (with EOR #$FF inversion) ───────────────────────────
+        self.emit(0x8A);   // TXA (A = raw_y)
+        self.emit(0x38);   // SEC
+        self.emit(0xE5);
+        self.emit(zp + 3); // SBC prev_raw_y
+        self.emit(0x29);
+        self.emit(0x7F);   // AND #$7F
+        self.emit(0xC9);
+        self.emit(0x40);   // CMP #$40
+        self.emit(0xB0);   // BCS @y_neg
+        let bcs_y_neg = self.code.len();
+        self.emit(0x00);
+
+        // Y positive (inverted via EOR #$FF, update prev only if moved)
+        self.emit(0x4A);   // LSR
+        self.emit(0xF0);   // BEQ @y_done
+        let beq_y_pos = self.code.len();
+        self.emit(0x00);
+        self.emit(0x49);
+        self.emit(0xFF);   // EOR #$FF  (INVERT)
+        self.emit(0x38);   // SEC
+        self.emit(0x65);
+        self.emit(zp + 1); // ADC accum_y
+        self.emit(0x85);
+        self.emit(zp + 1); // STA accum_y
+        // Update prev_raw_y (only when moved)
+        self.emit(0x8A);   // TXA (raw_y)
+        self.emit(0x85);
+        self.emit(zp + 3); // STA prev_raw_y
+        self.emit(0x4C);   // JMP @y_done
+        let jmp_y_pos = self.code.len();
+        self.emit16(0x0000);
+
+        // @y_neg:
+        let y_neg = self.current_addr();
+        self.patch_bxx(bcs_y_neg, y_neg);
+        self.emit(0x09);
+        self.emit(0xC0);   // ORA #$C0
+        self.emit(0xC9);
+        self.emit(0xFF);   // CMP #$FF
+        self.emit(0xF0);   // BEQ @y_done
+        let beq_y_neg = self.code.len();
+        self.emit(0x00);
+        self.emit(0x38);   // SEC
+        self.emit(0x6A);   // ROR
+        self.emit(0x49);
+        self.emit(0xFF);   // EOR #$FF  (INVERT)
+        self.emit(0x38);   // SEC
+        self.emit(0x65);
+        self.emit(zp + 1); // ADC accum_y
+        self.emit(0x85);
+        self.emit(zp + 1); // STA accum_y
+        // Update prev_raw_y (only when moved)
+        self.emit(0x8A);   // TXA (raw_y)
+        self.emit(0x85);
+        self.emit(zp + 3); // STA prev_raw_y
+
+        // @y_done:
+        let y_done = self.current_addr();
+        self.patch_bxx(beq_y_pos, y_done);
+        self.patch_bxx(beq_y_neg, y_done);
+        self.patch_abs(jmp_y_pos, y_done);
+
+        // ── Second POT sample (matches original .mouse x2) ──────────────
+        // jsr @charge_delay
+        self.emit(0x20); // JSR
+        let jsr_charge3 = self.code.len();
+        self.emit16(0x0000); // placeholder → @charge_delay
+        self.emit(0xAD);
+        self.emit(0x19);
+        self.emit(0xD4); // LDA $D419
+        self.emit(0x85);
+        self.emit(zp + 5); // STA tmp = raw_x
+        self.emit(0xAD);
+        self.emit(0x1A);
+        self.emit(0xD4); // LDA $D41A
+        self.emit(0xAA);   // TAX  (raw_y → X)
+
+        // ── X delta, second pass ────────────────────────────────────────
+        self.emit(0xA5);
+        self.emit(zp + 5); // LDA raw_x
+        self.emit(0x38);   // SEC
+        self.emit(0xE5);
+        self.emit(zp + 2); // SBC prev_raw_x
+        self.emit(0x29);
+        self.emit(0x7F);   // AND #$7F
+        self.emit(0xC9);
+        self.emit(0x40);   // CMP #$40
+        self.emit(0xB0);   // BCS @x2_neg
+        let bcs_x2_neg = self.code.len();
+        self.emit(0x00);
+        // positive
+        self.emit(0x4A);   // LSR
+        self.emit(0xF0);   // BEQ @x2_done
+        let beq_x2_pos = self.code.len();
+        self.emit(0x00);
+        self.emit(0x18);   // CLC
+        self.emit(0x65);
+        self.emit(zp);     // ADC accum_x
+        self.emit(0x85);
+        self.emit(zp);     // STA accum_x
+        self.emit(0x90);   // BCC @x2_nocarry
+        let bcc_x2_carry = self.code.len();
+        self.emit(0x00);
+        self.emit(0xE6);
+        self.emit(zp + 6); // INC accum_x_hi
+        let x2_nocarry = self.current_addr();
+        self.patch_bxx(bcc_x2_carry, x2_nocarry);
+        self.emit(0xA5);
+        self.emit(zp + 5); // LDA raw_x
+        self.emit(0x85);
+        self.emit(zp + 2); // STA prev_raw_x
+        self.emit(0x4C);   // JMP @x2_done
+        let jmp_x2_pos = self.code.len();
+        self.emit16(0x0000);
+        // negative
+        let x2_neg = self.current_addr();
+        self.patch_bxx(bcs_x2_neg, x2_neg);
+        self.emit(0x09);
+        self.emit(0xC0);
+        self.emit(0xC9);
+        self.emit(0xFF);
+        self.emit(0xF0);   // BEQ @x2_done
+        let beq_x2_neg = self.code.len();
+        self.emit(0x00);
+        self.emit(0x38);   // SEC
+        self.emit(0x6A);   // ROR
+        self.emit(0x18);   // CLC
+        self.emit(0x65);
+        self.emit(zp);     // ADC accum_x
+        self.emit(0x85);
+        self.emit(zp);     // STA accum_x
+        self.emit(0xB0);   // BCS @x2_noborrow
+        let bcs_x2_borrow = self.code.len();
+        self.emit(0x00);
+        self.emit(0xC6);
+        self.emit(zp + 6); // DEC accum_x_hi
+        let x2_noborrow = self.current_addr();
+        self.patch_bxx(bcs_x2_borrow, x2_noborrow);
+        self.emit(0xA5);
+        self.emit(zp + 5); // LDA raw_x
+        self.emit(0x85);
+        self.emit(zp + 2); // STA prev_raw_x
+
+        let x2_done = self.current_addr();
+        self.patch_bxx(beq_x2_pos, x2_done);
+        self.patch_bxx(beq_x2_neg, x2_done);
+        self.patch_abs(jmp_x2_pos, x2_done);
+
+        // ── Y delta, second pass (inverted) ─────────────────────────────
+        self.emit(0x8A);   // TXA (raw_y)
+        self.emit(0x38);   // SEC
+        self.emit(0xE5);
+        self.emit(zp + 3); // SBC prev_raw_y
+        self.emit(0x29);
+        self.emit(0x7F);
+        self.emit(0xC9);
+        self.emit(0x40);
+        self.emit(0xB0);   // BCS @y2_neg
+        let bcs_y2_neg = self.code.len();
+        self.emit(0x00);
+        // positive
+        self.emit(0x4A);   // LSR
+        self.emit(0xF0);   // BEQ @y2_done
+        let beq_y2_pos = self.code.len();
+        self.emit(0x00);
+        self.emit(0x49);
+        self.emit(0xFF);   // EOR #$FF
+        self.emit(0x38);   // SEC
+        self.emit(0x65);
+        self.emit(zp + 1); // ADC accum_y
+        self.emit(0x85);
+        self.emit(zp + 1); // STA accum_y
+        self.emit(0x8A);   // TXA (raw_y)
+        self.emit(0x85);
+        self.emit(zp + 3); // STA prev_raw_y
+        self.emit(0x4C);   // JMP @y2_done
+        let jmp_y2_pos = self.code.len();
+        self.emit16(0x0000);
+        // negative
+        let y2_neg = self.current_addr();
+        self.patch_bxx(bcs_y2_neg, y2_neg);
+        self.emit(0x09);
+        self.emit(0xC0);
+        self.emit(0xC9);
+        self.emit(0xFF);
+        self.emit(0xF0);   // BEQ @y2_done
+        let beq_y2_neg = self.code.len();
+        self.emit(0x00);
+        self.emit(0x38);   // SEC
+        self.emit(0x6A);   // ROR
+        self.emit(0x49);
+        self.emit(0xFF);   // EOR #$FF
+        self.emit(0x38);   // SEC
+        self.emit(0x65);
+        self.emit(zp + 1); // ADC accum_y
+        self.emit(0x85);
+        self.emit(zp + 1); // STA accum_y
+        self.emit(0x8A);   // TXA (raw_y)
+        self.emit(0x85);
+        self.emit(zp + 3); // STA prev_raw_y
+
+        let y2_done = self.current_addr();
+        self.patch_bxx(beq_y2_pos, y2_done);
+        self.patch_bxx(beq_y2_neg, y2_done);
+        self.patch_abs(jmp_y2_pos, y2_done);
+        self.emit(0xA5);
+        self.emit(zp);     // LDA accum_x_lo (return value for mouse_x())
+        self.emit(0x60);   // RTS
+
+        // ── @charge_delay subroutine ────────────────────────────────────
+        // Set POT line high to power the 1351 mouse circuitry.
+        // The 1351 mouse sends digital pulses – no discharge needed.
+        let charge_delay = self.current_addr();
+        // Patch all JSR calls to here
+        self.patch_abs(jsr_charge1, charge_delay);
+        self.patch_abs(jsr_charge2, charge_delay);
+        self.patch_abs(jsr_charge3, charge_delay);
+        self.emit(0xAD);
+        self.emit(0x00);
+        self.emit(0xDC);   // LDA $DC00
+        self.emit(0x29);
+        self.emit(0x3F);   // AND #$3F
+        self.emit(0x09);
+        self.emit(0x40);   // ORA #$40
+        self.emit(0x8D);
+        self.emit(0x00);
+        self.emit(0xDC);   // STA $DC00
+        self.emit(0xA2);
+        self.emit(0x67);   // LDX #$67
+        // @delay:
+        let delay_loop = self.current_addr();
+        self.emit(0xCA);   // DEX
+        self.emit(0xD0);   // BNE @delay
+        let bne_delay = self.code.len();
+        self.emit(0x00);
+        self.patch_bxx(bne_delay, delay_loop);
+        self.emit(0x60);   // RTS
+    }
+
     // Plot-erase helper: computes pixel address/mask identically to emit_plot_helper,
     // then clears (AND ~mask) the pixel instead of setting it.
     fn emit_plot_erase_helper(&mut self) {
@@ -6661,6 +7155,23 @@ impl Codegen {
                         true
                     }
                 }
+            }
+            // ── mouse_x() → 9-bit accumulated X ───────────────────────────────────
+            Expr::MouseX => {
+                let zp = self.mouse_zp.expect("mouse_x: mouse helper not allocated");
+                // JSR helper (charge + read + delta + accumulate)
+                self.emit(0x20); // JSR
+                let pos = self.code.len();
+                self.emit16(0x0000); // placeholder
+                self.mouse_patches.push(pos);
+                // STA lo, STA hi
+                self.emit(0x85);
+                self.emit(dst_zp);     // STA lo (from A = accum_x)
+                self.emit(0xA5);
+                self.emit(zp + 6);     // LDA accum_x_hi
+                self.emit(0x85);
+                self.emit(dst_zp + 1); // STA hi
+                true
             }
             // ── word_src + rhs  (16-bit add with carry) ───────────────────────────
             Expr::BinOp(l, BinOp::Add, r) if matches!(l.as_ref(), Expr::Var(n) if matches!(self.var_types.get(n), Some(VarType::Word))) =>
@@ -11769,6 +12280,16 @@ impl Codegen {
             for &pos in &self.strn_helper_patches.clone() {
                 self.code[pos] = helper_addr as u8;
                 self.code[pos + 1] = (helper_addr >> 8) as u8;
+            }
+        }
+
+        // Emit 1351 mouse read helper and patch all JSR targets
+        if !self.mouse_patches.is_empty() {
+            let mouse_addr = self.current_addr();
+            self.emit_mouse_read_helper();
+            for &pos in &self.mouse_patches.clone() {
+                self.code[pos] = mouse_addr as u8;
+                self.code[pos + 1] = (mouse_addr >> 8) as u8;
             }
         }
 

@@ -420,10 +420,30 @@ var k   = waitkey()      # same but returns raw $DC01 column bits (0 bit = key p
 var j = joy(2)           # read joystick port 2; returns inverted bits 0-4
 var j = joy(1)           # read joystick port 1
                          # bit0=up(1) bit1=down(2) bit2=left(4) bit3=right(8) bit4=fire(16)
-var mx = mouse_x()       # 1351 mouse X: SID POT X ($D419), 0-255
-var my = mouse_y()       # 1351 mouse Y: SID POT Y ($D41A), 0-255
-var mb = mouse_btn()     # mouse buttons: bit0=left (fire), bit1=right
+var mx = mouse_x()       # 1351 mouse: accumulated X position (helper: charge+delay+delta)
+var my = mouse_y()       # 1351 mouse: accumulated Y position (EOR #$FF inverted)
+var mb = mouse_btn()     # mouse buttons: reads $DC01 — bit0=left (fire), bit1=right (up pin)
 ```
+
+`mouse_x()` / `mouse_y()` internally run a helper subroutine that handles:
+CIA1 `$DC00` capacitor charging, ~516-cycle delay, SID POT X/Y register read
+(`$D419`/`$D41A`), signed 7-bit delta computation, Y-axis `EOR #$FF` inversion,
+and accumulated position tracking (permanent ZP state, 8 bytes).  The helper
+samples POT twice per frame.  `mouse_y()` does **not** call the helper (only
+`mouse_x()` does) — it just reads the cached `accum_y` to avoid double-update.
+
+The helper maintains a 9-bit X accumulator (`accum_x` + `accum_x_hi` with
+carry/borrow).  Use `var sx: word = mouse_x()` — the compiler stores both
+lo and hi bytes, so the `sprite` command correctly handles `$D010` for
+X positions beyond 255.
+
+The helper stores its state in ZP (`$02`–`$09`).  The init flag must be zero
+before the first call — zero the area with `fill $02, 7, 0` early in your program.
+Also disable CIA1 interrupts (`poke $DC0D, $7F`) to prevent the KERNAL IRQ from
+touching `$DC00` during keyboard scanning — that disturbs the POT reading.
+
+See `examples/mouse_demo.ub` for a working 1351 mouse demo with sprite tracking
+and button feedback.
 
 ### Exit
 
