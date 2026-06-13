@@ -11,8 +11,9 @@ pub enum Expr {
     ReuPresent, // reu_present() — 1 if REU detected, 0 otherwise
     Turbo,   // turbo() — 1 if U64 turbo active (bits 0-3 of $D031 != 0), else 0
     Joy(u8), // joy(1) or joy(2) — read joystick port, returns inverted bits 0-4
-    MouseX,  // mouse_x()  — SID $D419 POT X register (0-255)
-    MouseY,  // mouse_y()  — SID $D41A POT Y register (0-255)
+    MouseX,    // mouse_x()  — SID $D419 POT X register (0-255, accumulated)
+    MouseXHi,  // mouse_x_hi() — MSB of 9-bit X position
+    MouseY,    // mouse_y()  — SID $D41A POT Y register (0-255)
     MouseBtn, // mouse_btn() — CIA1 $DC00 bits: bit0=left(fire), bit1=right(up direction)
     Sin(Box<Expr>), // sin(angle) — 8-bit angle 0-255, returns 0-255 (center=128)
     Cos(Box<Expr>), // cos(angle) — same as sin with +64 offset
