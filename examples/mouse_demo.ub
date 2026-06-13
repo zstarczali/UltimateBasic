@@ -70,6 +70,9 @@ sprite on 0
 # Disable CIA1 timer interrupts — KERNAL IRQ touches $DC00 → corrupts POT!
 poke $DC0D, $7F
 
+# Zero mouse helper ZP state ($02-$08) — init_flag must start at 0
+fill $02, 7, 0
+
 # ── Main loop ───────────────────────────────────────────────────────────
 label gameloop
   wait raster 248       # sync to bottom of screen
