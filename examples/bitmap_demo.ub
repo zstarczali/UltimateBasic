@@ -9,18 +9,21 @@ color border 0
 color text  14
 
 # Top and bottom border lines  (x: 0..199)
+var x = 0
 for x = 0 to 199
   plot x, 0
   plot x, 199
 next
 
 # Left and right border lines  (y: 0..199)
+var y = 0
 for y = 0 to 199
   plot 0,   y
   plot 199, y
 next
 
 # Diagonal: top-left → bottom-right
+var i = 0
 for i = 0 to 199
   plot i, i
 next

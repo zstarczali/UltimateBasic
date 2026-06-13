@@ -1,8 +1,21 @@
 Ultimate Basic v1.4.4 – Release Notes
 ======================================
 
-2026-06-14 – Mouse support + fixes
+2026-06-14 – Strict variables + mouse support
 --------------------------------------------------
+  - **BREAKING**: Strict variable checking — all variables must be declared
+    with `var` before use. The parser now pre-scans all tokens (including
+    included files) to collect `var` declarations, then reports an error
+    for any undeclared variable reference in expressions, assignments,
+    for/loop counters, inc/dec, input, and read statements.
+      var x = 0          # REQUIRED before for-loop
+      for x = 1 to 10
+        print x
+      next
+      print kukk          # ERROR: variable 'kukk' is not declared
+    Sub/fn parameters are automatically added to the declared set so they
+    can be used inside the body. irq/nmi/cia_timer handler names are
+    exempt (they reference subroutines, not variables).
   - 1351 proportional mouse support via mouse_x(), mouse_y(), mouse_btn()
     Built-in mouse_read_helper assembly subroutine handles:
       CIA1 $DC00 capacitor charging, LDX#$67 delay, SID POT X/Y read,

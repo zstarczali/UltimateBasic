@@ -27,6 +27,10 @@ ub build demo.ub --d64 disk.d64 --add music.prg --add loader.prg
 
 ### Variables and constants
 
+**All variables must be declared with `var` before use.** Using an undeclared variable
+in an expression, assignment, `for`/`loop` counter, `inc`/`dec`, `input`, or `read`
+statement produces a compile-time error.
+
 ```basic
 var x = 10               # 8-bit integer (default)
 var ptr: word = $0400    # 16-bit — two zero-page bytes, usable as 16-bit address
@@ -165,6 +169,7 @@ loop                 # infinite loop
   if x == 100 then break end
 end
 
+var i = 0
 for i = 1 to 10      # for..next (preferred)
   if i == 5 then continue end  # skip to increment step
   print i
@@ -174,6 +179,7 @@ for i = 0 to 20 step 2
   print i
 next i               # variable name after 'next' is optional
 
+var i = 0
 loop i = 1 to 10     # legacy loop..end syntax — identical code
   print i
 end

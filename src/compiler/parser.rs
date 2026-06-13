@@ -83,8 +83,10 @@ pub struct Parser {
     pos: usize,
     line: usize,
     consts: std::collections::HashMap<String, i16>,
+    declared_vars: std::collections::HashSet<String>,
     base_dir: Option<std::path::PathBuf>,
     errors: Vec<String>,
+    skip_var_check: bool,
 }
 
 impl Parser {
@@ -94,8 +96,10 @@ impl Parser {
             pos: 0,
             line: 1,
             consts: std::collections::HashMap::new(),
+            declared_vars: std::collections::HashSet::new(),
             base_dir: None,
             errors: vec![],
+            skip_var_check: false,
         }
     }
 
@@ -105,8 +109,10 @@ impl Parser {
             pos: 0,
             line: 1,
             consts: std::collections::HashMap::new(),
+            declared_vars: std::collections::HashSet::new(),
             base_dir: Some(base_dir),
             errors: vec![],
+            skip_var_check: false,
         }
     }
 
@@ -119,8 +125,10 @@ impl Parser {
             pos: 0,
             line: 1,
             consts,
+            declared_vars: std::collections::HashSet::new(),
             base_dir: None,
             errors: vec![],
+            skip_var_check: false,
         }
     }
 
@@ -134,8 +142,10 @@ impl Parser {
             pos: 0,
             line: 1,
             consts,
+            declared_vars: std::collections::HashSet::new(),
             base_dir,
             errors: vec![],
+            skip_var_check: false,
         }
     }
 
@@ -308,7 +318,66 @@ impl Parser {
         None
     }
 
+    /// Pre-scan tokens to collect all `var name` declarations.
+    /// Handles `include` recursively by spawning sub-parsers for included files.
+    fn pre_scan_var_decls(&mut self) {
+        let saved_pos = self.pos;
+        let saved_line = self.line;
+        self.pos = 0;
+        self.line = 1;
+        self.skip_newlines();
+        while self.peek() != &Token::Eof {
+            if self.peek() == &Token::Include {
+                self.advance(); // 'include'
+                if let Token::StringLit(path) = self.peek().clone() {
+                    self.advance();
+                    let resolved = if let Some(ref base) = self.base_dir {
+                        base.join(&path)
+                    } else {
+                        std::path::PathBuf::from(&path)
+                    };
+                    let sub_base = resolved.parent().map(|p| p.to_path_buf());
+                    if let Ok(src) = std::fs::read_to_string(&resolved) {
+                        let mut lex = super::lexer::Lexer::new(&src);
+                        let toks = lex.tokenize();
+                        let mut sub = Parser::new_with_consts_and_base(
+                            toks,
+                            std::collections::HashMap::new(),
+                            sub_base,
+                        );
+                        sub.pre_scan_var_decls();
+                        self.declared_vars.extend(sub.declared_vars);
+                    }
+                }
+            } else if self.peek() == &Token::Var {
+                self.advance(); // 'var'
+                if let Token::Ident(name) = self.advance() {
+                    self.declared_vars.insert(name);
+                }
+                // skip rest of line
+                while !matches!(self.peek(), Token::Newline | Token::Eof) {
+                    self.advance();
+                }
+            } else if self.peek() == &Token::Newline {
+                self.advance();
+            } else {
+                self.advance();
+            }
+        }
+        // restore position
+        self.pos = saved_pos;
+        self.line = saved_line;
+    }
+
+    /// Check whether a name refers to a declared variable or a compile-time constant.
+    fn is_declared(&self, name: &str) -> bool {
+        self.declared_vars.contains(name) || self.consts.contains_key(name)
+    }
+
     pub fn parse(&mut self) -> Vec<Stmt> {
+        // Pre-scan: collect all var declarations (including from included files)
+        self.pre_scan_var_decls();
+
         let mut stmts = vec![];
         self.skip_newlines();
         while self.peek() != &Token::Eof {
@@ -330,9 +399,13 @@ impl Parser {
                             let mut lex = super::lexer::Lexer::new(&src);
                             let toks = lex.tokenize();
                             let consts = self.consts.clone();
+                            let decl_vars = self.declared_vars.clone();
                             let mut sub = Parser::new_with_consts_and_base(toks, consts, sub_base);
+                            sub.declared_vars = decl_vars;
                             let sub_stmts = sub.parse();
                             self.consts.extend(sub.consts.into_iter());
+                            self.declared_vars.extend(sub.declared_vars);
+                            self.errors.extend(sub.errors);
                             stmts.extend(sub_stmts);
                         }
                         Err(e) => eprintln!("include '{}': {}", resolved.display(), e),
@@ -492,6 +565,12 @@ impl Parser {
             Token::Inc => {
                 self.advance();
                 let name = if let Token::Ident(n) = self.advance() {
+                    if !self.is_declared(&n) {
+                        self.errors.push(format!(
+                            "line {}: variable '{}' is not declared (use 'var {}' first)",
+                            self.line, n, n
+                        ));
+                    }
                     n
                 } else {
                     return self.reject_stmt("expected variable name after 'inc'");
@@ -502,6 +581,12 @@ impl Parser {
             Token::Dec => {
                 self.advance();
                 let name = if let Token::Ident(n) = self.advance() {
+                    if !self.is_declared(&n) {
+                        self.errors.push(format!(
+                            "line {}: variable '{}' is not declared (use 'var {}' first)",
+                            self.line, n, n
+                        ));
+                    }
                     n
                 } else {
                     return self.reject_stmt("expected variable name after 'dec'");
@@ -537,6 +622,7 @@ impl Parser {
             Token::Var => {
                 self.advance();
                 let name = if let Token::Ident(n) = self.advance() {
+                    self.declared_vars.insert(n.clone());
                     n
                 } else {
                     return None;
@@ -608,6 +694,13 @@ impl Parser {
             }
             Token::Ident(name) => {
                 self.advance();
+                // Skip var-decl check for sub/fn calls: name(...)
+                if self.peek() != &Token::LParen && !self.is_declared(&name) {
+                    self.errors.push(format!(
+                        "line {}: variable '{}' is not declared (use 'var {}' first)",
+                        self.line, name, name
+                    ));
+                }
                 if self.peek() == &LBracket {
                     // arr[idx] = val
                     self.advance(); // [
@@ -825,6 +918,12 @@ impl Parser {
                 // next [i]
                 self.advance();
                 let var = if let Token::Ident(n) = self.advance() {
+                    if !self.is_declared(&n) {
+                        self.errors.push(format!(
+                            "line {}: for-loop variable '{}' is not declared (use 'var {}' first)",
+                            self.line, n, n
+                        ));
+                    }
                     n
                 } else {
                     return None;
@@ -859,6 +958,12 @@ impl Parser {
                 if let Token::Ident(var) = self.peek().clone() {
                     self.advance();
                     if self.peek() == &Token::Assign {
+                        if !self.is_declared(&var) {
+                            self.errors.push(format!(
+                                "line {}: loop variable '{}' is not declared (use 'var {}' first)",
+                                self.line, var, var
+                            ));
+                        }
                         self.advance();
                         let from = self.parse_expr();
                         // expect 'to'
@@ -1111,6 +1216,10 @@ impl Parser {
                 };
                 // parse optional parameter list: (p1, p2, ...)
                 let params = self.parse_param_list();
+                // Add sub parameters to declared_vars so they can be used in the body
+                for (p, _) in &params {
+                    self.declared_vars.insert(p.clone());
+                }
                 self.expect_newline();
                 let mut body = vec![];
                 loop {
@@ -1137,6 +1246,10 @@ impl Parser {
                 };
                 // parse optional parameter list: (p1, p2, ...)
                 let params = self.parse_param_list();
+                // Add fn parameters to declared_vars so they can be used in the body
+                for (p, _) in &params {
+                    self.declared_vars.insert(p.clone());
+                }
                 // parse optional return type: : type
                 let ret_type = if self.peek() == &Token::Colon {
                     self.advance();
@@ -1672,6 +1785,12 @@ impl Parser {
                 };
                 let var = if let Token::Ident(name) = self.peek().clone() {
                     self.advance();
+                    if !self.is_declared(&name) {
+                        self.errors.push(format!(
+                            "line {}: variable '{}' is not declared (use 'var {}' first)",
+                            self.line, name, name
+                        ));
+                    }
                     name
                 } else {
                     String::new()
@@ -1751,7 +1870,9 @@ impl Parser {
             }
             Token::Irq => {
                 self.advance();
+                self.skip_var_check = true;
                 let handler = self.parse_expr();
+                self.skip_var_check = false;
                 let line = if self.peek() == &Token::Comma {
                     self.advance();
                     Some(self.parse_expr())
@@ -1763,7 +1884,9 @@ impl Parser {
             }
             Token::Nmi => {
                 self.advance();
+                self.skip_var_check = true;
                 let handler = self.parse_expr();
+                self.skip_var_check = false;
                 self.expect_newline();
                 Some(Stmt::Nmi { handler })
             }
@@ -1778,7 +1901,9 @@ impl Parser {
                 if self.peek() == &Token::Comma {
                     self.advance();
                 }
+                self.skip_var_check = true;
                 let handler = self.parse_expr();
+                self.skip_var_check = false;
                 self.expect_newline();
                 Some(Stmt::CiaTimer { period, handler })
             }
@@ -1913,6 +2038,12 @@ impl Parser {
                 self.advance();
                 if let Token::Ident(name) = self.peek().clone() {
                     self.advance();
+                    if !self.is_declared(&name) {
+                        self.errors.push(format!(
+                            "line {}: variable '{}' is not declared (use 'var {}' first)",
+                            self.line, name, name
+                        ));
+                    }
                     self.expect_newline();
                     Some(Stmt::Read(name))
                 } else {
@@ -2308,6 +2439,12 @@ impl Parser {
                     Expr::Number(v)
                 } else if self.peek() == &LBracket {
                     // arr[idx] expression
+                    if !self.skip_var_check && !self.is_declared(&n) {
+                        self.errors.push(format!(
+                            "line {}: variable '{}' is not declared (use 'var {}' first)",
+                            self.line, n, n
+                        ));
+                    }
                     self.advance(); // [
                     let idx = self.parse_expr();
                     if self.peek() == &RBracket {
@@ -2315,7 +2452,7 @@ impl Parser {
                     } // ]
                     Expr::ArrayGet(n, Box::new(idx))
                 } else if self.peek() == &Token::LParen {
-                    // fn_call(args) expression
+                    // fn_call(args) expression — n is a function name, not a variable
                     self.advance(); // (
                     let mut args = vec![];
                     while !matches!(self.peek(), Token::RParen | Token::Eof | Token::Newline) {
@@ -2329,6 +2466,12 @@ impl Parser {
                     } // )
                     Expr::FnCall(n, args)
                 } else {
+                    if !self.skip_var_check && !self.is_declared(&n) {
+                        self.errors.push(format!(
+                            "line {}: variable '{}' is not declared (use 'var {}' first)",
+                            self.line, n, n
+                        ));
+                    }
                     Expr::Var(n)
                 }
             }
