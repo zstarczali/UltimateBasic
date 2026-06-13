@@ -41,7 +41,7 @@ sprdef 0
 end
 
 # Disable all interrupts — same as working PRG's SEI at $0880
-asm { SEI }
+rem asm { SEI }
 
 # ── Screen setup ────────────────────────────────────────────────────────
 cls
@@ -80,15 +80,24 @@ label gameloop
   sx = mouse_x()
   sy = mouse_y()
 
+  print at 1,10, "X=", sx, " Y=", sy, "     "
+
+
+  print at 1,24,">EXIT<"
+
   sprite 0, sx, sy
 
   # ── Mouse button feedback ────────────────────────────────────────────
   var mb = mouse_btn()   # bit0=left, bit1=right
   if mb and 1 then
     color border 2       # left button → red border
+      if sx>33 and sy>242 and sx<79 and sy<248 then
+        bye
+      end
   else
     if mb and 2 then
       color bg 6         # right button → blue background
+
     else
       color border 0     # no button → black
       color bg 0

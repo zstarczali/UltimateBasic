@@ -1044,6 +1044,7 @@ else
   print \"Condition not met\"
 end
 
+var i = 0
 loop i = 1 to 3
   print i
 end
@@ -1090,7 +1091,9 @@ fn chained_comparisons() {
 #[test]
 fn nested_loops_compile() {
     let src = "
+var i = 0
 loop i = 1 to 2
+  var j = 0
   loop j = 1 to 2
     var sum = i + j
   end
@@ -1209,7 +1212,7 @@ fn string_concat_triple() {
 
 #[test]
 fn for_next_compiles() {
-    let src = "for i = 1 to 5\n  print i\nnext";
+    let src = "var i = 0\nfor i = 1 to 5\n  print i\nnext";
     let res = compile(src, &CompileOptions { basic_stub: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     let bytes = &res.prg[2..];
@@ -1218,7 +1221,7 @@ fn for_next_compiles() {
 
 #[test]
 fn for_next_with_step_compiles() {
-    let src = "for i = 0 to 20 step 2\n  print i\nnext i";
+    let src = "var i = 0\nfor i = 0 to 20 step 2\n  print i\nnext i";
     let res = compile(src, &CompileOptions { basic_stub: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
 }
@@ -1226,8 +1229,8 @@ fn for_next_with_step_compiles() {
 #[test]
 fn for_next_generates_same_code_as_loop() {
     // Both syntaxes must compile to identical bytes
-    let a = compile_raw("for i = 1 to 3\n  print i\nnext");
-    let b = compile_raw("loop i = 1 to 3\n  print i\nend");
+    let a = compile_raw("var i = 0\nfor i = 1 to 3\n  print i\nnext");
+    let b = compile_raw("var i = 0\nloop i = 1 to 3\n  print i\nend");
     assert_eq!(
         a, b,
         "for..next and loop..end should produce identical code"
@@ -2294,7 +2297,7 @@ fn sys_without_arg_emits_only_jsr() {
 
 #[test]
 fn data_read_emits_indirect_lda() {
-    let src = "data 10, 20, 30\nread x\nread y";
+    let src = "var x = 0\nvar y = 0\ndata 10, 20, 30\nread x\nread y";
     let res = compile(src, &CompileOptions { basic_stub: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     assert!(
@@ -2307,7 +2310,7 @@ fn data_read_emits_indirect_lda() {
 
 #[test]
 fn data_bytes_in_output() {
-    let src = "data 99\nread x";
+    let src = "var x = 0\ndata 99\nread x";
     let res = compile(src, &CompileOptions { basic_stub: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     assert!(
