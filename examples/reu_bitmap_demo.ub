@@ -1,8 +1,7 @@
 # reu_bitmap_demo.ub
-# Checks for a REU, draws random lines and circles in hires bitmap mode,
-# stores the image in REU, clears it, then restores it on key presses.
+# Checks for a REU, draws random lines and circles across the full 320×200
+# hires bitmap, stores the image in REU, clears it, then restores it.
 
-# Main program
 cls
 
 if reudet() == 0 then
@@ -17,53 +16,91 @@ end
 print "REU DETECTED. PRESS ANY KEY TO DRAW..."
 var k0 = getch()
 
-# Set up hires bitmap mode
-# graphics on: VIC setup + BMM enable, display stays OFF (DEN=0)
-# so bitmap RAM contents stay hidden while we draw.
 graphics on
 gcls
 color border 0
 color bg     0
-# Turn the display on: bitmap RAM is now clean, drawing becomes visible.
 display on
 
-# Draw 30 random lines live so the process is visible.
-loop 30
-    var x1 = rnd()
-    var y1 = min(rnd(), 199)
-    var x2 = rnd()
-    var y2 = min(rnd(), 199)
+var x1: word = 0
+var x2: word = 0
+var y1 = 0
+var y2 = 0
+var cx: word = 0
+var cy = 0
+var r = 0
+
+# ── Lines across the left half (x 0-255) ────────────────────────────────────
+loop 15
+    x1 = rnd()
+    y1 = rnd(200)
+    x2 = rnd()
+    y2 = rnd(200)
     line x1, y1, x2, y2
 end
 
-# Add random circles too, while keeping the random line pass above.
-loop 8
-    var cx = min(rnd(), 239) + 40
-    var cy = min(rnd(), 159) + 20
-    var radius = min(rnd(), 23) + 8
-    circle cx, cy, radius
+# ── Lines across the right half (x 256-319) ─────────────────────────────────
+loop 15
+    x1 = rnd(64) + 256
+    y1 = rnd(200)
+    x2 = rnd(64) + 256
+    y2 = rnd(200)
+    line x1, y1, x2, y2
 end
 
-# Store the bitmap in REU (bank 0, offset $0000, 8000 bytes).
+# ── Lines that cross the x=255 boundary ─────────────────────────────────────
+loop 10
+    x1 = rnd(64) + 192
+    y1 = rnd(200)
+    x2 = rnd(64) + 256
+    y2 = rnd(200)
+    line x1, y1, x2, y2
+end
+
+# ── Explicit lines reaching the right edge (x=319) ───────────────────────────
+line 0,   0,   319, 199
+line 0,   199, 319, 0
+line 319, 0,   319, 199
+
+# ── Circles in the left half ─────────────────────────────────────────────────
+loop 4
+    cx = rnd(200) + 20
+    cy = rnd(160) + 20
+    r  = rnd(25) + 8
+    circle cx, cy, r
+end
+
+# ── Circles in the right half (centre x 256-315) ────────────────────────────
+loop 4
+    cx = rnd(60) + 259
+    cy = rnd(160) + 20
+    r  = rnd(25) + 8
+    circle cx, cy, r
+end
+
+# ── Circle straddling the x=255 boundary ─────────────────────────────────────
+cx = 255
+cy = 100
+r  = 40
+circle cx, cy, r
+
+# ── Store bitmap in REU (bank 0, offset $0000, 8000 bytes) ──────────────────
 reu stash $2000, 0, $0000, 8000
 
-# Wait for a key press while the drawn image is visible.
 var k1 = getch()
 
-# Clear the screen while blanked so there is no flash.
+# ── Clear screen (blanked to avoid flash) ────────────────────────────────────
 display off
 gcls
 display on
 
-# Wait for a key press while the screen is empty.
 var k2 = getch()
 
-# Restore the image from REU while the display is blanked.
+# ── Restore image from REU ────────────────────────────────────────────────────
 display off
 reu fetch $2000, 0, $0000, 8000
 display on
 
-# Wait for a final key press, then exit.
 var k3 = getch()
 
 graphics off

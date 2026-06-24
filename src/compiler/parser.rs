@@ -1105,8 +1105,29 @@ impl Parser {
                 } else {
                     false
                 };
+                // `double` is detected as a plain identifier (not a reserved keyword)
+                // so it stays usable as a normal name elsewhere (e.g. fn double()).
+                let dbuf = if on && !multi && !block {
+                    if let Token::Ident(s) = self.peek() {
+                        if s == "double" {
+                            self.advance();
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
                 self.expect_newline();
-                Some(Stmt::Graphics { on, multi, block })
+                Some(Stmt::Graphics { on, multi, block, dbuf })
+            }
+            Token::Flip => {
+                self.advance();
+                self.expect_newline();
+                Some(Stmt::Flip)
             }
             Token::Display => {
                 self.advance();
@@ -1523,6 +1544,31 @@ impl Parser {
                 self.expect_newline();
                 Some(Stmt::PrintHash { channel, args })
             }
+            Token::Rect => {
+                self.advance();
+                let mode = if matches!(self.peek(), Token::Erase) {
+                    self.advance();
+                    1u8
+                } else if matches!(self.peek(), Token::Xor) {
+                    self.advance();
+                    2u8
+                } else {
+                    0u8
+                };
+                let x1 = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let y1 = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let x2 = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let y2 = self.parse_expr();
+                self.expect_newline();
+                Some(match mode {
+                    1 => Stmt::RectErase(x1, y1, x2, y2),
+                    2 => Stmt::RectXor(x1, y1, x2, y2),
+                    _ => Stmt::Rect(x1, y1, x2, y2),
+                })
+            }
             Token::Plot => {
                 self.advance();
                 if matches!(self.peek(), Token::Erase) {
@@ -1614,21 +1660,28 @@ impl Parser {
             }
             Token::Line => {
                 self.advance();
+                let mode = if matches!(self.peek(), Token::Erase) {
+                    self.advance();
+                    1u8
+                } else if matches!(self.peek(), Token::Xor) {
+                    self.advance();
+                    2u8
+                } else {
+                    0u8
+                };
                 let x1 = self.parse_expr();
-                if self.peek() == &Token::Comma {
-                    self.advance();
-                }
+                if self.peek() == &Token::Comma { self.advance(); }
                 let y1 = self.parse_expr();
-                if self.peek() == &Token::Comma {
-                    self.advance();
-                }
+                if self.peek() == &Token::Comma { self.advance(); }
                 let x2 = self.parse_expr();
-                if self.peek() == &Token::Comma {
-                    self.advance();
-                }
+                if self.peek() == &Token::Comma { self.advance(); }
                 let y2 = self.parse_expr();
                 self.expect_newline();
-                Some(Stmt::Line { x1, y1, x2, y2 })
+                Some(match mode {
+                    1 => Stmt::LineErase { x1, y1, x2, y2 },
+                    2 => Stmt::LineXor   { x1, y1, x2, y2 },
+                    _ => Stmt::Line      { x1, y1, x2, y2 },
+                })
             }
             Token::Gcls => {
                 self.advance();
@@ -3202,7 +3255,8 @@ mod tests {
             Stmt::Graphics {
                 on: true,
                 multi: false,
-                block: false
+                block: false,
+                ..
             }
         ));
     }
@@ -3214,7 +3268,8 @@ mod tests {
             Stmt::Graphics {
                 on: false,
                 multi: false,
-                block: false
+                block: false,
+                ..
             }
         ));
     }
@@ -3226,9 +3281,28 @@ mod tests {
             Stmt::Graphics {
                 on: true,
                 multi: true,
-                block: false
+                block: false,
+                ..
             }
         ));
+    }
+    #[test]
+    fn graphics_on_double() {
+        let stmts = parse("graphics on double");
+        assert!(matches!(
+            &stmts[0],
+            Stmt::Graphics {
+                on: true,
+                multi: false,
+                block: false,
+                dbuf: true,
+            }
+        ));
+    }
+    #[test]
+    fn flip_stmt() {
+        let stmts = parse("flip");
+        assert!(matches!(&stmts[0], Stmt::Flip));
     }
 
     // ── Colors ───────────────────────────────────────────────────────────

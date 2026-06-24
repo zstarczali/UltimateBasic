@@ -15,7 +15,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "examples/**"
-      - "README.pdf"
+      - "MANUAL.pdf"
       - ".github/workflows/package-examples.yml"
 
 jobs:
@@ -73,7 +73,7 @@ jobs:
 
           New-Item -ItemType Directory -Path $stagingDir | Out-Null
           Copy-Item -Path "examples" -Destination $stagingDir -Recurse
-          Copy-Item -Path "README.pdf" -Destination $stagingDir
+          Copy-Item -Path "MANUAL.pdf" -Destination $stagingDir
           Copy-Item -Path "whatnews.txt" -Destination $stagingDir
           Copy-Item -Path $binaryPath -Destination $stagingDir
           Compress-Archive -Path (Join-Path $stagingDir "*") -DestinationPath $archivePath

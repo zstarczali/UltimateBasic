@@ -1,3 +1,38 @@
+Ultimate Basic v1.5.0 – Release Notes
+======================================
+
+2026-06-25 – Double buffering + full-width X
+--------------------------------------------------
+  - **Double-buffered hires bitmap** for flicker-free animation:
+      graphics on double   # two complete bitmaps; drawing goes to the hidden one
+      gcls                 # clears the hidden back buffer
+      ... draw a frame ... # plot/line/circle/rect/paint all hit the back buffer
+      flip                 # show the drawn buffer, draw into the other one
+    Buffer A = bitmap $2000 / matrix $0400 (VIC bank 0); buffer B = bitmap $6000 /
+    matrix $4400 (VIC bank 1). Only $DD00 selects which is shown ($D018 stays $18
+    for both). `flip` waits for the lower border (raster >= 251) before switching
+    the VIC bank, so the swap is tear-free, then redirects drawing to the now-hidden
+    buffer.
+  - All pixel commands and `gcls` now write through a runtime "draw base" (two zero-page
+    bytes: bitmap hi + matrix hi), initialised to the single-buffer layout ($2000/$0400)
+    at program start. Single-buffer programs are byte-for-byte unaffected in behaviour;
+    `flip` simply repoints the base at the hidden buffer.
+  - Requirements: hires only (not multicolor); the back buffer uses $4000-$7FFF, so
+    program code must stay below $4400; not combinable with sprites across a flip. On a
+    stock 1 MHz C64 the per-frame full gcls limits frame rate — raise `speed` on the
+    Commodore 64 Ultimate for smooth high-rate animation.
+  - **Full 320-pixel X coordinate range** for plot/line/circle/rect: X values above 255
+    are handled automatically (9th X bit added in the pixel helper), so drawing reaches
+    the right edge of the screen. Use a `word` variable for X when it can exceed 255.
+  - **rect / rect erase / rect xor** — rectangle outline (4 edges) in hires bitmap mode.
+  - Fix: assigning an 8-bit expression to an existing `word` variable (e.g.
+    `w = cos(a)` after `w = w * 70`) now clears the high byte. Previously a stale high
+    byte survived and corrupted later 16-bit arithmetic.
+  - New examples:
+      examples/cube_demo.ub        – tumbling 3D wireframe cube, double-buffered
+      examples/wide_x_demo.ub      – verifies plot/line/circle/rect past X=255
+      examples/reu_bitmap_demo.ub  – full-width (0-319) random lines/circles + REU
+
 Ultimate Basic v1.4.4 – Release Notes
 ======================================
 

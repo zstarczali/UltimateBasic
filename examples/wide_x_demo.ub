@@ -1,0 +1,63 @@
+# wide_x_demo.ub – X > 255 stress test
+# Exercises plot, line, circle, rect with x coordinates in the 256-319 range.
+
+graphics on
+gcls
+color bg     0
+color border 0
+color text  14
+
+var k = 0
+var x: word = 0
+var y = 0
+var i = 0
+
+# ── 1. Full top + bottom edges: x 0..319 ────────────────────────────────────
+for x = 0 to 319
+  plot x, 0
+  plot x, 199
+next
+
+# ── 2. Left + right edges: y 0..199 ─────────────────────────────────────────
+for y = 0 to 199
+  plot 0,   y
+  plot 319, y
+next
+
+# ── 3. Vertical lines at x=255 (boundary) and x=256 (first >255) ─────────
+for y = 0 to 199
+  plot 255, y
+  plot 256, y
+next
+
+# ── 4. Diagonal: top-left (0,0) → bottom-right (319,199) ────────────────────
+line 0, 0, 319, 199
+
+# ── 5. Diagonal: top-right (319,0) → bottom-left (0,199) ───────────────────
+line 319, 0, 0, 199
+
+# ── 6. Rect covering the right half (x 160..319) ────────────────────────────
+rect 160, 10, 319, 189
+
+# ── 7. Rect wholly above x=255 ───────────────────────────────────────────────
+rect 260, 20, 315, 80
+
+# ── 8. Circle centred at x=280 (wholly in the >255 zone) ────────────────────
+circle 280, 100, 30
+
+# ── 9. Circle straddling the x=255 boundary ──────────────────────────────────
+circle 255, 100, 40
+
+# ── 10. Small plot sweep: every 16 pixels across full width ──────────────────
+for x = 0 to 304 step 16
+  for y = 90 to 110 step 2
+    plot x + 8, y
+  next
+next
+
+display on
+
+k = getch()
+graphics off
+cls
+bye
