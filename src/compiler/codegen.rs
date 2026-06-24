@@ -2487,6 +2487,103 @@ impl Codegen {
                         self.patch_bxx(bne_pos + 1, self.load_addr + loop_top as u16);
                         return; // result already in A via LDA tmp above
                     }
+                    cmp_op @ (BinOp::Eq
+                    | BinOp::NotEq
+                    | BinOp::Lt
+                    | BinOp::Gt
+                    | BinOp::LtEq
+                    | BinOp::GtEq)
+                        if self.can_be_word_result(l) || self.can_be_word_result(r) =>
+                    {
+                        // Word-aware unsigned 16-bit compare; result A = 1 (true) or 0 (false).
+                        let cmp_op = cmp_op.clone();
+                        let l_clone = l.clone();
+                        let r_clone = r.clone();
+                        let lhs_lo = self.tmp_zp;
+                        self.tmp_zp += 1;
+                        let lhs_hi = self.tmp_zp;
+                        self.tmp_zp += 1;
+                        let rhs_lo = self.tmp_zp;
+                        self.tmp_zp += 1;
+                        let rhs_hi = self.tmp_zp;
+                        self.tmp_zp += 1;
+                        self.eval_expr_word(&l_clone, lhs_lo, lhs_hi);
+                        self.eval_expr_word(&r_clone, rhs_lo, rhs_hi);
+
+                        match cmp_op {
+                            BinOp::Eq | BinOp::NotEq => {
+                                // LDA lhs_lo; CMP rhs_lo; BNE diff
+                                // LDA lhs_hi; CMP rhs_hi; BNE diff
+                                // LDA #eq_val; JMP end; diff: LDA #neq_val; end:
+                                self.emit(0xA5);
+                                self.emit(lhs_lo);
+                                self.emit(0xC5);
+                                self.emit(rhs_lo);
+                                self.emit(0xD0); // BNE diff
+                                let bne1 = self.code.len();
+                                self.emit(0x00);
+                                self.emit(0xA5);
+                                self.emit(lhs_hi);
+                                self.emit(0xC5);
+                                self.emit(rhs_hi);
+                                self.emit(0xD0); // BNE diff
+                                let bne2 = self.code.len();
+                                self.emit(0x00);
+                                let (eq_val, neq_val) = if matches!(cmp_op, BinOp::Eq) {
+                                    (0x01u8, 0x00u8)
+                                } else {
+                                    (0x00u8, 0x01u8)
+                                };
+                                self.emit(0xA9);
+                                self.emit(eq_val); // LDA #eq_val
+                                self.emit(0x4C); // JMP end
+                                let jmp_end = self.code.len();
+                                self.emit16(0x0000);
+                                let diff_addr = self.current_addr();
+                                self.patch_bxx(bne1, diff_addr);
+                                self.patch_bxx(bne2, diff_addr);
+                                self.emit(0xA9);
+                                self.emit(neq_val); // LDA #neq_val
+                                let end_addr = self.current_addr();
+                                self.code[jmp_end] = end_addr as u8;
+                                self.code[jmp_end + 1] = (end_addr >> 8) as u8;
+                            }
+                            BinOp::Lt | BinOp::GtEq | BinOp::Gt | BinOp::LtEq => {
+                                // Unsigned compare via SBC. For Gt/LtEq, swap operands first.
+                                // After SBC: C=1 ⇔ lhs>=rhs (unsigned)
+                                //   Lt:   C=0 → true
+                                //   GtEq: C=1 → true
+                                //   Gt:   swap, C=0 → true  (lhs>rhs ⇔ rhs<lhs)
+                                //   LtEq: swap, C=1 → true  (lhs<=rhs ⇔ rhs>=lhs)
+                                let (alo, ahi, blo, bhi, want_carry_set) = match cmp_op {
+                                    BinOp::Lt => (lhs_lo, lhs_hi, rhs_lo, rhs_hi, false),
+                                    BinOp::GtEq => (lhs_lo, lhs_hi, rhs_lo, rhs_hi, true),
+                                    BinOp::Gt => (rhs_lo, rhs_hi, lhs_lo, lhs_hi, false),
+                                    BinOp::LtEq => (rhs_lo, rhs_hi, lhs_lo, lhs_hi, true),
+                                    _ => unreachable!(),
+                                };
+                                // LDA alo; CMP blo; LDA ahi; SBC bhi
+                                self.emit(0xA5);
+                                self.emit(alo);
+                                self.emit(0xC5);
+                                self.emit(blo);
+                                self.emit(0xA5);
+                                self.emit(ahi);
+                                self.emit(0xE5);
+                                self.emit(bhi);
+                                // A := 0; ROL A  → A = carry (1 if C=1, else 0)
+                                self.emit(0xA9);
+                                self.emit(0x00);
+                                self.emit(0x2A); // ROL A
+                                if !want_carry_set {
+                                    // Invert: A ^= 1
+                                    self.emit(0x49);
+                                    self.emit(0x01); // EOR #1
+                                }
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
                     _ => {
                         let tmp = self.tmp_zp;
                         self.tmp_zp += 1;
@@ -2805,6 +2902,7 @@ impl Codegen {
                 self.var_types.get(name),
                 Some(VarType::Word) | Some(VarType::Float)
             ),
+            Expr::ArrayGet(name, _) => self.word_arrays.contains(name.as_str()),
             Expr::BinOp(l, _, r) => self.can_be_word_result(l) || self.can_be_word_result(r),
             _ => false,
         }
