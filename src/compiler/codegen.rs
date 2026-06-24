@@ -8437,10 +8437,16 @@ impl Codegen {
                             }
                         } else {
                             if !self.gen_word_assign(zp, &expr) {
-                                // Fallback: 8-bit eval, store lo only
+                                // Fallback: 8-bit eval → store lo, zero-extend hi.
+                                // (Must clear hi — a stale high byte from a previous
+                                //  value would corrupt later 16-bit arithmetic.)
                                 self.eval_expr(&expr);
                                 self.emit(0x85);
                                 self.emit(zp);
+                                self.emit(0xA9);
+                                self.emit(0x00);
+                                self.emit(0x85);
+                                self.emit(zp + 1);
                             }
                         }
                     }

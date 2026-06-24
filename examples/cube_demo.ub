@@ -1,0 +1,150 @@
+# cube_demo.ub — Tumbling 3D wireframe cube (hires bitmap)
+#
+# A real 3D cube rotated around TWO axes (Y and X) so it tumbles, not just
+# spins. 8 vertices at (±40,±40,±40) are rotated every frame and projected
+# orthographically to the screen. XOR draw/erase = flicker-free animation.
+#
+# Signed fixed-point rotation:
+#   sin(a)/cos(a) return 0-255 (centre 128). The signed trig value is (t-128),
+#   representing -1..+1 scaled by 128. smul(c,t) computes  c*(t-128)/128  in
+#   signed 8-bit two's-complement — the core of the rotation matrix.
+#
+#   Y-axis:  rx = x*cos - z*sin ,  rz = x*sin + z*cos ,  ry = y
+#   X-axis:  ry2 = ry*cos - rz*sin
+#   screen:  px = 160 + rx ,  py = 100 + ry2     (two's-complement add)
+
+var vx = array(8)    # model X (signed:  40 = +40, 216 = -40)
+var vy = array(8)    # model Y
+var vz = array(8)    # model Z
+var px = array(8)    # projected screen X
+var py = array(8)    # projected screen Y
+
+var ax  = 0          # rotation angle around X
+var ay  = 0          # rotation angle around Y
+var cax = 0          # cos(ax) / sin(ax) / cos(ay) / sin(ay) for this frame
+var sax = 0
+var cay = 0
+var say = 0
+var t1  = 0
+var t2  = 0
+var rx  = 0
+var ry  = 0
+var rz  = 0
+var ry2 = 0
+var i   = 0
+var k   = 0
+
+# ── cube corners: (x,y,z) each ±40.  +40 = 40,  -40 = 216 (two's complement) ──
+vx[0] = 216 : vy[0] = 216 : vz[0] = 216
+vx[1] =  40 : vy[1] = 216 : vz[1] = 216
+vx[2] =  40 : vy[2] =  40 : vz[2] = 216
+vx[3] = 216 : vy[3] =  40 : vz[3] = 216
+vx[4] = 216 : vy[4] = 216 : vz[4] =  40
+vx[5] =  40 : vy[5] = 216 : vz[5] =  40
+vx[6] =  40 : vy[6] =  40 : vz[6] =  40
+vx[7] = 216 : vy[7] =  40 : vz[7] =  40
+
+# ── signed multiply:  c * (t-128) / 128 , result signed 8-bit ─────────────────
+fn smul(c, t)
+  var neg = 0
+  var mt  = 0
+  if t >= 128 then
+    mt = t - 128                 # |trig|, trig >= 0
+  else
+    mt = 128 - t                 # |trig|, trig < 0  → flip sign
+    neg = 1
+  end
+  if c >= 128 then
+    neg = neg xor 1              # c is negative (two's complement)
+  end
+  var prod: word = abs(c)        # |c|
+  prod = prod * mt
+  prod = prod shr 7              # / 128
+  var r = prod
+  if neg == 1 then
+    r = 0 - r                    # negate (8-bit two's complement)
+  end
+  return r
+end
+
+# ── rotate + project all 8 vertices ───────────────────────────────────────────
+sub compute()
+  cay = cos(ay)
+  say = sin(ay)
+  cax = cos(ax)
+  sax = sin(ax)
+  for i = 0 to 7
+    # rotate around Y axis
+    t1 = smul(vx[i], cay)
+    t2 = smul(vz[i], say)
+    rx = t1 - t2
+    t1 = smul(vx[i], say)
+    t2 = smul(vz[i], cay)
+    rz = t1 + t2
+    ry = vy[i]
+    # rotate around X axis
+    t1 = smul(ry, cax)
+    t2 = smul(rz, sax)
+    ry2 = t1 - t2
+    # orthographic projection to screen
+    px[i] = rx + 160
+    py[i] = ry2 + 100
+  next
+end
+
+sub draw_cube()
+  line px[0], py[0], px[1], py[1]
+  line px[1], py[1], px[2], py[2]
+  line px[2], py[2], px[3], py[3]
+  line px[3], py[3], px[0], py[0]
+  line px[4], py[4], px[5], py[5]
+  line px[5], py[5], px[6], py[6]
+  line px[6], py[6], px[7], py[7]
+  line px[7], py[7], px[4], py[4]
+  line px[0], py[0], px[4], py[4]
+  line px[1], py[1], px[5], py[5]
+  line px[2], py[2], px[6], py[6]
+  line px[3], py[3], px[7], py[7]
+end
+
+sub erase_cube()
+  line xor px[0], py[0], px[1], py[1]
+  line xor px[1], py[1], px[2], py[2]
+  line xor px[2], py[2], px[3], py[3]
+  line xor px[3], py[3], px[0], py[0]
+  line xor px[4], py[4], px[5], py[5]
+  line xor px[5], py[5], px[6], py[6]
+  line xor px[6], py[6], px[7], py[7]
+  line xor px[7], py[7], px[4], py[4]
+  line xor px[0], py[0], px[4], py[4]
+  line xor px[1], py[1], px[5], py[5]
+  line xor px[2], py[2], px[6], py[6]
+  line xor px[3], py[3], px[7], py[7]
+end
+
+# ── setup ─────────────────────────────────────────────────────────────────────
+color border 0
+color bg     0
+graphics on
+gcls
+call compute
+call draw_cube
+display on
+
+# ── animation loop ────────────────────────────────────────────────────────────
+label mainloop
+  wait raster 250
+  call erase_cube         # XOR off the old frame
+  ay = ay + 3             # spin around Y
+  ax = ax + 1             # ...and tumble around X (different rate)
+  call compute
+  call draw_cube          # XOR on the new frame
+
+  k = inkey()
+  if k != 0 then goto done end
+  goto mainloop
+
+label done
+graphics off
+cls
+bye
