@@ -39,7 +39,8 @@ pub struct MemoryMap {
     pub subroutines: Vec<SubEntry>,  // sorted by address
     pub arrays: Vec<ArrayEntry>,     // sorted by base address
     pub plot_zp: Option<u8>,         // 6-byte ZP block for plot helper
-    pub line_zp: Option<u8>,         // 12-byte ZP block for Bresenham line helper
+    pub line_zp: Option<u8>,         // 15-byte ZP block for Bresenham line helper (16-bit x)
+    pub rect_zp: Option<u8>,         // 9-byte ZP block for rect helper
     pub sin_table_addr: Option<u16>, // absolute address of 256-byte sin/cos table
     pub data_zp: Option<u8>,         // 2-byte ZP pair for data/read pointer
     pub code_bytes: Vec<u8>,         // raw machine code (for verbose hex dump)

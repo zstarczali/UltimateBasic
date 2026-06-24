@@ -1009,7 +1009,12 @@ plot x, y                # set pixel at (x, y);  x: 0-319, y: 0-199
 plot erase x, y          # clear pixel at (x, y) — AND ~mask into byte
 plot xor x, y            # toggle (XOR) pixel at (x, y) — EOR mask into byte
 circle x, y, r           # midpoint circle centered at (x, y) with radius r; clips off-screen points
-line x1, y1, x2, y2      # Bresenham line from (x1,y1) to (x2,y2); x: 0-255, y: 0-199
+line x1, y1, x2, y2      # Bresenham line from (x1,y1) to (x2,y2); x: 0-319, y: 0-199
+line erase x1, y1, x2, y2  # clear pixels along the line (AND ~mask)
+line xor x1, y1, x2, y2    # toggle pixels along the line (EOR mask)
+rect x1, y1, x2, y2      # draw rectangle outline (4 edges); x: 0-319, y: 0-199
+rect erase x1, y1, x2, y2  # clear rectangle outline (AND ~mask)
+rect xor x1, y1, x2, y2    # XOR rectangle outline (EOR mask)
 paint x, y               # 4-connected flood fill from (x, y); fills clear pixels bounded by set ones
 mplot x, y, color        # set multicolor pixel at (x: 0-159, y: 0-199), color 0-3 (requires graphics on multi)
 ```
@@ -1269,6 +1274,7 @@ data pointer) and a full hex dump of the generated machine code.
 | `abs()` / `sgn()` / `min()` / `max()` | 8-bit values only; `abs`/`sgn` treat values as signed (bit 7 = negative → `abs` two's-complements, `sgn` returns `$FF`); `min`/`max` are unsigned (0–255) |
 | `plot` | Out-of-range pixels are silently clipped (CheckPlot: Y ≥ 200 or X ≥ 320 → skip) |
 | `mplot` | No bounds checking — x must be 0–159, y must be 0–199 |
+| `rect` | No bounds checking — x: 0–319, y: 0–199; x1≤x2 and y1≤y2 not enforced (degenerate/inverted rects produce undefined output) |
 | `plot4` | No bounds checking — x must be 0–79, y must be 0–49 (block mode) |
 | `circle4` | Clips off-screen block pixels; useful radius is roughly 0–49 in 80×50 block mode |
 | `chr$` | No PETSCII↔ASCII mapping — n is passed as-is to CHROUT |

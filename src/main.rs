@@ -29,7 +29,7 @@ fn main() {
 }
 
 fn print_help() {
-    println!("Commodore Ultimate Basic – C64 BASIC compiler");
+    println!("Commodore Ultimate Basic – C64 BASIC compiler v{}", env!("CARGO_PKG_VERSION"));
     println!();
     println!("Usage:");
     println!("  ub build <input.ub> [OPTIONS]");
@@ -48,6 +48,7 @@ fn print_help() {
 }
 
 fn cmd_build(args: &[String]) {
+    println!("Ultimate Basic v{}", env!("CARGO_PKG_VERSION"));
     let mut input: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
     let mut basic_stub = true;

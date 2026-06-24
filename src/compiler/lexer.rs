@@ -161,6 +161,7 @@ pub enum Token {
     Turbo,     // turbo() — 1 if U64 turbo is active (bits 0-3 of $D031 != 0), else 0
     Lowercase, // lowercase — switch VIC-II to lowercase/uppercase charset (CHR$(14))
     Uppercase, // uppercase — switch VIC-II to uppercase/graphics charset (CHR$(142))
+    Rect,      // rect x1,y1,x2,y2 — draw a rectangle outline in bitmap mode
 
     // Operators
     Plus,
@@ -496,6 +497,7 @@ impl Lexer {
             "turbo" => Token::Turbo,
             "lowercase" => Token::Lowercase,
             "uppercase" => Token::Uppercase,
+            "rect" => Token::Rect,
             // "print" is handled above in the match (before the string match block)
             "return" => Token::Return,
             "call" => Token::Call,

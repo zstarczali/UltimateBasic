@@ -190,7 +190,19 @@ pub enum Stmt {
         y1: Expr,
         x2: Expr,
         y2: Expr,
-    }, // line x1,y1,x2,y2 — Bresenham line
+    }, // line x1,y1,x2,y2 — Bresenham line (set pixels)
+    LineErase {
+        x1: Expr,
+        y1: Expr,
+        x2: Expr,
+        y2: Expr,
+    }, // line erase x1,y1,x2,y2 — Bresenham line (clear pixels, AND ~mask)
+    LineXor {
+        x1: Expr,
+        y1: Expr,
+        x2: Expr,
+        y2: Expr,
+    }, // line xor x1,y1,x2,y2 — Bresenham line (toggle pixels, EOR mask)
     Gcls,                   // gcls — clear bitmap screen
     Bye,                    // bye/exit — cls then RTS back to BASIC
     Incbin(String),         // incbin "file" — embed raw binary file bytes inline
@@ -246,6 +258,9 @@ pub enum Stmt {
     PlotErase(Expr, Expr), // plot erase x, y — clear pixel in bitmap
     PlotXor(Expr, Expr), // plot xor x, y — XOR pixel in bitmap
     Paint(Expr, Expr), // paint x, y — 4-connected flood fill from (x,y)
+    Rect(Expr, Expr, Expr, Expr),      // rect x1,y1,x2,y2 — draw rectangle outline (set)
+    RectErase(Expr, Expr, Expr, Expr), // rect erase x1,y1,x2,y2 — erase rectangle outline
+    RectXor(Expr, Expr, Expr, Expr),   // rect xor x1,y1,x2,y2 — XOR rectangle outline
     SpriteExpandX {
         id: Expr,
         on: bool,

@@ -1523,6 +1523,31 @@ impl Parser {
                 self.expect_newline();
                 Some(Stmt::PrintHash { channel, args })
             }
+            Token::Rect => {
+                self.advance();
+                let mode = if matches!(self.peek(), Token::Erase) {
+                    self.advance();
+                    1u8
+                } else if matches!(self.peek(), Token::Xor) {
+                    self.advance();
+                    2u8
+                } else {
+                    0u8
+                };
+                let x1 = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let y1 = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let x2 = self.parse_expr();
+                if self.peek() == &Token::Comma { self.advance(); }
+                let y2 = self.parse_expr();
+                self.expect_newline();
+                Some(match mode {
+                    1 => Stmt::RectErase(x1, y1, x2, y2),
+                    2 => Stmt::RectXor(x1, y1, x2, y2),
+                    _ => Stmt::Rect(x1, y1, x2, y2),
+                })
+            }
             Token::Plot => {
                 self.advance();
                 if matches!(self.peek(), Token::Erase) {
@@ -1614,21 +1639,28 @@ impl Parser {
             }
             Token::Line => {
                 self.advance();
+                let mode = if matches!(self.peek(), Token::Erase) {
+                    self.advance();
+                    1u8
+                } else if matches!(self.peek(), Token::Xor) {
+                    self.advance();
+                    2u8
+                } else {
+                    0u8
+                };
                 let x1 = self.parse_expr();
-                if self.peek() == &Token::Comma {
-                    self.advance();
-                }
+                if self.peek() == &Token::Comma { self.advance(); }
                 let y1 = self.parse_expr();
-                if self.peek() == &Token::Comma {
-                    self.advance();
-                }
+                if self.peek() == &Token::Comma { self.advance(); }
                 let x2 = self.parse_expr();
-                if self.peek() == &Token::Comma {
-                    self.advance();
-                }
+                if self.peek() == &Token::Comma { self.advance(); }
                 let y2 = self.parse_expr();
                 self.expect_newline();
-                Some(Stmt::Line { x1, y1, x2, y2 })
+                Some(match mode {
+                    1 => Stmt::LineErase { x1, y1, x2, y2 },
+                    2 => Stmt::LineXor   { x1, y1, x2, y2 },
+                    _ => Stmt::Line      { x1, y1, x2, y2 },
+                })
             }
             Token::Gcls => {
                 self.advance();
