@@ -140,7 +140,9 @@ pub enum Stmt {
         on: bool,
         multi: bool,
         block: bool,
-    }, // multi=true → multicolor bitmap; block=true → 4×4 text block mode
+        dbuf: bool,
+    }, // multi=true → multicolor bitmap; block=true → 4×4 text block mode; dbuf=true → double-buffered hires
+    Flip, // flip — swap double-buffer front/back (show drawn buffer, draw into the other)
     Display {
         on: bool,
     }, // display on/off — controls VIC DEN bit ($D011 bit4)

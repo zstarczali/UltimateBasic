@@ -37,7 +37,9 @@ examples/
   sprite_data.ub       – sprdef shape data (included by other demos)
   sprite_mux_orbit.ub  – 24-sprite orbit with sprdef + precomputed positions
   sprite_orbit_demo.ub – 8 hardware sprites in circular orbit via sin/cos
-  reu_bitmap_demo.ub   – REU stash/fetch with bitmap graphics
+  reu_bitmap_demo.ub   – REU stash/fetch with full-width (0-319) bitmap graphics
+  cube_demo.ub         – tumbling 3D wireframe cube, double-buffered (graphics on double + flip)
+  wide_x_demo.ub       – verifies plot/line/circle/rect reach X 256-319 (full 320 width)
   tenprint.ub          – 5 TENPRINT maze implementations with menu; demos lowercase charset mode
   text_scroll_demo.ub – hardware horizontal fine scroll text scroller
   fn_demo.ub          – text scroller rewritten with fn + typed string params
@@ -1003,8 +1005,10 @@ the pointer. Values must be byte-sized constants (0–255).
 ```basic
 graphics on              # VIC-II hires bitmap mode (320×200), bitmap at $2000
 graphics on multi        # VIC-II multicolor bitmap mode (160×200, 4 colors per 8×8 cell)
+graphics on double       # double-buffered hires (320×200); drawing targets the hidden buffer
 graphics off             # back to text mode
-gcls                     # clear bitmap (zero-fill $2000-$3FFF)
+gcls                     # clear bitmap (zero-fill); in double mode clears the hidden buffer
+flip                     # double buffer: show drawn buffer, redirect drawing to the other
 plot x, y                # set pixel at (x, y);  x: 0-319, y: 0-199
 plot erase x, y          # clear pixel at (x, y) — AND ~mask into byte
 plot xor x, y            # toggle (XOR) pixel at (x, y) — EOR mask into byte
@@ -1038,6 +1042,25 @@ mode-switch glitches. Call `display on` after `gcls` and drawing to unblank.
 X supports the full 320-pixel width. For x ≤ 255 the high byte is 0; for x = 256–319 it is 1, which the helper adds as an extra +256 to the byte address. `word` variables work directly as x.
 
 Pixel byte formula: `$2000 + (y>>3)*320 + (x and $1F8) + (y and 7)`,  bit: `$80 >> (x and 7)`
+
+**Double buffering** (`graphics on double` + `flip`): keeps two complete hires bitmaps and
+shows only finished frames (flicker-free, no XOR needed).
+
+- Buffer A = bitmap `$2000` / matrix `$0400` (VIC bank 0, `$DD00` low = `%11`).
+- Buffer B = bitmap `$6000` / matrix `$4400` (VIC bank 1, `$DD00` low = `%10`).
+- `$D018` stays `$18` for both (same offsets within each bank); only `$DD00` selects which
+  is shown. All pixel helpers and `gcls` write through a **runtime draw base** — two ZP
+  bytes (`db_base_zp` = bitmap hi, `db_mtx_zp` = matrix hi) allocated in `pre_scan` whenever
+  bitmap graphics are used, and initialised to `$20`/`$04` (single-buffer layout) in the
+  prologue. `ADC #$20` in the plot/erase/xor/paint helpers becomes `ADC db_base`; `gcls`'s
+  `LDA #$20`/`LDA #$04` become `LDA db_base`/`LDA db_mtx` (all same length, so branch offsets
+  are unchanged).
+- `graphics on double` pre-clears both buffers, shows A, points the draw base at B.
+- `flip` waits for raster ≥ 251 (lower border) then swaps `$DD00` and repoints the draw base
+  at the now-hidden buffer — tear-free. `emit_graphics_on` resets the base to `$20`/`$04`.
+- Hires only. Back buffer occupies `$4000-$7FFF`, so program code must stay below `$4400`.
+- `double` is parsed as a plain identifier after `graphics on` (NOT a reserved keyword), so
+  it remains usable as a normal name elsewhere (e.g. `fn double(...)`).
 
 ### Block Graphics (80×50)
 

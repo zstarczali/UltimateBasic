@@ -1105,8 +1105,29 @@ impl Parser {
                 } else {
                     false
                 };
+                // `double` is detected as a plain identifier (not a reserved keyword)
+                // so it stays usable as a normal name elsewhere (e.g. fn double()).
+                let dbuf = if on && !multi && !block {
+                    if let Token::Ident(s) = self.peek() {
+                        if s == "double" {
+                            self.advance();
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
                 self.expect_newline();
-                Some(Stmt::Graphics { on, multi, block })
+                Some(Stmt::Graphics { on, multi, block, dbuf })
+            }
+            Token::Flip => {
+                self.advance();
+                self.expect_newline();
+                Some(Stmt::Flip)
             }
             Token::Display => {
                 self.advance();
@@ -3234,7 +3255,8 @@ mod tests {
             Stmt::Graphics {
                 on: true,
                 multi: false,
-                block: false
+                block: false,
+                ..
             }
         ));
     }
@@ -3246,7 +3268,8 @@ mod tests {
             Stmt::Graphics {
                 on: false,
                 multi: false,
-                block: false
+                block: false,
+                ..
             }
         ));
     }
@@ -3258,9 +3281,28 @@ mod tests {
             Stmt::Graphics {
                 on: true,
                 multi: true,
-                block: false
+                block: false,
+                ..
             }
         ));
+    }
+    #[test]
+    fn graphics_on_double() {
+        let stmts = parse("graphics on double");
+        assert!(matches!(
+            &stmts[0],
+            Stmt::Graphics {
+                on: true,
+                multi: false,
+                block: false,
+                dbuf: true,
+            }
+        ));
+    }
+    #[test]
+    fn flip_stmt() {
+        let stmts = parse("flip");
+        assert!(matches!(&stmts[0], Stmt::Flip));
     }
 
     // ── Colors ───────────────────────────────────────────────────────────

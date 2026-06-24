@@ -149,6 +149,11 @@ impl TestCpu {
                 self.set_zn(result);
             }
             0x48 => self.push(self.a),
+            0x0A => {
+                self.carry = self.a & 0x80 != 0;
+                self.a <<= 1;
+                self.set_zn(self.a);
+            }
             0x4A => {
                 self.carry = self.a & 1 != 0;
                 self.a >>= 1;
@@ -261,6 +266,10 @@ impl TestCpu {
             0xC9 => {
                 let imm = self.fetch_byte();
                 self.compare(self.a, imm);
+            }
+            0xE0 => {
+                let imm = self.fetch_byte();
+                self.compare(self.x, imm);
             }
             0xC8 => {
                 self.y = self.y.wrapping_add(1);
@@ -2334,15 +2343,72 @@ fn plot_emits_jsr() {
 
 #[test]
 fn plot_helper_contains_bitmap_base() {
-    // The plot helper embeds $20 (high byte of $2000 bitmap base)
+    // The draw bitmap base now lives in a ZP byte initialised at program start to
+    // $20 (high byte of $2000); the plot helper reads it via `ADC db_base` (0x65).
     let src = "plot 0, 0";
     let res = compile(src, &CompileOptions { basic_stub: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
-    // ADC #$20 in the helper: opcode $69 $20
     let bytes = &res.prg[2..];
+    // Prologue init of the draw base: LDA #$20 ; STA <zp>  (A9 20 85 ..)
     assert!(
-        bytes.windows(2).any(|w| w == &[0x69, 0x20]),
-        "Plot helper should embed ADC #$20 for bitmap base"
+        bytes
+            .windows(3)
+            .any(|w| w[0] == 0xA9 && w[1] == 0x20 && w[2] == 0x85),
+        "Program should initialise the bitmap draw base to $20"
+    );
+    // Helper reads the base from zero page: ADC zp (0x65), not an immediate.
+    assert!(
+        bytes.windows(1).any(|w| w[0] == 0x65),
+        "Plot helper should read the bitmap base from ZP (ADC zp)"
+    );
+}
+
+#[test]
+fn double_buffer_plot_draws_into_back_buffer() {
+    // `graphics on double` shows buffer A ($2000) and directs drawing to the hidden
+    // back buffer B ($6000). A plot must land in $6000, leaving $2000 untouched.
+    let prg = compile_raw("graphics on double\nplot 0, 0");
+    let mut cpu = TestCpu::new(&prg);
+    cpu.run_until_main_rts(4_000_000);
+    assert_eq!(
+        cpu.mem[0x6000] & 0x80,
+        0x80,
+        "plot(0,0) should set the top-left pixel in back buffer $6000"
+    );
+    assert_eq!(
+        cpu.mem[0x2000], 0x00,
+        "front buffer $2000 must stay clear while the back buffer is the draw target"
+    );
+    // After setup, VIC bank 0 is selected to show buffer A ($DD00 low bits = %11).
+    assert_eq!(
+        cpu.mem[0xDD00] & 0x03,
+        0x03,
+        "graphics on double should show buffer A (VIC bank 0)"
+    );
+}
+
+#[test]
+fn flip_swaps_visible_bank_and_draw_target() {
+    // Draw into the hidden buffer, flip, then draw again: the second plot must land
+    // in the OTHER buffer, and flip must switch the shown VIC bank to buffer B.
+    let prg = compile_raw("graphics on double\nplot 0, 0\nflip\nplot 0, 0");
+    let mut cpu = TestCpu::new(&prg);
+    cpu.mem[0xD012] = 0xFB; // raster in lower border → flip's vblank wait falls through
+    cpu.run_until_main_rts(4_000_000);
+    assert_eq!(
+        cpu.mem[0x6000] & 0x80,
+        0x80,
+        "pre-flip plot draws into back buffer B ($6000)"
+    );
+    assert_eq!(
+        cpu.mem[0x2000] & 0x80,
+        0x80,
+        "post-flip plot draws into buffer A ($2000)"
+    );
+    assert_eq!(
+        cpu.mem[0xDD00] & 0x03,
+        0x02,
+        "flip should select VIC bank 1 to show the just-drawn buffer B"
     );
 }
 
@@ -4453,7 +4519,8 @@ fn graphics_on_block_parser_sets_block_flag() {
             Stmt::Graphics {
                 on: true,
                 multi: false,
-                block: true
+                block: true,
+                ..
             }
         ),
         "graphics on block should parse to Graphics {{ on:true, multi:false, block:true }}"

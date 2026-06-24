@@ -112,6 +112,7 @@ pub enum Token {
     Stash,
     Fetch,
     Multi,
+    Flip,   // flip — swap double-buffer front/back
     Block,  // block pixel mode keyword
     Plot4,  // plot4 — 4×4 block pixel set/erase
     Sid,    // load sid "file.sid" — embed SID music; also: sid volume / sid stop
@@ -598,6 +599,7 @@ impl Lexer {
             "stash" => Token::Stash,
             "fetch" => Token::Fetch,
             "multi" => Token::Multi,
+            "flip" => Token::Flip,
             "block" => Token::Block,
             "plot4" => Token::Plot4,
             "exit" => Token::Bye,

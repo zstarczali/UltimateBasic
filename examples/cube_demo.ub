@@ -1,14 +1,15 @@
-# cube_demo.ub — Tumbling 3D wireframe cube (hires bitmap)
+# cube_demo.ub — Tumbling 3D wireframe cube, DOUBLE-BUFFERED (flicker-free)
 #
-# A real 3D cube rotated around TWO axes (Y and X) so it tumbles, not just
-# spins. 8 vertices at (±40,±40,±40) are rotated every frame and projected
-# orthographically to the screen. XOR draw/erase = flicker-free animation.
+# A real 3D cube rotated around two axes (Y and X) so it tumbles. With
+# `graphics on double` every frame is drawn into the HIDDEN bitmap and shown
+# only when complete via `flip` (which swaps buffers during vertical blank),
+# so there is zero flicker — no XOR tricks needed, just clear + draw each frame.
 #
-# Signed fixed-point rotation:
-#   sin(a)/cos(a) return 0-255 (centre 128). The signed trig value is (t-128),
-#   representing -1..+1 scaled by 128. smul(c,t) computes  c*(t-128)/128  in
-#   signed 8-bit two's-complement — the core of the rotation matrix.
+# Double-buffer memory: buffer A = bitmap $2000 / matrix $0400 (VIC bank 0),
+# buffer B = bitmap $6000 / matrix $4400 (VIC bank 1). Requires $4000-$7FFF
+# free of program code (this demo's code ends well below $2000).
 #
+# Signed fixed-point rotation — smul(c,t) = c*(t-128)/128 in signed 8-bit:
 #   Y-axis:  rx = x*cos - z*sin ,  rz = x*sin + z*cos ,  ry = y
 #   X-axis:  ry2 = ry*cos - rz*sin
 #   screen:  px = 160 + rx ,  py = 100 + ry2     (two's-complement add)
@@ -21,7 +22,7 @@ var py = array(8)    # projected screen Y
 
 var ax  = 0          # rotation angle around X
 var ay  = 0          # rotation angle around Y
-var cax = 0          # cos(ax) / sin(ax) / cos(ay) / sin(ay) for this frame
+var cax = 0          # per-frame cos/sin of ax and ay
 var sax = 0
 var cay = 0
 var say = 0
@@ -107,38 +108,26 @@ sub draw_cube()
   line px[3], py[3], px[7], py[7]
 end
 
-sub erase_cube()
-  line xor px[0], py[0], px[1], py[1]
-  line xor px[1], py[1], px[2], py[2]
-  line xor px[2], py[2], px[3], py[3]
-  line xor px[3], py[3], px[0], py[0]
-  line xor px[4], py[4], px[5], py[5]
-  line xor px[5], py[5], px[6], py[6]
-  line xor px[6], py[6], px[7], py[7]
-  line xor px[7], py[7], px[4], py[4]
-  line xor px[0], py[0], px[4], py[4]
-  line xor px[1], py[1], px[5], py[5]
-  line xor px[2], py[2], px[6], py[6]
-  line xor px[3], py[3], px[7], py[7]
-end
-
 # ── setup ─────────────────────────────────────────────────────────────────────
 color border 0
 color bg     0
-graphics on
-gcls
+graphics on double      # double-buffered hires; drawing goes to the hidden buffer
+
+gcls                    # clear hidden buffer
 call compute
 call draw_cube
+flip                    # show the first frame, start drawing the other buffer
 display on
 
-# ── animation loop ────────────────────────────────────────────────────────────
+# ── animation loop: clear hidden buffer, draw fresh, flip — no flicker ────────
 label mainloop
-  wait raster 250
-  call erase_cube         # XOR off the old frame
-  ay = ay + 3             # spin around Y
-  ax = ax + 1             # ...and tumble around X (different rate)
+  ay = ay + 3           # spin around Y
+  ax = ax + 1           # tumble around X (different rate)
+
+  gcls                  # clear the hidden buffer
   call compute
-  call draw_cube          # XOR on the new frame
+  call draw_cube        # draw this frame into the hidden buffer
+  flip                  # swap during vblank → tear-free, flicker-free
 
   k = inkey()
   if k != 0 then goto done end

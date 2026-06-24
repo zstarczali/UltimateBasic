@@ -564,6 +564,8 @@ pub struct Codegen {
     array_ptr: u16,               // next free array slot
     rnd_seeded: bool,
     plot_zp: Option<u8>,              // base of 5-byte ZP block for plot helper
+    db_base_zp: Option<u8>,           // ZP byte: hi byte of current DRAW bitmap base ($20/$60)
+    db_mtx_zp: Option<u8>,            // ZP byte: hi byte of current DRAW video matrix base ($04/$44)
     plot_patches: Vec<usize>,         // code positions of JSR targets to patch
     plot_erase_patches: Vec<usize>,   // code positions of JSR targets for plot-erase helper
     plot_xor_patches: Vec<usize>,     // code positions of JSR targets for plot-xor helper
@@ -645,6 +647,8 @@ impl Codegen {
             array_ptr: 0xC000,
             rnd_seeded: false,
             plot_zp: None,
+            db_base_zp: None,
+            db_mtx_zp: None,
             plot_patches: vec![],
             plot_erase_patches: vec![],
             plot_xor_patches: vec![],
@@ -733,6 +737,48 @@ impl Codegen {
                 }
                 Stmt::RepeatLoop(body, _) => {
                     if Self::has_plot_stmt(body) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// Recursively check for statements that read/redirect the bitmap draw base:
+    /// `gcls`, a hires/multicolor `graphics on`, or `flip`.
+    fn has_bitmap_base_use(stmts: &[Stmt]) -> bool {
+        for stmt in stmts {
+            match stmt {
+                Stmt::Gcls | Stmt::Flip => return true,
+                Stmt::Graphics {
+                    on: true,
+                    block: false,
+                    ..
+                } => return true,
+                Stmt::SubDef(_, _, body) | Stmt::FnDef(_, _, _, body) => {
+                    if Self::has_bitmap_base_use(body) {
+                        return true;
+                    }
+                }
+                Stmt::If(_, then_b, else_b) => {
+                    if Self::has_bitmap_base_use(then_b) {
+                        return true;
+                    }
+                    if let Some(eb) = else_b {
+                        if Self::has_bitmap_base_use(eb) {
+                            return true;
+                        }
+                    }
+                }
+                Stmt::ForLoop { body, .. } | Stmt::Loop(_, body) | Stmt::WhileLoop(_, body) => {
+                    if Self::has_bitmap_base_use(body) {
+                        return true;
+                    }
+                }
+                Stmt::RepeatLoop(body, _) => {
+                    if Self::has_bitmap_base_use(body) {
                         return true;
                     }
                 }
@@ -1208,6 +1254,23 @@ impl Codegen {
             let zp = self.perm_zp;
             self.perm_zp += 6;
             self.plot_zp = Some(zp);
+        }
+
+        // Reserve 2 ZP bytes for the bitmap draw base: +0 = bitmap hi byte ($20/$60),
+        // +1 = video matrix hi byte ($04/$44). Routes all pixel/gcls writes through a
+        // runtime base so `flip` can redirect drawing to the hidden buffer. Initialised
+        // to the default single-buffer layout ($2000 / $0400) at program start.
+        if Self::has_plot_stmt(stmts)
+            || Self::has_line_stmt(stmts)
+            || Self::has_circle_stmt(stmts)
+            || Self::has_rect_stmt(stmts)
+            || Self::has_paint_stmt(stmts)
+            || Self::has_bitmap_base_use(stmts)
+        {
+            let zp = self.perm_zp;
+            self.perm_zp += 2;
+            self.db_base_zp = Some(zp);
+            self.db_mtx_zp = Some(zp + 1);
         }
 
         // Reserve 24 ZP bytes for the midpoint circle helper.
@@ -3717,6 +3780,21 @@ impl Codegen {
     // Graphics ON: C64 hires or multicolor bitmap mode at $2000, video matrix at $0400.
     // multi=false → standard hires 320×200 (1bpp); multi=true → multicolor 160×200 (2bpp).
     fn emit_graphics_on(&mut self, multi: bool) {
+        // ── 0. Reset draw base to the single-buffer layout ($2000 / $0400) in
+        //       case this follows a `graphics on double` session. ──────────────
+        if let Some(base) = self.db_base_zp {
+            self.emit(0xA9);
+            self.emit(0x20);
+            self.emit(0x85);
+            self.emit(base);
+        }
+        if let Some(mtx) = self.db_mtx_zp {
+            self.emit(0xA9);
+            self.emit(0x04);
+            self.emit(0x85);
+            self.emit(mtx);
+        }
+
         // ── 1. Blank display to avoid mode-switch glitch ──────────────────
         self.emit(0xAD);
         self.emit16(0xD011); // LDA $D011
@@ -3751,6 +3829,193 @@ impl Codegen {
         self.emit(0x20); // ORA #$20  (set BMM=bit5 only; DEN stays 0)
         self.emit(0x8D);
         self.emit16(0xD011); // STA $D011
+    }
+
+    // Inline page-fill loop: store `fill` into `pages` pages starting at (start_hi*256).
+    // Uses 3 scratch ZP bytes from tmp_zp.
+    fn emit_fill_pages(&mut self, start_hi: u8, pages: u8, fill: u8) {
+        let ptr_lo = self.tmp_zp;
+        self.tmp_zp += 1;
+        let ptr_hi = self.tmp_zp;
+        self.tmp_zp += 1;
+        let ctr = self.tmp_zp;
+        self.tmp_zp += 1;
+        self.emit(0xA9);
+        self.emit(0x00);
+        self.emit(0x85);
+        self.emit(ptr_lo); // ptr_lo = 0
+        self.emit(0xA9);
+        self.emit(start_hi);
+        self.emit(0x85);
+        self.emit(ptr_hi); // ptr_hi = start_hi
+        self.emit(0xA9);
+        self.emit(pages);
+        self.emit(0x85);
+        self.emit(ctr); // ctr = pages
+        self.emit(0xA9);
+        self.emit(fill); // A = fill value
+        let page_top = self.current_addr();
+        self.emit(0xA0);
+        self.emit(0x00); // LDY #0
+        let byte_top = self.current_addr();
+        self.emit(0x91);
+        self.emit(ptr_lo); // STA (ptr),Y
+        self.emit(0xC8); // INY
+        self.emit(0xD0);
+        let b1 = self.code.len();
+        self.emit(0x00); // BNE byte_top
+        self.patch_bxx(b1, byte_top);
+        self.emit(0xE6);
+        self.emit(ptr_hi); // INC ptr_hi
+        self.emit(0xC6);
+        self.emit(ctr); // DEC ctr
+        self.emit(0xD0);
+        let b2 = self.code.len();
+        self.emit(0x00); // BNE page_top
+        self.patch_bxx(b2, page_top);
+    }
+
+    // Graphics ON DOUBLE: double-buffered hires bitmap.
+    //   Buffer A: bitmap $2000, matrix $0400, VIC bank 0 ($DD00 low = %11)
+    //   Buffer B: bitmap $6000, matrix $4400, VIC bank 1 ($DD00 low = %10)
+    // Both buffers use $D018=$18 (same offsets within their bank); only $DD00 selects
+    // which is shown. After setup: A is shown, drawing is directed to hidden buffer B.
+    // Requires $4000-$7FFF free of program code (matrix $4400, bitmap $6000-$7FFF).
+    fn emit_graphics_on_double(&mut self) {
+        // 1. Blank display (clear DEN) to avoid mode-switch glitch.
+        self.emit(0xAD);
+        self.emit16(0xD011);
+        self.emit(0x29);
+        self.emit(0xEF);
+        self.emit(0x8D);
+        self.emit16(0xD011);
+
+        // 2. $D018 = $18 (matrix offset $0400, bitmap offset $2000 within bank).
+        self.emit(0xA9);
+        self.emit(0x18);
+        self.emit(0x8D);
+        self.emit16(0xD018);
+
+        // 3. Clear MCM (hires).
+        self.emit(0xAD);
+        self.emit16(0xD016);
+        self.emit(0x29);
+        self.emit(0xEF);
+        self.emit(0x8D);
+        self.emit16(0xD016);
+
+        // 4. Set BMM (DEN stays 0 — user calls `display on` after first flip).
+        self.emit(0xAD);
+        self.emit16(0xD011);
+        self.emit(0x09);
+        self.emit(0x20);
+        self.emit(0x8D);
+        self.emit16(0xD011);
+
+        // 5. Show buffer A: CIA2 VIC bank 0 → $DD00 low bits = %11.
+        self.emit(0xAD);
+        self.emit16(0xDD00);
+        self.emit(0x29);
+        self.emit(0xFC);
+        self.emit(0x09);
+        self.emit(0x03);
+        self.emit(0x8D);
+        self.emit16(0xDD00);
+
+        // 6. Pre-clear both buffers so neither shows garbage before it is drawn.
+        self.emit_fill_pages(0x20, 0x20, 0x00); // A bitmap $2000-$3FFF = 0
+        self.emit_fill_pages(0x04, 0x04, 0x10); // A matrix  $0400-$07FF = $10
+        self.emit_fill_pages(0x60, 0x20, 0x00); // B bitmap $6000-$7FFF = 0
+        self.emit_fill_pages(0x44, 0x04, 0x10); // B matrix  $4400-$47FF = $10
+
+        // 7. Direct drawing into the hidden back buffer B.
+        if let Some(base) = self.db_base_zp {
+            self.emit(0xA9);
+            self.emit(0x60);
+            self.emit(0x85);
+            self.emit(base);
+        }
+        if let Some(mtx) = self.db_mtx_zp {
+            self.emit(0xA9);
+            self.emit(0x44);
+            self.emit(0x85);
+            self.emit(mtx);
+        }
+    }
+
+    // Flip: show the buffer that was just drawn (the hidden one) and redirect drawing to
+    // the other. Waits for the lower border (raster >= 251) first so the bank switch is
+    // tear-free. db_base holds the hidden/draw buffer's bitmap hi byte ($20 or $60).
+    fn emit_flip(&mut self) {
+        let (base, mtx) = match (self.db_base_zp, self.db_mtx_zp) {
+            (Some(b), Some(m)) => (b, m),
+            _ => return, // no double-buffer state allocated — nothing to flip
+        };
+
+        // Wait until raster line >= 251 (lower border, past the visible bitmap).
+        let wait_top = self.current_addr();
+        self.emit(0xAD);
+        self.emit16(0xD012); // LDA $D012
+        self.emit(0xC9);
+        self.emit(0xFB); // CMP #251
+        self.emit(0x90);
+        let bcc = self.code.len();
+        self.emit(0x00); // BCC wait_top
+        self.patch_bxx(bcc, wait_top);
+
+        // Branch on which buffer we just drew.
+        self.emit(0xA5);
+        self.emit(base); // LDA db_base
+        self.emit(0xC9);
+        self.emit(0x60); // CMP #$60
+        self.emit(0xF0);
+        let beq_drew_b = self.code.len();
+        self.emit(0x00); // BEQ drew_b
+
+        // drew A ($20): show A (bank %11), draw into B ($60 / $44).
+        self.emit(0xAD);
+        self.emit16(0xDD00);
+        self.emit(0x29);
+        self.emit(0xFC);
+        self.emit(0x09);
+        self.emit(0x03);
+        self.emit(0x8D);
+        self.emit16(0xDD00);
+        self.emit(0xA9);
+        self.emit(0x60);
+        self.emit(0x85);
+        self.emit(base);
+        self.emit(0xA9);
+        self.emit(0x44);
+        self.emit(0x85);
+        self.emit(mtx);
+        self.emit(0x4C);
+        let jmp_done = self.code.len();
+        self.emit16(0x0000); // JMP done
+
+        // drew B ($60): show B (bank %10), draw into A ($20 / $04).
+        self.patch_bxx(beq_drew_b, self.current_addr());
+        self.emit(0xAD);
+        self.emit16(0xDD00);
+        self.emit(0x29);
+        self.emit(0xFC);
+        self.emit(0x09);
+        self.emit(0x02);
+        self.emit(0x8D);
+        self.emit16(0xDD00);
+        self.emit(0xA9);
+        self.emit(0x20);
+        self.emit(0x85);
+        self.emit(base);
+        self.emit(0xA9);
+        self.emit(0x04);
+        self.emit(0x85);
+        self.emit(mtx);
+
+        // done:
+        let done = self.current_addr();
+        self.code[jmp_done] = done as u8;
+        self.code[jmp_done + 1] = (done >> 8) as u8;
     }
 
     // Graphics OFF: back to text mode with display blanking around the switch.
@@ -4035,9 +4300,8 @@ impl Codegen {
         self.emit(0xA9);
         self.emit(0x00);
         self.emit(0x85);
-        self.emit(ptr_lo); // ptr = $2000
-        self.emit(0xA9);
-        self.emit(0x20);
+        self.emit(ptr_lo); // ptr = draw bitmap base (lo=0)
+        self.emit_lda_bmp_base(); // LDA db_base (hi byte; $20 default, $60 back buffer)
         self.emit(0x85);
         self.emit(ptr_hi);
         self.emit(0xA9);
@@ -4073,9 +4337,8 @@ impl Codegen {
         self.emit(0xA9);
         self.emit(0x00);
         self.emit(0x85);
-        self.emit(ptr_lo); // ptr = $0400
-        self.emit(0xA9);
-        self.emit(0x04);
+        self.emit(ptr_lo); // ptr = draw matrix base (lo=0)
+        self.emit_lda_mtx_base(); // LDA db_mtx (hi byte; $04 default, $44 back buffer)
         self.emit(0x85);
         self.emit(ptr_hi);
         self.emit(0xA9);
@@ -4104,6 +4367,50 @@ impl Codegen {
         let bne_vm_o = self.code.len();
         self.emit(0x00);
         self.patch_bxx(bne_vm_o, vm_page_top);
+    }
+
+    // Emit `ADC db_base` (zero-page) when the bitmap draw base is dynamic (double-buffer
+    // capable), else the classic `ADC #$20` immediate. Both are 2 bytes, so callers that
+    // pre-computed branch offsets are unaffected.
+    fn emit_adc_bmp_base(&mut self) {
+        match self.db_base_zp {
+            Some(z) => {
+                self.emit(0x65);
+                self.emit(z); // ADC db_base
+            }
+            None => {
+                self.emit(0x69);
+                self.emit(0x20); // ADC #$20
+            }
+        }
+    }
+
+    // `LDA db_base` (zp) or `LDA #$20` — high byte of the current draw bitmap base.
+    fn emit_lda_bmp_base(&mut self) {
+        match self.db_base_zp {
+            Some(z) => {
+                self.emit(0xA5);
+                self.emit(z);
+            }
+            None => {
+                self.emit(0xA9);
+                self.emit(0x20);
+            }
+        }
+    }
+
+    // `LDA db_mtx` (zp) or `LDA #$04` — high byte of the current draw video-matrix base.
+    fn emit_lda_mtx_base(&mut self) {
+        match self.db_mtx_zp {
+            Some(z) => {
+                self.emit(0xA5);
+                self.emit(z);
+            }
+            None => {
+                self.emit(0xA9);
+                self.emit(0x04);
+            }
+        }
     }
 
     // Plot helper subroutine (emitted once, called via JSR).
@@ -4143,8 +4450,7 @@ impl Codegen {
         self.emit(0x18); // CLC
         self.emit(0x65);
         self.emit(zp + 3); // ADC b
-        self.emit(0x69);
-        self.emit(0x20); // ADC #$20
+        self.emit_adc_bmp_base(); // ADC db_base (or #$20)
         self.emit(0x85);
         self.emit(zp + 5); // STA ptr_hi
 
@@ -4956,8 +5262,7 @@ impl Codegen {
         self.emit(0x18);
         self.emit(0x65);
         self.emit(zp + 3);
-        self.emit(0x69);
-        self.emit(0x20);
+        self.emit_adc_bmp_base(); // ADC db_base (or #$20)
         self.emit(0x85);
         self.emit(zp + 5);
 
@@ -5076,8 +5381,7 @@ impl Codegen {
         self.emit(0x18);
         self.emit(0x65);
         self.emit(zp + 3);
-        self.emit(0x69);
-        self.emit(0x20);
+        self.emit_adc_bmp_base(); // ADC db_base (or #$20)
         self.emit(0x85);
         self.emit(zp + 5);
 
@@ -5411,8 +5715,7 @@ impl Codegen {
         self.emit(0x18); // CLC
         self.emit(0x65);
         self.emit(zp + 3); // ADC b
-        self.emit(0x69);
-        self.emit(0x20); // ADC #$20
+        self.emit_adc_bmp_base(); // ADC db_base (or #$20)
         self.emit(0x85);
         self.emit(zp + 5); // STA ptr_hi
 
@@ -9202,16 +9505,21 @@ impl Codegen {
                     self.emit16(0xE544); // JSR $E544
                 }
             }
-            Stmt::Graphics { on, multi, block } => {
+            Stmt::Graphics { on, multi, block, dbuf } => {
                 if *on {
                     if *block {
                         self.emit_graphics_on_block();
+                    } else if *dbuf {
+                        self.emit_graphics_on_double();
                     } else {
                         self.emit_graphics_on(*multi);
                     }
                 } else {
                     self.emit_graphics_off();
                 }
+            }
+            Stmt::Flip => {
+                self.emit_flip();
             }
             Stmt::Display { on } => {
                 // Set or clear DEN (bit4) in $D011.
@@ -12237,6 +12545,22 @@ impl Codegen {
         // arithmetic assumes binary ADC/SBC semantics, so normalize once at
         // program entry.
         self.emit(0xD8); // CLD
+
+        // Initialise the bitmap draw base to the default single-buffer layout:
+        // bitmap $2000 (hi=$20), video matrix $0400 (hi=$04). `graphics on double`
+        // and `flip` overwrite these to redirect drawing to the hidden back buffer.
+        if let Some(base) = self.db_base_zp {
+            self.emit(0xA9);
+            self.emit(0x20); // LDA #$20
+            self.emit(0x85);
+            self.emit(base); // STA db_base
+        }
+        if let Some(mtx) = self.db_mtx_zp {
+            self.emit(0xA9);
+            self.emit(0x04); // LDA #$04
+            self.emit(0x85);
+            self.emit(mtx); // STA db_mtx
+        }
 
         // Emit data pointer init (forward-patched later when data block address is known)
         if let Some(zp) = self.data_zp {
