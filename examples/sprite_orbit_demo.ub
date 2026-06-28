@@ -26,52 +26,52 @@ color border 0
 # Sprite pointer N lives at $07F8+N; value = address / 64.
 # $2000 / 64 = $80
 # ──────────────────────────────────────────────────────────────
-poke $2000, $00  ; row  0
+poke $2000, $00  # row  0
 poke $2001, $3C
 poke $2002, $00
-poke $2003, $00  ; row  1
+poke $2003, $00  # row  1
 poke $2004, $FF
 poke $2005, $00
-poke $2006, $03  ; row  2
+poke $2006, $03  # row  2
 poke $2007, $FF
 poke $2008, $C0
-poke $2009, $07  ; row  3
+poke $2009, $07  # row  3
 poke $200A, $FF
 poke $200B, $E0
-poke $200C, $0F  ; row  4
+poke $200C, $0F  # row  4
 poke $200D, $FF
 poke $200E, $F0
-poke $200F, $0F  ; row  5
+poke $200F, $0F  # row  5
 poke $2010, $FF
 poke $2011, $F0
-poke $2012, $1F  ; row  6
+poke $2012, $1F  # row  6
 poke $2013, $FF
 poke $2014, $F8
-poke $2015, $1F  ; row  7
+poke $2015, $1F  # row  7
 poke $2016, $FF
 poke $2017, $F8
-poke $2018, $1F  ; row  8
+poke $2018, $1F  # row  8
 poke $2019, $FF
 poke $201A, $F8
-poke $201B, $0F  ; row  9
+poke $201B, $0F  # row  9
 poke $201C, $FF
 poke $201D, $F0
-poke $201E, $0F  ; row 10
+poke $201E, $0F  # row 10
 poke $201F, $FF
 poke $2020, $F0
-poke $2021, $07  ; row 11
+poke $2021, $07  # row 11
 poke $2022, $FF
 poke $2023, $E0
-poke $2024, $03  ; row 12
+poke $2024, $03  # row 12
 poke $2025, $FF
 poke $2026, $C0
-poke $2027, $00  ; row 13
+poke $2027, $00  # row 13
 poke $2028, $FF
 poke $2029, $00
-poke $202A, $00  ; row 14
+poke $202A, $00  # row 14
 poke $202B, $3C
 poke $202C, $00
-poke $202D, $00  ; rows 15-20 (empty — explicit for uncleared RAM)
+poke $202D, $00  # rows 15-20 (empty — explicit for uncleared RAM)
 poke $202E, $00
 poke $202F, $00
 poke $2030, $00
@@ -89,7 +89,7 @@ poke $203B, $00
 poke $203C, $00
 poke $203D, $00
 poke $203E, $00
-poke $203F, $00  ; padding (64th byte, unused)
+poke $203F, $00  # padding (64th byte, unused)
 
 # All 8 sprite pointers → $80 (= $2000 / 64)
 poke $07F8, $80
@@ -104,14 +104,14 @@ poke $07FF, $80
 # ──────────────────────────────────────────────────────────────
 # Sprite colours — 8 distinct non-black C64 colours
 # ──────────────────────────────────────────────────────────────
-sprite color 0, 1   ; white
-sprite color 1, 10  ; light red
-sprite color 2, 3   ; cyan
-sprite color 3, 4   ; purple
-sprite color 4, 5   ; green
-sprite color 5, 6   ; blue
-sprite color 6, 7   ; yellow
-sprite color 7, 14  ; light blue
+sprite color 0, 1   # white
+sprite color 1, 10  # light red
+sprite color 2, 3   # cyan
+sprite color 3, 4   # purple
+sprite color 4, 5   # green
+sprite color 5, 6   # blue
+sprite color 6, 7   # yellow
+sprite color 7, 14  # light blue
 
 # Enable all 8 hardware sprites
 sprite on 0
@@ -143,12 +143,12 @@ loop
     sprite 3, sin(angle + 96),  sin(angle + 160)
     sprite 4, sin(angle + 128), sin(angle + 192)
     sprite 5, sin(angle + 160), sin(angle + 224)
-    sprite 6, sin(angle + 192), sin(angle)        ; +256 wraps → sin(angle)
-    sprite 7, sin(angle + 224), sin(angle + 32)   ; +288 wraps → sin(angle+32)
+    sprite 6, sin(angle + 192), sin(angle)        # +256 wraps → sin(angle)
+    sprite 7, sin(angle + 224), sin(angle + 32)   # +288 wraps → sin(angle+32)
 
     angle = angle + 1
 
-    ; ~50 raster lines ≈ 1/6 frame delay → smooth ~1 s per orbit cycle
+    # ~50 raster lines ≈ 1/6 frame delay → smooth ~1 s per orbit cycle
     wait 50
 
     if peek($C6) != 0 then break end

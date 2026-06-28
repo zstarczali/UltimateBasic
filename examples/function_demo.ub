@@ -32,7 +32,7 @@ print "82 = ", s
 print ""
 
 var m = max_of_two(7, 12)
-print "max = ", m
+print "MAX = ", m
 print ""
 
-bye
+

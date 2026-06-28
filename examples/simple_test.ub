@@ -3,7 +3,7 @@ rem test.ub — test various statements and expressions; not meant to be a cohes
 cls fast
 
 for a = 0 to 60
-    print "hello world " + a
+    print "HELLO WORLD " + a
 end
 print
 
@@ -16,7 +16,7 @@ print a+b
 var c=12345+122
 print c
 print
-print "press a key"
+print "PRESS A KEY"
 var key = getch()
 
 for a = 0 to 200
@@ -33,11 +33,10 @@ var oo=22.3
 
 var name=""
 
-print "hello"
-print "world"
+print ""
 
-input "what's your name? ", name: print
-print "goodbye, " + name
+input "WHAT'S YOUR NAME? ", name: print
+print "GOODBYE, " + name
 print
 
 rem label tenprint

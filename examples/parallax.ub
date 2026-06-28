@@ -15,21 +15,28 @@ var sp = array(48)
 var i = 0
 var x: word = 0
 var y = 0
-var _speed = 0
+var _speed: word = 0
 var key = 0
 var seed: word = 0
+var hib: word = 0
 
-# Seed 48 stars across the full 320-pixel hires bitmap.
+# Seed 48 stars across the full 320-pixel width of the hires bitmap.
 # Layers 1..5 move by 1..5 pixels per frame.
 i = 0
 while i < 48
+  # Flat word steps only: gen_word_assign keeps 16-bit math when each
+  # statement is "wordvar = wordvar OP const" (nested exprs fall back to 8-bit).
   seed = i
-  seed = seed * 37 + 23
-  xs[i] = seed mod 320
+  seed = seed * 37
+  seed = seed + 23
+  seed = seed mod 320
+  xs[i] = seed
 
   seed = i
-  seed = seed * 29 + 17
-  ys[i] = (seed mod 184) + 8
+  seed = seed * 29
+  seed = seed + 17
+  seed = seed mod 184
+  ys[i] = seed + 8
 
   if i < 14 then
     sp[i] = 1
@@ -49,7 +56,11 @@ while i < 48
     end
   end
 
-  plot xs[i], ys[i]
+  # plot needs the X arg as a bare word var (or literal) to keep all 9 bits;
+  # plot xs[i] would truncate to 8-bit (ArrayGet hits the eval_expr fallback).
+  x = xs[i]
+  y = ys[i]
+  plot x, y
   i = i + 1
 end
 
@@ -61,31 +72,27 @@ while i < 48
   y = ys[i]
   _speed = sp[i]
 
+  # DIAGNOSTIC: single-pixel stars only (depth comes from the per-layer speed,
+  # not the star width). Removes the x+1/x+2 trailing pixels to isolate whether
+  # the multi-pixel logic was causing the mid-screen freeze.
   plot erase x, y
-  if _speed >= 2 then
-    if x < 319 then plot erase x + 1, y end
-  end
-  if _speed >= 4 then
-    if x < 318 then plot erase x + 2, y end
-  end
 
-  if x <= _speed then
+  # Move left, then detect wrap. if-comparisons compile to 8-bit (they ignore
+  # the high byte), so we can't test `x >= 320` directly. Instead subtract in
+  # 16-bit: an underflow makes x a huge word ($FFxx). Its high byte (x / 256,
+  # a 16-bit divide) is then 255, vs 0 or 1 for a valid 0-319 x. Comparing that
+  # byte-range value works correctly even through the 8-bit compare.
+  x = x - _speed
+  hib = x / 256
+  if hib >= 2 then
     x = 319
     y = rnd(184) + 8
-  else
-    x = x - _speed
   end
 
   xs[i] = x
   ys[i] = y
 
   plot x, y
-  if _speed >= 2 then
-    if x < 319 then plot x + 1, y end
-  end
-  if _speed >= 4 then
-    if x < 318 then plot x + 2, y end
-  end
 
   i = i + 1
 end
