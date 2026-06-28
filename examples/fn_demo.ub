@@ -80,4 +80,3 @@ goto scroll_loop
 label done
 scroll x 0 wide
 cls
-bye
