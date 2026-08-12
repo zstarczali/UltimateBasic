@@ -1,3 +1,30 @@
+Ultimate Basic v1.5.1 – Release Notes
+======================================
+
+2026-08-12 – Debug symbol exports
+--------------------------------------------------
+  - Added the `--debug` build option:
+      ub build demo.ub --debug
+    A successful build now writes three debugger files next to the `.prg`, using
+    the output file's stem.
+  - Added KickAssembler-compatible `.sym` export. It can be imported by assembler
+    source and contains resolved symbols in `.label name = $address` form.
+  - Added C64Debugger/RetroDebugger `.dbg` export in KickAssembler debug-dump XML
+    format. It contains the UltimateBasic program segment, source filename, and
+    resolved address labels.
+  - Added VICE `.vs` monitor-command export. It contains `al C:address .label`
+    commands and can be loaded with VICE's `-moncommands` option or `ll` command.
+  - Debug exports include `program_start`, `program_end`, zero-page variables,
+    arrays, subroutines, and BASIC labels.
+  - BASIC labels are now retained with their final machine-code addresses in the
+    compiler memory map, making them available to all debug exporters.
+  - Symbol names are sanitized for debugger compatibility, and source paths are
+    XML-escaped in `.dbg` output.
+  - Added unit coverage for all three symbol syntaxes and documented the new CLI
+    option and file formats in README.md, MANUAL.md, and CLAUDE.md.
+  - Current limitation: `.dbg` provides segments and address symbols, but does not
+    yet contain instruction-to-source-line mappings for source-level stepping.
+
 Ultimate Basic v1.5.0 – Release Notes
 ======================================
 

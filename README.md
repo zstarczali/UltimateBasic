@@ -38,6 +38,11 @@ ub build demo.ub --d64 disk.d64 --add music.prg   # embed extra files in the .d6
 | `--d64 [file]` | Also produce a `.d64` (default: `<output>.d64`) |
 | `--add <file>` | Add an extra file to the `.d64` (repeatable) |
 
+With `--debug`, the compiler writes three files beside the program: an importable
+KickAssembler `.sym`, a C64Debugger/RetroDebugger `.dbg`, and a VICE monitor `.vs`.
+They contain the program boundaries, variables, arrays, subroutines, and BASIC labels.
+The `.dbg` export currently provides address symbols but not source-line stepping data.
+
 ## A taste
 
 ```basic
