@@ -24,6 +24,7 @@ cargo test                 # unit + integration tests
 ```bash
 ub build demo.ub -o demo.prg          # compile to a .prg (prints a memory map)
 ub build demo.ub -v                   # also print ZP layout + hex dump
+ub build demo.ub --debug              # also write .sym, .dbg and .vs symbols
 ub build demo.ub --d64 disk.d64       # also build a .d64 disk image
 ub build demo.ub --d64 disk.d64 --add music.prg   # embed extra files in the .d64
 ```
@@ -33,6 +34,7 @@ ub build demo.ub --d64 disk.d64 --add music.prg   # embed extra files in the .d6
 | `-o, --output <file>` | Output `.prg` (default: `<input>.prg`) |
 | `-v, --verbose` | Print full zero-page layout and a hex dump |
 | `--no-stub` | Skip the BASIC `SYS` stub (code loads at `$0801`) |
+| `--debug` | Also produce KickAssembler `.sym`, C64Debugger `.dbg`, and VICE `.vs` files |
 | `--d64 [file]` | Also produce a `.d64` (default: `<output>.d64`) |
 | `--add <file>` | Add an extra file to the `.d64` (repeatable) |
 
