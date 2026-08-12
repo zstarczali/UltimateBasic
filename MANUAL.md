@@ -1083,12 +1083,37 @@ ub build <input.ub> [OPTIONS]
   -o, --output <file>   Output .prg file (default: <input>.prg)
   -v, --verbose         Show zero-page layout and code hex dump
   --no-stub             Skip the BASIC SYS stub (code loads at $0801)
+  --debug               Also produce .sym, .dbg and .vs debugger files
   --d64 [file]          Also produce a .d64 disk image;
                           without a filename defaults to <output>.d64
   --add <file>          Add an extra file to the .d64 disk image;
                           may be repeated for multiple files
   -h, --help            Show help
 ```
+
+### Debug files
+
+Use `--debug` to generate debugger symbols together with the program:
+
+```bash
+ub build demo.ub --debug
+```
+
+The compiler writes the files next to the `.prg`, using the output file's stem:
+
+| File | Format and purpose |
+|---|---|
+| `demo.sym` | KickAssembler-compatible symbol source, suitable for importing into assembler source |
+| `demo.dbg` | C64Debugger/RetroDebugger KickAssembler debug-dump containing the program segment and labels |
+| `demo.vs` | VICE monitor command file containing `al` commands for address labels |
+
+All three exports include `program_start`, `program_end`, variables, arrays,
+subroutines, and BASIC labels known after code generation. For example, load the
+VICE symbols with its `-moncommands demo.vs` command-line option or the monitor's
+`ll "demo.vs"` command.
+
+The current `.dbg` export provides segment and address-symbol information. It does
+not yet include instruction-to-source-line mappings for source-level stepping.
 
 `--add` requires `--d64`. The compiled `.ub` program is always the first file on the
 disk; each `--add` file is appended after it. File names on the disk are derived from

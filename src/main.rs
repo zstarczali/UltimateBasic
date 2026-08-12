@@ -10,7 +10,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process;
 
-use ultimate_basic::compiler::{CompileOptions, MemoryMap, compile_with_path};
+use ultimate_basic::compiler::{CompileOptions, MemoryMap, compile_with_path, debug_output};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -29,7 +29,10 @@ fn main() {
 }
 
 fn print_help() {
-    println!("Commodore Ultimate Basic – C64 BASIC compiler v{}", env!("CARGO_PKG_VERSION"));
+    println!(
+        "Commodore Ultimate Basic – C64 BASIC compiler v{}",
+        env!("CARGO_PKG_VERSION")
+    );
     println!();
     println!("Usage:");
     println!("  ub build <input.ub> [OPTIONS]");
@@ -39,6 +42,7 @@ fn print_help() {
     println!("  -v, --verbose         Show full ZP layout and code hex dump");
     println!("  --no-stub              Omit BASIC SYS stub (raw machine code at $0801)");
     println!("  --d64 [file]           Also produce a .d64 disk image (default: <output>.d64)");
+    println!("  --debug                Produce .sym, .dbg and .vs debugger files");
     println!("  --add <file>           Add extra file(s) to the .d64 image (repeatable)");
     println!("  -h, --help             Show this help");
     println!();
@@ -55,6 +59,7 @@ fn cmd_build(args: &[String]) {
     let mut verbose = false;
     let mut d64_out: Option<PathBuf> = None;
     let mut extra_files: Vec<PathBuf> = Vec::new();
+    let mut debug_files = false;
 
     let mut i = 2;
     while i < args.len() {
@@ -67,6 +72,7 @@ fn cmd_build(args: &[String]) {
             }
             "--verbose" | "-v" => verbose = true,
             "--no-stub" => basic_stub = false,
+            "--debug" => debug_files = true,
             "--d64" => {
                 // --d64           → auto: <output>.d64  (empty PathBuf as sentinel)
                 // --d64 <file>    → explicit path
@@ -137,6 +143,21 @@ fn cmd_build(args: &[String]) {
         if basic_stub { "yes" } else { "no" }
     );
 
+    if debug_files {
+        write_debug_file(
+            &output_path.with_extension("sym"),
+            &debug_output::sym(&result.map),
+        );
+        write_debug_file(
+            &output_path.with_extension("dbg"),
+            &debug_output::dbg(&result.map, &input),
+        );
+        write_debug_file(
+            &output_path.with_extension("vs"),
+            &debug_output::vice(&result.map),
+        );
+    }
+
     print_memory_map(&result.map, verbose);
 
     if let Some(d64_path) = d64_out {
@@ -170,6 +191,14 @@ fn cmd_build(args: &[String]) {
             .collect();
         make_d64(&d64_final, "ULTIMATE BASIC", &refs);
     }
+}
+
+fn write_debug_file(path: &std::path::Path, contents: &str) {
+    fs::write(path, contents).unwrap_or_else(|e| {
+        eprintln!("Error writing {}: {e}", path.display());
+        process::exit(1);
+    });
+    println!("  Debug:   {}", path.display());
 }
 
 fn print_memory_map(map: &MemoryMap, verbose: bool) {

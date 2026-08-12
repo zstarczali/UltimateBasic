@@ -565,28 +565,28 @@ pub struct Codegen {
     rnd_seeded: bool,
     plot_zp: Option<u8>,              // base of 5-byte ZP block for plot helper
     db_base_zp: Option<u8>,           // ZP byte: hi byte of current DRAW bitmap base ($20/$60)
-    db_mtx_zp: Option<u8>,            // ZP byte: hi byte of current DRAW video matrix base ($04/$44)
-    plot_patches: Vec<usize>,         // code positions of JSR targets to patch
-    plot_erase_patches: Vec<usize>,   // code positions of JSR targets for plot-erase helper
-    plot_xor_patches: Vec<usize>,     // code positions of JSR targets for plot-xor helper
-    circle_zp: Option<u8>,            // base of 24-byte ZP block for circle helper state
-    circle_patches: Vec<usize>,       // code positions of JSR targets for circle helper
-    circle4_zp: Option<u8>,           // base of 7-byte ZP block for circle4 helper state
-    circle4_patches: Vec<usize>,      // code positions of JSR targets for circle4 helper
-    line_zp: Option<u8>,              // base of 15-byte ZP block for line (Bresenham, 16-bit x)
-    line_patches: Vec<usize>,         // code positions of JSR targets for drawline-set helper
-    line_erase_patches: Vec<usize>,   // code positions of JSR targets for drawline-erase helper
-    line_xor_patches: Vec<usize>,     // code positions of JSR targets for drawline-xor helper
-    rect_zp: Option<u8>,              // base of 9-byte ZP block for rect helper
-    rect_patches: Vec<usize>,         // JSR targets for rect-set helper
-    rect_erase_patches: Vec<usize>,   // JSR targets for rect-erase helper
-    rect_xor_patches: Vec<usize>,     // JSR targets for rect-xor helper
-    sin_table_patches: Vec<usize>,    // positions of 2-byte address in LDA abs,X for sin/cos
-    sin_table_addr: Option<u16>,      // absolute address of the emitted 256-byte sin table
-    hex_helper_patches: Vec<usize>,   // JSR targets for print_hex helper
-    bin_helper_patches: Vec<usize>,   // JSR targets for print_bin helper
-    data_bytes: Vec<u8>,              // all data-statement bytes (collected in pre_scan)
-    data_zp: Option<u8>,              // ZP pair: lo at zp, hi at zp+1
+    db_mtx_zp: Option<u8>, // ZP byte: hi byte of current DRAW video matrix base ($04/$44)
+    plot_patches: Vec<usize>, // code positions of JSR targets to patch
+    plot_erase_patches: Vec<usize>, // code positions of JSR targets for plot-erase helper
+    plot_xor_patches: Vec<usize>, // code positions of JSR targets for plot-xor helper
+    circle_zp: Option<u8>, // base of 24-byte ZP block for circle helper state
+    circle_patches: Vec<usize>, // code positions of JSR targets for circle helper
+    circle4_zp: Option<u8>, // base of 7-byte ZP block for circle4 helper state
+    circle4_patches: Vec<usize>, // code positions of JSR targets for circle4 helper
+    line_zp: Option<u8>,   // base of 15-byte ZP block for line (Bresenham, 16-bit x)
+    line_patches: Vec<usize>, // code positions of JSR targets for drawline-set helper
+    line_erase_patches: Vec<usize>, // code positions of JSR targets for drawline-erase helper
+    line_xor_patches: Vec<usize>, // code positions of JSR targets for drawline-xor helper
+    rect_zp: Option<u8>,   // base of 9-byte ZP block for rect helper
+    rect_patches: Vec<usize>, // JSR targets for rect-set helper
+    rect_erase_patches: Vec<usize>, // JSR targets for rect-erase helper
+    rect_xor_patches: Vec<usize>, // JSR targets for rect-xor helper
+    sin_table_patches: Vec<usize>, // positions of 2-byte address in LDA abs,X for sin/cos
+    sin_table_addr: Option<u16>, // absolute address of the emitted 256-byte sin table
+    hex_helper_patches: Vec<usize>, // JSR targets for print_hex helper
+    bin_helper_patches: Vec<usize>, // JSR targets for print_bin helper
+    data_bytes: Vec<u8>,   // all data-statement bytes (collected in pre_scan)
+    data_zp: Option<u8>,   // ZP pair: lo at zp, hi at zp+1
     data_ptr_lo_patch: Option<usize>, // code pos of LDA #lo in init sequence
     data_ptr_hi_patch: Option<usize>, // code pos of LDA #hi in init sequence
     irq_patches: Vec<(usize, usize, String)>, // (lo_byte_pos, hi_byte_pos, sub_name) for irq forward refs
@@ -604,15 +604,15 @@ pub struct Codegen {
     sid_play_addr: Option<u16>, // play address from last load sid (for music play)
     mplot_zp: Option<u8>, // base of 7-byte ZP block for mplot (multicolor pixel) helper
     mplot_patches: Vec<usize>, // JSR targets to patch to mplot_helper
-    mouse_zp: Option<u8>,              // base of 6-byte ZP block for mouse helper
-    mouse_patches: Vec<usize>,         // JSR targets to patch to mouse_read_helper
+    mouse_zp: Option<u8>, // base of 6-byte ZP block for mouse helper
+    mouse_patches: Vec<usize>, // JSR targets to patch to mouse_read_helper
     music_wrap_patches: Vec<(usize, usize)>, // (lo_pos, hi_pos) in music play setup code
     onerr_patches: Vec<(usize, usize, String, usize)>, // (lo_pos, hi_pos, label, src_line)
     strn_zp: Option<u8>,  // 2-byte ZP ptr pair for str$() result (lo=strn_zp, hi=strn_zp+1)
     strn_tmp_zp: Option<u8>, // 1-byte perm ZP working scratch for strn_helper digit extraction
     strn_helper_patches: Vec<usize>, // code positions of JSR targets to patch to strn_helper
     charset_lowercase: bool, // compile-time mode: true after 'lowercase', false after 'uppercase'
-    fn_ret_zp: Option<u8>,    // 2-byte ZP pair for fn return value (word/float fns)
+    fn_ret_zp: Option<u8>, // 2-byte ZP pair for fn return value (word/float fns)
     fn_ret_type: Option<VarType>, // return type of the fn currently being generated
     used_vars: std::collections::HashSet<String>, // variables that have been read
 }
@@ -1053,19 +1053,29 @@ impl Codegen {
             match stmt {
                 Stmt::Rect(..) | Stmt::RectErase(..) | Stmt::RectXor(..) => return true,
                 Stmt::SubDef(_, _, body) | Stmt::FnDef(_, _, _, body) => {
-                    if Self::has_rect_stmt(body) { return true; }
+                    if Self::has_rect_stmt(body) {
+                        return true;
+                    }
                 }
                 Stmt::If(_, then_b, else_b) => {
-                    if Self::has_rect_stmt(then_b) { return true; }
+                    if Self::has_rect_stmt(then_b) {
+                        return true;
+                    }
                     if let Some(eb) = else_b {
-                        if Self::has_rect_stmt(eb) { return true; }
+                        if Self::has_rect_stmt(eb) {
+                            return true;
+                        }
                     }
                 }
                 Stmt::ForLoop { body, .. } | Stmt::Loop(_, body) | Stmt::WhileLoop(_, body) => {
-                    if Self::has_rect_stmt(body) { return true; }
+                    if Self::has_rect_stmt(body) {
+                        return true;
+                    }
                 }
                 Stmt::RepeatLoop(body, _) => {
-                    if Self::has_rect_stmt(body) { return true; }
+                    if Self::has_rect_stmt(body) {
+                        return true;
+                    }
                 }
                 _ => {}
             }
@@ -1226,7 +1236,9 @@ impl Codegen {
                         }
                     }
                 }
-                Stmt::SubDef(_, _, body) | Stmt::FnDef(_, _, _, body) => bytes.extend(Self::collect_data_bytes(body)),
+                Stmt::SubDef(_, _, body) | Stmt::FnDef(_, _, _, body) => {
+                    bytes.extend(Self::collect_data_bytes(body))
+                }
                 Stmt::If(_, then_b, else_b) => {
                     bytes.extend(Self::collect_data_bytes(then_b));
                     if let Some(eb) = else_b {
@@ -1691,7 +1703,10 @@ impl Codegen {
                     self.sub_patches.push((patch, name.clone(), 0));
                 }
                 // For word/float return fns, read lo byte from fn_ret_zp (hi ignored in 8-bit context)
-                if matches!(self.fn_ret_types.get(name), Some(VarType::Word | VarType::Float)) {
+                if matches!(
+                    self.fn_ret_types.get(name),
+                    Some(VarType::Word | VarType::Float)
+                ) {
                     if let Some(ret_zp) = self.fn_ret_zp {
                         self.emit(0xA5);
                         self.emit(ret_zp); // LDA fn_ret_zp (lo byte)
@@ -1839,23 +1854,29 @@ impl Codegen {
                 self.emit(0x1F); // EOR #$1F  (invert: 1 = pressed)
             }
             Expr::MouseXHi => {
-                let zp = self.mouse_zp.expect("mouse_x_hi: mouse helper not allocated");
+                let zp = self
+                    .mouse_zp
+                    .expect("mouse_x_hi: mouse helper not allocated");
                 self.emit(0xA5); // LDA zp
                 self.emit(zp + 6); // accum_x_hi (0 or 1)
             }
             Expr::MouseX => {
                 // 1351 mouse — JSR to helper, return accum_x (8-bit)
-                let zp = self.mouse_zp.expect("mouse_x: mouse helper not allocated (pre_scan bug)");
+                let zp = self
+                    .mouse_zp
+                    .expect("mouse_x: mouse helper not allocated (pre_scan bug)");
                 self.emit(0x20); // JSR
                 let pos = self.code.len();
                 self.emit16(0x0000); // placeholder
                 self.mouse_patches.push(pos);
                 self.emit(0xA5); // LDA zp
-                self.emit(zp);   // accum_x
+                self.emit(zp); // accum_x
             }
             Expr::MouseY => {
                 // 1351 mouse — just return accum_y (helper already ran via mouse_x)
-                let zp = self.mouse_zp.expect("mouse_y: mouse helper not allocated (pre_scan bug)");
+                let zp = self
+                    .mouse_zp
+                    .expect("mouse_y: mouse helper not allocated (pre_scan bug)");
                 self.emit(0xA5); // LDA zp
                 self.emit(zp + 1); // accum_y
             }
@@ -4951,9 +4972,9 @@ impl Codegen {
         // ── Check init flag ──────────────────────────────────────────────
         self.emit(0xA5);
         self.emit(zp + 4); // LDA init_flag
-        self.emit(0xD0);   // BNE @do_delta
+        self.emit(0xD0); // BNE @do_delta
         let bne_do_delta = self.code.len();
-        self.emit(0x00);   // placeholder
+        self.emit(0x00); // placeholder
 
         // ── First call: prime prev values + set default cursor position ──
         // JSR charge_delay (same charge method as do_delta for consistent POT)
@@ -4961,32 +4982,32 @@ impl Codegen {
         let jsr_charge1 = self.code.len();
         self.emit16(0x0000); // placeholder → @charge_delay
         self.emit(0xA9);
-        self.emit(152);    // LDA #152
+        self.emit(152); // LDA #152
         self.emit(0x85);
-        self.emit(zp);     // STA accum_x
+        self.emit(zp); // STA accum_x
         self.emit(0xA9);
         self.emit(0x00);
         self.emit(0x85);
         self.emit(zp + 6); // STA accum_x_hi
         self.emit(0xA9);
-        self.emit(100);    // LDA #100
+        self.emit(100); // LDA #100
         self.emit(0x85);
         self.emit(zp + 1); // STA accum_y
         self.emit(0xAD);
         self.emit(0x19);
-        self.emit(0xD4);   // LDA $D419
+        self.emit(0xD4); // LDA $D419
         self.emit(0x85);
         self.emit(zp + 2); // STA prev_raw_x
         self.emit(0xAD);
         self.emit(0x1A);
-        self.emit(0xD4);   // LDA $D41A
+        self.emit(0xD4); // LDA $D41A
         self.emit(0x85);
         self.emit(zp + 3); // STA prev_raw_y
         self.emit(0xE6);
         self.emit(zp + 4); // INC init_flag
         self.emit(0xA5);
-        self.emit(zp);     // LDA accum_x
-        self.emit(0x60);   // RTS
+        self.emit(zp); // LDA accum_x
+        self.emit(0x60); // RTS
 
         // ── @do_delta ────────────────────────────────────────────────────
         // Charge + delay + read — exactly like original game loop.
@@ -5007,33 +5028,33 @@ impl Codegen {
         self.emit(0xAD);
         self.emit(0x1A);
         self.emit(0xD4); // LDA $D41A
-        self.emit(0xAA);   // TAX  (raw_y → X)
+        self.emit(0xAA); // TAX  (raw_y → X)
 
         // ── X delta ──────────────────────────────────────────────────────
         self.emit(0xA5);
         self.emit(zp + 5); // LDA raw_x
-        self.emit(0x38);   // SEC
+        self.emit(0x38); // SEC
         self.emit(0xE5);
         self.emit(zp + 2); // SBC prev_raw_x
         self.emit(0x29);
-        self.emit(0x7F);   // AND #$7F
+        self.emit(0x7F); // AND #$7F
         self.emit(0xC9);
-        self.emit(0x40);   // CMP #$40
-        self.emit(0xB0);   // BCS @x_neg
+        self.emit(0x40); // CMP #$40
+        self.emit(0xB0); // BCS @x_neg
         let bcs_x_neg = self.code.len();
-        self.emit(0x00);   // placeholder
+        self.emit(0x00); // placeholder
 
         // X positive: accum_x += delta >> 1  (update prev only if moved)
-        self.emit(0x4A);   // LSR
-        self.emit(0xF0);   // BEQ @x_done  (delta=0 → skip)
+        self.emit(0x4A); // LSR
+        self.emit(0xF0); // BEQ @x_done  (delta=0 → skip)
         let beq_x_pos = self.code.len();
         self.emit(0x00);
-        self.emit(0x18);   // CLC
+        self.emit(0x18); // CLC
         self.emit(0x65);
-        self.emit(zp);     // ADC accum_x
+        self.emit(zp); // ADC accum_x
         self.emit(0x85);
-        self.emit(zp);     // STA accum_x
-        self.emit(0x90);   // BCC @x_nocarry
+        self.emit(zp); // STA accum_x
+        self.emit(0x90); // BCC @x_nocarry
         let bcc_x_carry = self.code.len();
         self.emit(0x00);
         self.emit(0xE6);
@@ -5046,7 +5067,7 @@ impl Codegen {
         self.emit(zp + 5); // LDA raw_x
         self.emit(0x85);
         self.emit(zp + 2); // STA prev_raw_x
-        self.emit(0x4C);   // JMP @x_done
+        self.emit(0x4C); // JMP @x_done
         let jmp_x_pos = self.code.len();
         self.emit16(0x0000);
 
@@ -5054,20 +5075,20 @@ impl Codegen {
         let x_neg = self.current_addr();
         self.patch_bxx(bcs_x_neg, x_neg);
         self.emit(0x09);
-        self.emit(0xC0);   // ORA #$C0
+        self.emit(0xC0); // ORA #$C0
         self.emit(0xC9);
-        self.emit(0xFF);   // CMP #$FF
-        self.emit(0xF0);   // BEQ @x_done ($FF = no movement)
+        self.emit(0xFF); // CMP #$FF
+        self.emit(0xF0); // BEQ @x_done ($FF = no movement)
         let beq_x_neg = self.code.len();
         self.emit(0x00);
-        self.emit(0x38);   // SEC
-        self.emit(0x6A);   // ROR (sign-extended)
-        self.emit(0x18);   // CLC
+        self.emit(0x38); // SEC
+        self.emit(0x6A); // ROR (sign-extended)
+        self.emit(0x18); // CLC
         self.emit(0x65);
-        self.emit(zp);     // ADC accum_x
+        self.emit(zp); // ADC accum_x
         self.emit(0x85);
-        self.emit(zp);     // STA accum_x
-        self.emit(0xB0);   // BCS @x_noborrow (carry = no borrow)
+        self.emit(zp); // STA accum_x
+        self.emit(0xB0); // BCS @x_noborrow (carry = no borrow)
         let bcs_x_borrow = self.code.len();
         self.emit(0x00);
         self.emit(0xC6);
@@ -5088,35 +5109,35 @@ impl Codegen {
         self.patch_abs(jmp_x_pos, x_done);
 
         // ── Y delta (with EOR #$FF inversion) ───────────────────────────
-        self.emit(0x8A);   // TXA (A = raw_y)
-        self.emit(0x38);   // SEC
+        self.emit(0x8A); // TXA (A = raw_y)
+        self.emit(0x38); // SEC
         self.emit(0xE5);
         self.emit(zp + 3); // SBC prev_raw_y
         self.emit(0x29);
-        self.emit(0x7F);   // AND #$7F
+        self.emit(0x7F); // AND #$7F
         self.emit(0xC9);
-        self.emit(0x40);   // CMP #$40
-        self.emit(0xB0);   // BCS @y_neg
+        self.emit(0x40); // CMP #$40
+        self.emit(0xB0); // BCS @y_neg
         let bcs_y_neg = self.code.len();
         self.emit(0x00);
 
         // Y positive (inverted via EOR #$FF, update prev only if moved)
-        self.emit(0x4A);   // LSR
-        self.emit(0xF0);   // BEQ @y_done
+        self.emit(0x4A); // LSR
+        self.emit(0xF0); // BEQ @y_done
         let beq_y_pos = self.code.len();
         self.emit(0x00);
         self.emit(0x49);
-        self.emit(0xFF);   // EOR #$FF  (INVERT)
-        self.emit(0x38);   // SEC
+        self.emit(0xFF); // EOR #$FF  (INVERT)
+        self.emit(0x38); // SEC
         self.emit(0x65);
         self.emit(zp + 1); // ADC accum_y
         self.emit(0x85);
         self.emit(zp + 1); // STA accum_y
         // Update prev_raw_y (only when moved)
-        self.emit(0x8A);   // TXA (raw_y)
+        self.emit(0x8A); // TXA (raw_y)
         self.emit(0x85);
         self.emit(zp + 3); // STA prev_raw_y
-        self.emit(0x4C);   // JMP @y_done
+        self.emit(0x4C); // JMP @y_done
         let jmp_y_pos = self.code.len();
         self.emit16(0x0000);
 
@@ -5124,23 +5145,23 @@ impl Codegen {
         let y_neg = self.current_addr();
         self.patch_bxx(bcs_y_neg, y_neg);
         self.emit(0x09);
-        self.emit(0xC0);   // ORA #$C0
+        self.emit(0xC0); // ORA #$C0
         self.emit(0xC9);
-        self.emit(0xFF);   // CMP #$FF
-        self.emit(0xF0);   // BEQ @y_done
+        self.emit(0xFF); // CMP #$FF
+        self.emit(0xF0); // BEQ @y_done
         let beq_y_neg = self.code.len();
         self.emit(0x00);
-        self.emit(0x38);   // SEC
-        self.emit(0x6A);   // ROR
+        self.emit(0x38); // SEC
+        self.emit(0x6A); // ROR
         self.emit(0x49);
-        self.emit(0xFF);   // EOR #$FF  (INVERT)
-        self.emit(0x38);   // SEC
+        self.emit(0xFF); // EOR #$FF  (INVERT)
+        self.emit(0x38); // SEC
         self.emit(0x65);
         self.emit(zp + 1); // ADC accum_y
         self.emit(0x85);
         self.emit(zp + 1); // STA accum_y
         // Update prev_raw_y (only when moved)
-        self.emit(0x8A);   // TXA (raw_y)
+        self.emit(0x8A); // TXA (raw_y)
         self.emit(0x85);
         self.emit(zp + 3); // STA prev_raw_y
 
@@ -5163,32 +5184,32 @@ impl Codegen {
         self.emit(0xAD);
         self.emit(0x1A);
         self.emit(0xD4); // LDA $D41A
-        self.emit(0xAA);   // TAX  (raw_y → X)
+        self.emit(0xAA); // TAX  (raw_y → X)
 
         // ── X delta, second pass ────────────────────────────────────────
         self.emit(0xA5);
         self.emit(zp + 5); // LDA raw_x
-        self.emit(0x38);   // SEC
+        self.emit(0x38); // SEC
         self.emit(0xE5);
         self.emit(zp + 2); // SBC prev_raw_x
         self.emit(0x29);
-        self.emit(0x7F);   // AND #$7F
+        self.emit(0x7F); // AND #$7F
         self.emit(0xC9);
-        self.emit(0x40);   // CMP #$40
-        self.emit(0xB0);   // BCS @x2_neg
+        self.emit(0x40); // CMP #$40
+        self.emit(0xB0); // BCS @x2_neg
         let bcs_x2_neg = self.code.len();
         self.emit(0x00);
         // positive
-        self.emit(0x4A);   // LSR
-        self.emit(0xF0);   // BEQ @x2_done
+        self.emit(0x4A); // LSR
+        self.emit(0xF0); // BEQ @x2_done
         let beq_x2_pos = self.code.len();
         self.emit(0x00);
-        self.emit(0x18);   // CLC
+        self.emit(0x18); // CLC
         self.emit(0x65);
-        self.emit(zp);     // ADC accum_x
+        self.emit(zp); // ADC accum_x
         self.emit(0x85);
-        self.emit(zp);     // STA accum_x
-        self.emit(0x90);   // BCC @x2_nocarry
+        self.emit(zp); // STA accum_x
+        self.emit(0x90); // BCC @x2_nocarry
         let bcc_x2_carry = self.code.len();
         self.emit(0x00);
         self.emit(0xE6);
@@ -5199,7 +5220,7 @@ impl Codegen {
         self.emit(zp + 5); // LDA raw_x
         self.emit(0x85);
         self.emit(zp + 2); // STA prev_raw_x
-        self.emit(0x4C);   // JMP @x2_done
+        self.emit(0x4C); // JMP @x2_done
         let jmp_x2_pos = self.code.len();
         self.emit16(0x0000);
         // negative
@@ -5209,17 +5230,17 @@ impl Codegen {
         self.emit(0xC0);
         self.emit(0xC9);
         self.emit(0xFF);
-        self.emit(0xF0);   // BEQ @x2_done
+        self.emit(0xF0); // BEQ @x2_done
         let beq_x2_neg = self.code.len();
         self.emit(0x00);
-        self.emit(0x38);   // SEC
-        self.emit(0x6A);   // ROR
-        self.emit(0x18);   // CLC
+        self.emit(0x38); // SEC
+        self.emit(0x6A); // ROR
+        self.emit(0x18); // CLC
         self.emit(0x65);
-        self.emit(zp);     // ADC accum_x
+        self.emit(zp); // ADC accum_x
         self.emit(0x85);
-        self.emit(zp);     // STA accum_x
-        self.emit(0xB0);   // BCS @x2_noborrow
+        self.emit(zp); // STA accum_x
+        self.emit(0xB0); // BCS @x2_noborrow
         let bcs_x2_borrow = self.code.len();
         self.emit(0x00);
         self.emit(0xC6);
@@ -5237,33 +5258,33 @@ impl Codegen {
         self.patch_abs(jmp_x2_pos, x2_done);
 
         // ── Y delta, second pass (inverted) ─────────────────────────────
-        self.emit(0x8A);   // TXA (raw_y)
-        self.emit(0x38);   // SEC
+        self.emit(0x8A); // TXA (raw_y)
+        self.emit(0x38); // SEC
         self.emit(0xE5);
         self.emit(zp + 3); // SBC prev_raw_y
         self.emit(0x29);
         self.emit(0x7F);
         self.emit(0xC9);
         self.emit(0x40);
-        self.emit(0xB0);   // BCS @y2_neg
+        self.emit(0xB0); // BCS @y2_neg
         let bcs_y2_neg = self.code.len();
         self.emit(0x00);
         // positive
-        self.emit(0x4A);   // LSR
-        self.emit(0xF0);   // BEQ @y2_done
+        self.emit(0x4A); // LSR
+        self.emit(0xF0); // BEQ @y2_done
         let beq_y2_pos = self.code.len();
         self.emit(0x00);
         self.emit(0x49);
-        self.emit(0xFF);   // EOR #$FF
-        self.emit(0x38);   // SEC
+        self.emit(0xFF); // EOR #$FF
+        self.emit(0x38); // SEC
         self.emit(0x65);
         self.emit(zp + 1); // ADC accum_y
         self.emit(0x85);
         self.emit(zp + 1); // STA accum_y
-        self.emit(0x8A);   // TXA (raw_y)
+        self.emit(0x8A); // TXA (raw_y)
         self.emit(0x85);
         self.emit(zp + 3); // STA prev_raw_y
-        self.emit(0x4C);   // JMP @y2_done
+        self.emit(0x4C); // JMP @y2_done
         let jmp_y2_pos = self.code.len();
         self.emit16(0x0000);
         // negative
@@ -5273,19 +5294,19 @@ impl Codegen {
         self.emit(0xC0);
         self.emit(0xC9);
         self.emit(0xFF);
-        self.emit(0xF0);   // BEQ @y2_done
+        self.emit(0xF0); // BEQ @y2_done
         let beq_y2_neg = self.code.len();
         self.emit(0x00);
-        self.emit(0x38);   // SEC
-        self.emit(0x6A);   // ROR
+        self.emit(0x38); // SEC
+        self.emit(0x6A); // ROR
         self.emit(0x49);
-        self.emit(0xFF);   // EOR #$FF
-        self.emit(0x38);   // SEC
+        self.emit(0xFF); // EOR #$FF
+        self.emit(0x38); // SEC
         self.emit(0x65);
         self.emit(zp + 1); // ADC accum_y
         self.emit(0x85);
         self.emit(zp + 1); // STA accum_y
-        self.emit(0x8A);   // TXA (raw_y)
+        self.emit(0x8A); // TXA (raw_y)
         self.emit(0x85);
         self.emit(zp + 3); // STA prev_raw_y
 
@@ -5294,8 +5315,8 @@ impl Codegen {
         self.patch_bxx(beq_y2_neg, y2_done);
         self.patch_abs(jmp_y2_pos, y2_done);
         self.emit(0xA5);
-        self.emit(zp);     // LDA accum_x_lo (return value for mouse_x())
-        self.emit(0x60);   // RTS
+        self.emit(zp); // LDA accum_x_lo (return value for mouse_x())
+        self.emit(0x60); // RTS
 
         // ── @charge_delay subroutine ────────────────────────────────────
         // Set POT line high to power the 1351 mouse circuitry.
@@ -5307,24 +5328,24 @@ impl Codegen {
         self.patch_abs(jsr_charge3, charge_delay);
         self.emit(0xAD);
         self.emit(0x00);
-        self.emit(0xDC);   // LDA $DC00
+        self.emit(0xDC); // LDA $DC00
         self.emit(0x29);
-        self.emit(0x3F);   // AND #$3F
+        self.emit(0x3F); // AND #$3F
         self.emit(0x09);
-        self.emit(0x40);   // ORA #$40
+        self.emit(0x40); // ORA #$40
         self.emit(0x8D);
         self.emit(0x00);
-        self.emit(0xDC);   // STA $DC00
+        self.emit(0xDC); // STA $DC00
         self.emit(0xA2);
-        self.emit(0x67);   // LDX #$67
+        self.emit(0x67); // LDX #$67
         // @delay:
         let delay_loop = self.current_addr();
-        self.emit(0xCA);   // DEX
-        self.emit(0xD0);   // BNE @delay
+        self.emit(0xCA); // DEX
+        self.emit(0xD0); // BNE @delay
         let bne_delay = self.code.len();
         self.emit(0x00);
         self.patch_bxx(bne_delay, delay_loop);
-        self.emit(0x60);   // RTS
+        self.emit(0x60); // RTS
     }
 
     // Plot-erase helper: computes pixel address/mask identically to emit_plot_helper,
@@ -6975,109 +6996,203 @@ impl Codegen {
         // The caller must have already set pzp+2 = Y before calling into the loop.
 
         // ── Top edge: y=y1, x: x1→x2 ────────────────────────────────────────
-        self.emit(0xA5); self.emit(zp+2);   // LDA y1
-        self.emit(0x85); self.emit(pzp+2);  // STA Y
-        self.emit(0xA5); self.emit(zp+0);   // LDA x1_lo
-        self.emit(0x85); self.emit(zp+6);   // STA cx_lo
-        self.emit(0xA5); self.emit(zp+1);   // LDA x1_hi
-        self.emit(0x85); self.emit(zp+7);   // STA cx_hi
+        self.emit(0xA5);
+        self.emit(zp + 2); // LDA y1
+        self.emit(0x85);
+        self.emit(pzp + 2); // STA Y
+        self.emit(0xA5);
+        self.emit(zp + 0); // LDA x1_lo
+        self.emit(0x85);
+        self.emit(zp + 6); // STA cx_lo
+        self.emit(0xA5);
+        self.emit(zp + 1); // LDA x1_hi
+        self.emit(0x85);
+        self.emit(zp + 7); // STA cx_hi
         let top_loop = self.current_addr();
-        self.emit(0xA5); self.emit(zp+6);   // LDA cx_lo
-        self.emit(0x85); self.emit(pzp+0);  // STA X_lo
-        self.emit(0xA5); self.emit(zp+7);   // LDA cx_hi
-        self.emit(0x85); self.emit(pzp+1);  // STA X_hi
-        self.emit(0x20); self.emit(pa_lo); self.emit(pa_hi); // JSR plot
+        self.emit(0xA5);
+        self.emit(zp + 6); // LDA cx_lo
+        self.emit(0x85);
+        self.emit(pzp + 0); // STA X_lo
+        self.emit(0xA5);
+        self.emit(zp + 7); // LDA cx_hi
+        self.emit(0x85);
+        self.emit(pzp + 1); // STA X_hi
+        self.emit(0x20);
+        self.emit(pa_lo);
+        self.emit(pa_hi); // JSR plot
         // if cx == x2 → done
-        self.emit(0xA5); self.emit(zp+6);
-        self.emit(0xC5); self.emit(zp+3);
-        self.emit(0xD0); let bne_top_inc = self.code.len(); self.emit(0x00); // BNE top_inc
-        self.emit(0xA5); self.emit(zp+7);
-        self.emit(0xC5); self.emit(zp+4);
-        self.emit(0xD0); let bne_top_inc2 = self.code.len(); self.emit(0x00); // BNE top_inc
-        self.emit(0x4C); let jmp_after_top = self.code.len(); self.emit16(0x0000); // JMP after_top
+        self.emit(0xA5);
+        self.emit(zp + 6);
+        self.emit(0xC5);
+        self.emit(zp + 3);
+        self.emit(0xD0);
+        let bne_top_inc = self.code.len();
+        self.emit(0x00); // BNE top_inc
+        self.emit(0xA5);
+        self.emit(zp + 7);
+        self.emit(0xC5);
+        self.emit(zp + 4);
+        self.emit(0xD0);
+        let bne_top_inc2 = self.code.len();
+        self.emit(0x00); // BNE top_inc
+        self.emit(0x4C);
+        let jmp_after_top = self.code.len();
+        self.emit16(0x0000); // JMP after_top
         let top_inc = self.current_addr();
         self.patch_bxx(bne_top_inc, top_inc);
         self.patch_bxx(bne_top_inc2, top_inc);
-        self.emit(0xE6); self.emit(zp+6);   // INC cx_lo
-        self.emit(0xD0); let bne_top_nohi = self.code.len(); self.emit(0x00); // BNE top_loop
-        self.emit(0xE6); self.emit(zp+7);   // INC cx_hi
+        self.emit(0xE6);
+        self.emit(zp + 6); // INC cx_lo
+        self.emit(0xD0);
+        let bne_top_nohi = self.code.len();
+        self.emit(0x00); // BNE top_loop
+        self.emit(0xE6);
+        self.emit(zp + 7); // INC cx_hi
         self.patch_bxx(bne_top_nohi, top_loop);
-        self.emit(0x4C); self.emit(top_loop as u8); self.emit((top_loop >> 8) as u8);
+        self.emit(0x4C);
+        self.emit(top_loop as u8);
+        self.emit((top_loop >> 8) as u8);
 
         // ── Bottom edge: y=y2, x: x1→x2 ─────────────────────────────────────
         let after_top = self.current_addr();
         self.patch_abs(jmp_after_top, after_top);
-        self.emit(0xA5); self.emit(zp+5);   // LDA y2
-        self.emit(0x85); self.emit(pzp+2);  // STA Y
-        self.emit(0xA5); self.emit(zp+0);   // LDA x1_lo
-        self.emit(0x85); self.emit(zp+6);   // STA cx_lo
-        self.emit(0xA5); self.emit(zp+1);   // LDA x1_hi
-        self.emit(0x85); self.emit(zp+7);   // STA cx_hi
+        self.emit(0xA5);
+        self.emit(zp + 5); // LDA y2
+        self.emit(0x85);
+        self.emit(pzp + 2); // STA Y
+        self.emit(0xA5);
+        self.emit(zp + 0); // LDA x1_lo
+        self.emit(0x85);
+        self.emit(zp + 6); // STA cx_lo
+        self.emit(0xA5);
+        self.emit(zp + 1); // LDA x1_hi
+        self.emit(0x85);
+        self.emit(zp + 7); // STA cx_hi
         let bot_loop = self.current_addr();
-        self.emit(0xA5); self.emit(zp+6);
-        self.emit(0x85); self.emit(pzp+0);
-        self.emit(0xA5); self.emit(zp+7);
-        self.emit(0x85); self.emit(pzp+1);
-        self.emit(0x20); self.emit(pa_lo); self.emit(pa_hi);
-        self.emit(0xA5); self.emit(zp+6);
-        self.emit(0xC5); self.emit(zp+3);
-        self.emit(0xD0); let bne_bot_inc = self.code.len(); self.emit(0x00);
-        self.emit(0xA5); self.emit(zp+7);
-        self.emit(0xC5); self.emit(zp+4);
-        self.emit(0xD0); let bne_bot_inc2 = self.code.len(); self.emit(0x00);
-        self.emit(0x4C); let jmp_after_bot = self.code.len(); self.emit16(0x0000);
+        self.emit(0xA5);
+        self.emit(zp + 6);
+        self.emit(0x85);
+        self.emit(pzp + 0);
+        self.emit(0xA5);
+        self.emit(zp + 7);
+        self.emit(0x85);
+        self.emit(pzp + 1);
+        self.emit(0x20);
+        self.emit(pa_lo);
+        self.emit(pa_hi);
+        self.emit(0xA5);
+        self.emit(zp + 6);
+        self.emit(0xC5);
+        self.emit(zp + 3);
+        self.emit(0xD0);
+        let bne_bot_inc = self.code.len();
+        self.emit(0x00);
+        self.emit(0xA5);
+        self.emit(zp + 7);
+        self.emit(0xC5);
+        self.emit(zp + 4);
+        self.emit(0xD0);
+        let bne_bot_inc2 = self.code.len();
+        self.emit(0x00);
+        self.emit(0x4C);
+        let jmp_after_bot = self.code.len();
+        self.emit16(0x0000);
         let bot_inc = self.current_addr();
         self.patch_bxx(bne_bot_inc, bot_inc);
         self.patch_bxx(bne_bot_inc2, bot_inc);
-        self.emit(0xE6); self.emit(zp+6);
-        self.emit(0xD0); let bne_bot_nohi = self.code.len(); self.emit(0x00);
-        self.emit(0xE6); self.emit(zp+7);
+        self.emit(0xE6);
+        self.emit(zp + 6);
+        self.emit(0xD0);
+        let bne_bot_nohi = self.code.len();
+        self.emit(0x00);
+        self.emit(0xE6);
+        self.emit(zp + 7);
         self.patch_bxx(bne_bot_nohi, bot_loop);
-        self.emit(0x4C); self.emit(bot_loop as u8); self.emit((bot_loop >> 8) as u8);
+        self.emit(0x4C);
+        self.emit(bot_loop as u8);
+        self.emit((bot_loop >> 8) as u8);
 
         // ── Left edge: x=x1, y: y1→y2 ────────────────────────────────────────
         let after_bot = self.current_addr();
         self.patch_abs(jmp_after_bot, after_bot);
-        self.emit(0xA5); self.emit(zp+0);   // LDA x1_lo
-        self.emit(0x85); self.emit(pzp+0);  // STA X_lo
-        self.emit(0xA5); self.emit(zp+1);   // LDA x1_hi
-        self.emit(0x85); self.emit(pzp+1);  // STA X_hi
-        self.emit(0xA5); self.emit(zp+2);   // LDA y1
-        self.emit(0x85); self.emit(zp+8);   // STA cy
+        self.emit(0xA5);
+        self.emit(zp + 0); // LDA x1_lo
+        self.emit(0x85);
+        self.emit(pzp + 0); // STA X_lo
+        self.emit(0xA5);
+        self.emit(zp + 1); // LDA x1_hi
+        self.emit(0x85);
+        self.emit(pzp + 1); // STA X_hi
+        self.emit(0xA5);
+        self.emit(zp + 2); // LDA y1
+        self.emit(0x85);
+        self.emit(zp + 8); // STA cy
         let left_loop = self.current_addr();
-        self.emit(0xA5); self.emit(zp+8);   // LDA cy
-        self.emit(0x85); self.emit(pzp+2);  // STA Y
-        self.emit(0x20); self.emit(pa_lo); self.emit(pa_hi);
-        self.emit(0xA5); self.emit(zp+8);
-        self.emit(0xC5); self.emit(zp+5);   // CMP y2
-        self.emit(0xD0); let bne_left_inc = self.code.len(); self.emit(0x00); // BNE left_inc
-        self.emit(0x4C); let jmp_after_left = self.code.len(); self.emit16(0x0000);
+        self.emit(0xA5);
+        self.emit(zp + 8); // LDA cy
+        self.emit(0x85);
+        self.emit(pzp + 2); // STA Y
+        self.emit(0x20);
+        self.emit(pa_lo);
+        self.emit(pa_hi);
+        self.emit(0xA5);
+        self.emit(zp + 8);
+        self.emit(0xC5);
+        self.emit(zp + 5); // CMP y2
+        self.emit(0xD0);
+        let bne_left_inc = self.code.len();
+        self.emit(0x00); // BNE left_inc
+        self.emit(0x4C);
+        let jmp_after_left = self.code.len();
+        self.emit16(0x0000);
         let left_inc = self.current_addr();
         self.patch_bxx(bne_left_inc, left_inc);
-        self.emit(0xE6); self.emit(zp+8);   // INC cy
-        self.emit(0x4C); self.emit(left_loop as u8); self.emit((left_loop >> 8) as u8);
+        self.emit(0xE6);
+        self.emit(zp + 8); // INC cy
+        self.emit(0x4C);
+        self.emit(left_loop as u8);
+        self.emit((left_loop >> 8) as u8);
 
         // ── Right edge: x=x2, y: y1→y2 ───────────────────────────────────────
         let after_left = self.current_addr();
         self.patch_abs(jmp_after_left, after_left);
-        self.emit(0xA5); self.emit(zp+3);   // LDA x2_lo
-        self.emit(0x85); self.emit(pzp+0);  // STA X_lo
-        self.emit(0xA5); self.emit(zp+4);   // LDA x2_hi
-        self.emit(0x85); self.emit(pzp+1);  // STA X_hi
-        self.emit(0xA5); self.emit(zp+2);   // LDA y1
-        self.emit(0x85); self.emit(zp+8);   // STA cy
+        self.emit(0xA5);
+        self.emit(zp + 3); // LDA x2_lo
+        self.emit(0x85);
+        self.emit(pzp + 0); // STA X_lo
+        self.emit(0xA5);
+        self.emit(zp + 4); // LDA x2_hi
+        self.emit(0x85);
+        self.emit(pzp + 1); // STA X_hi
+        self.emit(0xA5);
+        self.emit(zp + 2); // LDA y1
+        self.emit(0x85);
+        self.emit(zp + 8); // STA cy
         let right_loop = self.current_addr();
-        self.emit(0xA5); self.emit(zp+8);
-        self.emit(0x85); self.emit(pzp+2);
-        self.emit(0x20); self.emit(pa_lo); self.emit(pa_hi);
-        self.emit(0xA5); self.emit(zp+8);
-        self.emit(0xC5); self.emit(zp+5);
-        self.emit(0xD0); let bne_right_inc = self.code.len(); self.emit(0x00); // BNE right_inc
-        self.emit(0x4C); let jmp_after_right = self.code.len(); self.emit16(0x0000);
+        self.emit(0xA5);
+        self.emit(zp + 8);
+        self.emit(0x85);
+        self.emit(pzp + 2);
+        self.emit(0x20);
+        self.emit(pa_lo);
+        self.emit(pa_hi);
+        self.emit(0xA5);
+        self.emit(zp + 8);
+        self.emit(0xC5);
+        self.emit(zp + 5);
+        self.emit(0xD0);
+        let bne_right_inc = self.code.len();
+        self.emit(0x00); // BNE right_inc
+        self.emit(0x4C);
+        let jmp_after_right = self.code.len();
+        self.emit16(0x0000);
         let right_inc = self.current_addr();
         self.patch_bxx(bne_right_inc, right_inc);
-        self.emit(0xE6); self.emit(zp+8);
-        self.emit(0x4C); self.emit(right_loop as u8); self.emit((right_loop >> 8) as u8);
+        self.emit(0xE6);
+        self.emit(zp + 8);
+        self.emit(0x4C);
+        self.emit(right_loop as u8);
+        self.emit((right_loop >> 8) as u8);
 
         let after_right = self.current_addr();
         self.patch_abs(jmp_after_right, after_right);
@@ -7106,198 +7221,330 @@ impl Codegen {
 
         // ── |dx| and sx (16-bit) ───────────────────────────────────────────
         // 16-bit compare x2 vs cx: compare hi bytes first
-        self.emit(0xA5); self.emit(zp + 4); // LDA x2_hi
-        self.emit(0xC5); self.emit(zp + 1); // CMP cx_hi
-        self.emit(0x90); let bcc_xneg = self.code.len(); self.emit(0x00); // BCC dl_xneg
-        self.emit(0xD0); let bne_xpos = self.code.len(); self.emit(0x00); // BNE dl_xpos
+        self.emit(0xA5);
+        self.emit(zp + 4); // LDA x2_hi
+        self.emit(0xC5);
+        self.emit(zp + 1); // CMP cx_hi
+        self.emit(0x90);
+        let bcc_xneg = self.code.len();
+        self.emit(0x00); // BCC dl_xneg
+        self.emit(0xD0);
+        let bne_xpos = self.code.len();
+        self.emit(0x00); // BNE dl_xpos
         // hi bytes equal → compare lo bytes
-        self.emit(0xA5); self.emit(zp + 3); // LDA x2_lo
-        self.emit(0xC5); self.emit(zp + 0); // CMP cx_lo
-        self.emit(0xB0); let bcs_xpos = self.code.len(); self.emit(0x00); // BCS dl_xpos (x2>=cx)
+        self.emit(0xA5);
+        self.emit(zp + 3); // LDA x2_lo
+        self.emit(0xC5);
+        self.emit(zp + 0); // CMP cx_lo
+        self.emit(0xB0);
+        let bcs_xpos = self.code.len();
+        self.emit(0x00); // BCS dl_xpos (x2>=cx)
 
         // dl_xneg: |dx| = cx - x2, sx = $FF
         let dl_xneg = self.current_addr();
         self.patch_bxx(bcc_xneg, dl_xneg);
         self.emit(0x38); // SEC
-        self.emit(0xA5); self.emit(zp + 0); // LDA cx_lo
-        self.emit(0xE5); self.emit(zp + 3); // SBC x2_lo
-        self.emit(0x85); self.emit(zp + 6); // STA dx_lo
-        self.emit(0xA5); self.emit(zp + 1); // LDA cx_hi
-        self.emit(0xE5); self.emit(zp + 4); // SBC x2_hi
-        self.emit(0x85); self.emit(zp + 7); // STA dx_hi
-        self.emit(0xA9); self.emit(0xFF);    // LDA #$FF
-        self.emit(0x85); self.emit(zp + 9); // STA sx
-        self.emit(0x4C); let jmp_caldy = self.code.len(); self.emit16(0x0000); // JMP dl_caldy
+        self.emit(0xA5);
+        self.emit(zp + 0); // LDA cx_lo
+        self.emit(0xE5);
+        self.emit(zp + 3); // SBC x2_lo
+        self.emit(0x85);
+        self.emit(zp + 6); // STA dx_lo
+        self.emit(0xA5);
+        self.emit(zp + 1); // LDA cx_hi
+        self.emit(0xE5);
+        self.emit(zp + 4); // SBC x2_hi
+        self.emit(0x85);
+        self.emit(zp + 7); // STA dx_hi
+        self.emit(0xA9);
+        self.emit(0xFF); // LDA #$FF
+        self.emit(0x85);
+        self.emit(zp + 9); // STA sx
+        self.emit(0x4C);
+        let jmp_caldy = self.code.len();
+        self.emit16(0x0000); // JMP dl_caldy
 
         // dl_xpos: |dx| = x2 - cx, sx = +1
         let dl_xpos = self.current_addr();
         self.patch_bxx(bne_xpos, dl_xpos);
         self.patch_bxx(bcs_xpos, dl_xpos);
         self.emit(0x38); // SEC
-        self.emit(0xA5); self.emit(zp + 3); // LDA x2_lo
-        self.emit(0xE5); self.emit(zp + 0); // SBC cx_lo
-        self.emit(0x85); self.emit(zp + 6); // STA dx_lo
-        self.emit(0xA5); self.emit(zp + 4); // LDA x2_hi
-        self.emit(0xE5); self.emit(zp + 1); // SBC cx_hi
-        self.emit(0x85); self.emit(zp + 7); // STA dx_hi
-        self.emit(0xA9); self.emit(0x01);    // LDA #1
-        self.emit(0x85); self.emit(zp + 9); // STA sx
+        self.emit(0xA5);
+        self.emit(zp + 3); // LDA x2_lo
+        self.emit(0xE5);
+        self.emit(zp + 0); // SBC cx_lo
+        self.emit(0x85);
+        self.emit(zp + 6); // STA dx_lo
+        self.emit(0xA5);
+        self.emit(zp + 4); // LDA x2_hi
+        self.emit(0xE5);
+        self.emit(zp + 1); // SBC cx_hi
+        self.emit(0x85);
+        self.emit(zp + 7); // STA dx_hi
+        self.emit(0xA9);
+        self.emit(0x01); // LDA #1
+        self.emit(0x85);
+        self.emit(zp + 9); // STA sx
         // fall through to dl_caldy
 
         // ── |dy| and sy (8-bit; y is always 0-199) ────────────────────────
         let dl_caldy = self.current_addr();
         self.patch_abs(jmp_caldy, dl_caldy);
-        self.emit(0xA5); self.emit(zp + 5); // LDA y2
-        self.emit(0xC5); self.emit(zp + 2); // CMP cy
-        self.emit(0xB0); let bcs_ypos = self.code.len(); self.emit(0x00); // BCS dl_ypos
+        self.emit(0xA5);
+        self.emit(zp + 5); // LDA y2
+        self.emit(0xC5);
+        self.emit(zp + 2); // CMP cy
+        self.emit(0xB0);
+        let bcs_ypos = self.code.len();
+        self.emit(0x00); // BCS dl_ypos
         // y2 < cy: |dy| = cy - y2, sy = $FF
         self.emit(0x38);
-        self.emit(0xA5); self.emit(zp + 2); // LDA cy
-        self.emit(0xE5); self.emit(zp + 5); // SBC y2
-        self.emit(0x85); self.emit(zp + 8);  // STA dy
-        self.emit(0xA9); self.emit(0xFF);
-        self.emit(0x85); self.emit(zp + 10); // STA sy
-        self.emit(0x4C); let jmp_init = self.code.len(); self.emit16(0x0000); // JMP dl_init
+        self.emit(0xA5);
+        self.emit(zp + 2); // LDA cy
+        self.emit(0xE5);
+        self.emit(zp + 5); // SBC y2
+        self.emit(0x85);
+        self.emit(zp + 8); // STA dy
+        self.emit(0xA9);
+        self.emit(0xFF);
+        self.emit(0x85);
+        self.emit(zp + 10); // STA sy
+        self.emit(0x4C);
+        let jmp_init = self.code.len();
+        self.emit16(0x0000); // JMP dl_init
 
         // dl_ypos: |dy| = y2 - cy, sy = +1
         let dl_ypos = self.current_addr();
         self.patch_bxx(bcs_ypos, dl_ypos);
         self.emit(0x38);
-        self.emit(0xA5); self.emit(zp + 5); // LDA y2
-        self.emit(0xE5); self.emit(zp + 2); // SBC cy
-        self.emit(0x85); self.emit(zp + 8);  // STA dy
-        self.emit(0xA9); self.emit(0x01);
-        self.emit(0x85); self.emit(zp + 10); // STA sy
+        self.emit(0xA5);
+        self.emit(zp + 5); // LDA y2
+        self.emit(0xE5);
+        self.emit(zp + 2); // SBC cy
+        self.emit(0x85);
+        self.emit(zp + 8); // STA dy
+        self.emit(0xA9);
+        self.emit(0x01);
+        self.emit(0x85);
+        self.emit(zp + 10); // STA sy
 
         // ── err = |dx| - |dy|  (16-bit signed) ────────────────────────────
         let dl_init = self.current_addr();
         self.patch_abs(jmp_init, dl_init);
         self.emit(0x38); // SEC
-        self.emit(0xA5); self.emit(zp + 6);  // LDA dx_lo
-        self.emit(0xE5); self.emit(zp + 8);  // SBC dy  (8-bit, zero-extended)
-        self.emit(0x85); self.emit(zp + 11); // STA err_lo
-        self.emit(0xA5); self.emit(zp + 7);  // LDA dx_hi
-        self.emit(0xE9); self.emit(0x00);    // SBC #0  (borrow → err_hi=$FF if dx<dy)
-        self.emit(0x85); self.emit(zp + 12); // STA err_hi
+        self.emit(0xA5);
+        self.emit(zp + 6); // LDA dx_lo
+        self.emit(0xE5);
+        self.emit(zp + 8); // SBC dy  (8-bit, zero-extended)
+        self.emit(0x85);
+        self.emit(zp + 11); // STA err_lo
+        self.emit(0xA5);
+        self.emit(zp + 7); // LDA dx_hi
+        self.emit(0xE9);
+        self.emit(0x00); // SBC #0  (borrow → err_hi=$FF if dx<dy)
+        self.emit(0x85);
+        self.emit(zp + 12); // STA err_hi
 
         // ── Main loop ──────────────────────────────────────────────────────
         let dl_loop = self.current_addr();
         // Set up plot ZP: X_lo=cx_lo, X_hi=cx_hi, Y=cy
-        self.emit(0xA5); self.emit(zp + 0);  // LDA cx_lo
-        self.emit(0x85); self.emit(pzp + 0); // STA X_lo
-        self.emit(0xA5); self.emit(zp + 1);  // LDA cx_hi
-        self.emit(0x85); self.emit(pzp + 1); // STA X_hi
-        self.emit(0xA5); self.emit(zp + 2);  // LDA cy
-        self.emit(0x85); self.emit(pzp + 2); // STA Y
-        self.emit(0x20); self.emit(plot_helper_addr as u8); self.emit((plot_helper_addr >> 8) as u8); // JSR plot
+        self.emit(0xA5);
+        self.emit(zp + 0); // LDA cx_lo
+        self.emit(0x85);
+        self.emit(pzp + 0); // STA X_lo
+        self.emit(0xA5);
+        self.emit(zp + 1); // LDA cx_hi
+        self.emit(0x85);
+        self.emit(pzp + 1); // STA X_hi
+        self.emit(0xA5);
+        self.emit(zp + 2); // LDA cy
+        self.emit(0x85);
+        self.emit(pzp + 2); // STA Y
+        self.emit(0x20);
+        self.emit(plot_helper_addr as u8);
+        self.emit((plot_helper_addr >> 8) as u8); // JSR plot
 
         // Check termination: cx_lo==x2_lo && cx_hi==x2_hi && cy==y2 → done
         // Use BNE-over-JMP to avoid a long forward branch (loop body > 127 bytes)
-        self.emit(0xA5); self.emit(zp + 0);  // LDA cx_lo
-        self.emit(0xC5); self.emit(zp + 3);  // CMP x2_lo
-        self.emit(0xD0); let bne_step = self.code.len(); self.emit(0x00); // BNE dl_step
-        self.emit(0xA5); self.emit(zp + 1);  // LDA cx_hi
-        self.emit(0xC5); self.emit(zp + 4);  // CMP x2_hi
-        self.emit(0xD0); let bne_step2 = self.code.len(); self.emit(0x00); // BNE dl_step
-        self.emit(0xA5); self.emit(zp + 2);  // LDA cy
-        self.emit(0xC5); self.emit(zp + 5);  // CMP y2
-        self.emit(0xD0); let bne_step3 = self.code.len(); self.emit(0x00); // BNE dl_step (cy!=y2)
-        self.emit(0x4C); let jmp_done = self.code.len(); self.emit16(0x0000); // JMP dl_done (all match)
+        self.emit(0xA5);
+        self.emit(zp + 0); // LDA cx_lo
+        self.emit(0xC5);
+        self.emit(zp + 3); // CMP x2_lo
+        self.emit(0xD0);
+        let bne_step = self.code.len();
+        self.emit(0x00); // BNE dl_step
+        self.emit(0xA5);
+        self.emit(zp + 1); // LDA cx_hi
+        self.emit(0xC5);
+        self.emit(zp + 4); // CMP x2_hi
+        self.emit(0xD0);
+        let bne_step2 = self.code.len();
+        self.emit(0x00); // BNE dl_step
+        self.emit(0xA5);
+        self.emit(zp + 2); // LDA cy
+        self.emit(0xC5);
+        self.emit(zp + 5); // CMP y2
+        self.emit(0xD0);
+        let bne_step3 = self.code.len();
+        self.emit(0x00); // BNE dl_step (cy!=y2)
+        self.emit(0x4C);
+        let jmp_done = self.code.len();
+        self.emit16(0x0000); // JMP dl_done (all match)
 
         // dl_step: compute e2 = err << 1 (16-bit)
         let dl_step = self.current_addr();
-        self.patch_bxx(bne_step,  dl_step);
+        self.patch_bxx(bne_step, dl_step);
         self.patch_bxx(bne_step2, dl_step);
         self.patch_bxx(bne_step3, dl_step);
-        self.emit(0xA5); self.emit(zp + 11); // LDA err_lo
-        self.emit(0x0A);                      // ASL A
-        self.emit(0x85); self.emit(zp + 13); // STA e2_lo
-        self.emit(0xA5); self.emit(zp + 12); // LDA err_hi
-        self.emit(0x2A);                      // ROL A
-        self.emit(0x85); self.emit(zp + 14); // STA e2_hi
+        self.emit(0xA5);
+        self.emit(zp + 11); // LDA err_lo
+        self.emit(0x0A); // ASL A
+        self.emit(0x85);
+        self.emit(zp + 13); // STA e2_lo
+        self.emit(0xA5);
+        self.emit(zp + 12); // LDA err_hi
+        self.emit(0x2A); // ROL A
+        self.emit(0x85);
+        self.emit(zp + 14); // STA e2_hi
 
         // X update: if (e2 + dy) > 0 → err -= dy, cx += sx
-        self.emit(0x18);                      // CLC
-        self.emit(0xA5); self.emit(zp + 13); // LDA e2_lo
-        self.emit(0x65); self.emit(zp + 8);  // ADC dy
-        self.emit(0xAA);                      // TAX (save sum_lo)
-        self.emit(0xA5); self.emit(zp + 14); // LDA e2_hi
-        self.emit(0x69); self.emit(0x00);    // ADC #0 (carry from lo add)
-        self.emit(0x10); let bpl_xchk = self.code.len(); self.emit(0x00); // BPL dl_xchk (sum_hi>=0)
-        self.emit(0x4C); let jmp_ychk = self.code.len(); self.emit16(0x0000); // JMP dl_ychk
+        self.emit(0x18); // CLC
+        self.emit(0xA5);
+        self.emit(zp + 13); // LDA e2_lo
+        self.emit(0x65);
+        self.emit(zp + 8); // ADC dy
+        self.emit(0xAA); // TAX (save sum_lo)
+        self.emit(0xA5);
+        self.emit(zp + 14); // LDA e2_hi
+        self.emit(0x69);
+        self.emit(0x00); // ADC #0 (carry from lo add)
+        self.emit(0x10);
+        let bpl_xchk = self.code.len();
+        self.emit(0x00); // BPL dl_xchk (sum_hi>=0)
+        self.emit(0x4C);
+        let jmp_ychk = self.code.len();
+        self.emit16(0x0000); // JMP dl_ychk
 
         // dl_xchk: sum_hi in 0..127; sum>0 if hi!=0 or lo!=0
         let dl_xchk = self.current_addr();
         self.patch_bxx(bpl_xchk, dl_xchk);
-        self.emit(0xD0); let bne_do_x = self.code.len(); self.emit(0x00); // BNE dl_do_x (hi!=0)
-        self.emit(0xE0); self.emit(0x00);    // CPX #0  (check lo)
-        self.emit(0xF0); let beq_ychk = self.code.len(); self.emit(0x00); // BEQ dl_ychk (sum==0)
+        self.emit(0xD0);
+        let bne_do_x = self.code.len();
+        self.emit(0x00); // BNE dl_do_x (hi!=0)
+        self.emit(0xE0);
+        self.emit(0x00); // CPX #0  (check lo)
+        self.emit(0xF0);
+        let beq_ychk = self.code.len();
+        self.emit(0x00); // BEQ dl_ychk (sum==0)
 
         // dl_do_x: err -= dy (16-bit borrow), cx += sx (16-bit)
         let dl_do_x = self.current_addr();
         self.patch_bxx(bne_do_x, dl_do_x);
         self.emit(0x38);
-        self.emit(0xA5); self.emit(zp + 11); // LDA err_lo
-        self.emit(0xE5); self.emit(zp + 8);  // SBC dy
-        self.emit(0x85); self.emit(zp + 11); // STA err_lo
-        self.emit(0xA5); self.emit(zp + 12); // LDA err_hi
-        self.emit(0xE9); self.emit(0x00);    // SBC #0 (borrow)
-        self.emit(0x85); self.emit(zp + 12); // STA err_hi
+        self.emit(0xA5);
+        self.emit(zp + 11); // LDA err_lo
+        self.emit(0xE5);
+        self.emit(zp + 8); // SBC dy
+        self.emit(0x85);
+        self.emit(zp + 11); // STA err_lo
+        self.emit(0xA5);
+        self.emit(zp + 12); // LDA err_hi
+        self.emit(0xE9);
+        self.emit(0x00); // SBC #0 (borrow)
+        self.emit(0x85);
+        self.emit(zp + 12); // STA err_hi
         // cx += sx: sx=+1 → INC, sx=$FF → DEC (16-bit with carry/borrow)
-        self.emit(0xA5); self.emit(zp + 9);  // LDA sx
-        self.emit(0x10); let bpl_cx_inc = self.code.len(); self.emit(0x00); // BPL dl_cx_inc
+        self.emit(0xA5);
+        self.emit(zp + 9); // LDA sx
+        self.emit(0x10);
+        let bpl_cx_inc = self.code.len();
+        self.emit(0x00); // BPL dl_cx_inc
         // DEC cx_lo; if cx_lo was 0, borrow from cx_hi
-        self.emit(0xA5); self.emit(zp + 0);  // LDA cx_lo
-        self.emit(0xD0); let bne_nodec_hi = self.code.len(); self.emit(0x00); // BNE (no borrow)
-        self.emit(0xC6); self.emit(zp + 1);  // DEC cx_hi
+        self.emit(0xA5);
+        self.emit(zp + 0); // LDA cx_lo
+        self.emit(0xD0);
+        let bne_nodec_hi = self.code.len();
+        self.emit(0x00); // BNE (no borrow)
+        self.emit(0xC6);
+        self.emit(zp + 1); // DEC cx_hi
         let dl_nodec_hi = self.current_addr();
         self.patch_bxx(bne_nodec_hi, dl_nodec_hi);
-        self.emit(0xC6); self.emit(zp + 0);  // DEC cx_lo
-        self.emit(0x4C); let jmp_ychk2 = self.code.len(); self.emit16(0x0000); // JMP dl_ychk
+        self.emit(0xC6);
+        self.emit(zp + 0); // DEC cx_lo
+        self.emit(0x4C);
+        let jmp_ychk2 = self.code.len();
+        self.emit16(0x0000); // JMP dl_ychk
 
         // dl_cx_inc: INC cx_lo; if carry, INC cx_hi
         let dl_cx_inc = self.current_addr();
         self.patch_bxx(bpl_cx_inc, dl_cx_inc);
-        self.emit(0xE6); self.emit(zp + 0);  // INC cx_lo
-        self.emit(0xD0); let bne_no_inc_hi = self.code.len(); self.emit(0x00); // BNE dl_ychk
-        self.emit(0xE6); self.emit(zp + 1);  // INC cx_hi
+        self.emit(0xE6);
+        self.emit(zp + 0); // INC cx_lo
+        self.emit(0xD0);
+        let bne_no_inc_hi = self.code.len();
+        self.emit(0x00); // BNE dl_ychk
+        self.emit(0xE6);
+        self.emit(zp + 1); // INC cx_hi
         // fall through to dl_ychk
 
         // Y update: if (e2 - |dx|) < 0 → err += |dx|, cy += sy
         let dl_ychk = self.current_addr();
-        self.patch_abs(jmp_ychk,  dl_ychk);
+        self.patch_abs(jmp_ychk, dl_ychk);
         self.patch_abs(jmp_ychk2, dl_ychk);
-        self.patch_bxx(beq_ychk,       dl_ychk);
-        self.patch_bxx(bne_no_inc_hi,  dl_ychk);
+        self.patch_bxx(beq_ychk, dl_ychk);
+        self.patch_bxx(bne_no_inc_hi, dl_ychk);
         // 16-bit: e2 - |dx|; N flag after hi SBC = sign of result
         self.emit(0x38);
-        self.emit(0xA5); self.emit(zp + 13); // LDA e2_lo
-        self.emit(0xE5); self.emit(zp + 6);  // SBC dx_lo
-        self.emit(0xA5); self.emit(zp + 14); // LDA e2_hi
-        self.emit(0xE5); self.emit(zp + 7);  // SBC dx_hi
-        self.emit(0x10); let bpl_skip_y = self.code.len(); self.emit(0x00); // BPL skip_y (>=0 → skip)
+        self.emit(0xA5);
+        self.emit(zp + 13); // LDA e2_lo
+        self.emit(0xE5);
+        self.emit(zp + 6); // SBC dx_lo
+        self.emit(0xA5);
+        self.emit(zp + 14); // LDA e2_hi
+        self.emit(0xE5);
+        self.emit(zp + 7); // SBC dx_hi
+        self.emit(0x10);
+        let bpl_skip_y = self.code.len();
+        self.emit(0x00); // BPL skip_y (>=0 → skip)
         // do y: err += |dx| (16-bit), cy += sy
         self.emit(0x18);
-        self.emit(0xA5); self.emit(zp + 11); // LDA err_lo
-        self.emit(0x65); self.emit(zp + 6);  // ADC dx_lo
-        self.emit(0x85); self.emit(zp + 11); // STA err_lo
-        self.emit(0xA5); self.emit(zp + 12); // LDA err_hi
-        self.emit(0x65); self.emit(zp + 7);  // ADC dx_hi
-        self.emit(0x85); self.emit(zp + 12); // STA err_hi
+        self.emit(0xA5);
+        self.emit(zp + 11); // LDA err_lo
+        self.emit(0x65);
+        self.emit(zp + 6); // ADC dx_lo
+        self.emit(0x85);
+        self.emit(zp + 11); // STA err_lo
+        self.emit(0xA5);
+        self.emit(zp + 12); // LDA err_hi
+        self.emit(0x65);
+        self.emit(zp + 7); // ADC dx_hi
+        self.emit(0x85);
+        self.emit(zp + 12); // STA err_hi
         // cy += sy: sy=+1 → INC, sy=$FF → DEC
-        self.emit(0xA5); self.emit(zp + 10); // LDA sy
-        self.emit(0x10); let bpl_cy_inc = self.code.len(); self.emit(0x00); // BPL dl_cy_inc
-        self.emit(0xC6); self.emit(zp + 2);  // DEC cy
-        self.emit(0x4C); self.emit(dl_loop as u8); self.emit((dl_loop >> 8) as u8); // JMP dl_loop
+        self.emit(0xA5);
+        self.emit(zp + 10); // LDA sy
+        self.emit(0x10);
+        let bpl_cy_inc = self.code.len();
+        self.emit(0x00); // BPL dl_cy_inc
+        self.emit(0xC6);
+        self.emit(zp + 2); // DEC cy
+        self.emit(0x4C);
+        self.emit(dl_loop as u8);
+        self.emit((dl_loop >> 8) as u8); // JMP dl_loop
         let dl_cy_inc = self.current_addr();
         self.patch_bxx(bpl_cy_inc, dl_cy_inc);
-        self.emit(0xE6); self.emit(zp + 2);  // INC cy
-        self.emit(0x4C); self.emit(dl_loop as u8); self.emit((dl_loop >> 8) as u8); // JMP dl_loop
+        self.emit(0xE6);
+        self.emit(zp + 2); // INC cy
+        self.emit(0x4C);
+        self.emit(dl_loop as u8);
+        self.emit((dl_loop >> 8) as u8); // JMP dl_loop
 
         // skip_y: result >= 0 → no y update → back to loop
         let dl_skip_y = self.current_addr();
         self.patch_bxx(bpl_skip_y, dl_skip_y);
-        self.emit(0x4C); self.emit(dl_loop as u8); self.emit((dl_loop >> 8) as u8); // JMP dl_loop
+        self.emit(0x4C);
+        self.emit(dl_loop as u8);
+        self.emit((dl_loop >> 8) as u8); // JMP dl_loop
 
         // dl_done:
         let dl_done = self.current_addr();
@@ -7694,9 +7941,9 @@ impl Codegen {
                 self.mouse_patches.push(pos);
                 // STA lo, STA hi
                 self.emit(0x85);
-                self.emit(dst_zp);     // STA lo (from A = accum_x)
+                self.emit(dst_zp); // STA lo (from A = accum_x)
                 self.emit(0xA5);
-                self.emit(zp + 6);     // LDA accum_x_hi
+                self.emit(zp + 6); // LDA accum_x_hi
                 self.emit(0x85);
                 self.emit(dst_zp + 1); // STA hi
                 true
@@ -8606,7 +8853,10 @@ impl Codegen {
             }
             // ── FnCall → call fn, then read 16-bit result from fn_ret_zp ──────
             Expr::FnCall(name, args)
-                if matches!(self.fn_ret_types.get(name), Some(VarType::Word | VarType::Float)) =>
+                if matches!(
+                    self.fn_ret_types.get(name),
+                    Some(VarType::Word | VarType::Float)
+                ) =>
             {
                 // Store args into param ZP slots
                 if let Some(param_addrs) = self.sub_params.get(name).cloned() {
@@ -9603,7 +9853,12 @@ impl Codegen {
                     self.emit16(0xE544); // JSR $E544
                 }
             }
-            Stmt::Graphics { on, multi, block, dbuf } => {
+            Stmt::Graphics {
+                on,
+                multi,
+                block,
+                dbuf,
+            } => {
                 if *on {
                     if *block {
                         self.emit_graphics_on_block();
@@ -9919,7 +10174,7 @@ impl Codegen {
             }
             Stmt::Line { x1, y1, x2, y2 }
             | Stmt::LineErase { x1, y1, x2, y2 }
-            | Stmt::LineXor   { x1, y1, x2, y2 } => {
+            | Stmt::LineXor { x1, y1, x2, y2 } => {
                 if let Some(zp) = self.line_zp {
                     let x1 = x1.clone();
                     let y1 = y1.clone();
@@ -9927,17 +10182,17 @@ impl Codegen {
                     let y2 = y2.clone();
                     // ZP layout: cx_lo,cx_hi,cy, x2_lo,x2_hi,y2, ...
                     self.emit_store_expr_u16(&x1, zp + 0); // cx_lo, cx_hi
-                    self.emit_store_expr_u8(&y1, zp + 2);  // cy
+                    self.emit_store_expr_u8(&y1, zp + 2); // cy
                     self.emit_store_expr_u16(&x2, zp + 3); // x2_lo, x2_hi
-                    self.emit_store_expr_u8(&y2, zp + 5);  // y2
+                    self.emit_store_expr_u8(&y2, zp + 5); // y2
                     // JSR drawline helper (address patched after emit)
                     self.emit(0x20);
                     let patch = self.code.len();
                     self.emit16(0x0000);
                     match stmt {
                         Stmt::LineErase { .. } => self.line_erase_patches.push(patch),
-                        Stmt::LineXor   { .. } => self.line_xor_patches.push(patch),
-                        _                      => self.line_patches.push(patch),
+                        Stmt::LineXor { .. } => self.line_xor_patches.push(patch),
+                        _ => self.line_patches.push(patch),
                     }
                 }
             }
@@ -11956,8 +12211,10 @@ impl Codegen {
             | Stmt::RectErase(x1e, y1e, x2e, y2e)
             | Stmt::RectXor(x1e, y1e, x2e, y2e) => {
                 if let Some(zp) = self.rect_zp {
-                    let x1 = x1e.clone(); let y1 = y1e.clone();
-                    let x2 = x2e.clone(); let y2 = y2e.clone();
+                    let x1 = x1e.clone();
+                    let y1 = y1e.clone();
+                    let x2 = x2e.clone();
+                    let y2 = y2e.clone();
                     // Fill rect_zp: x1_lo,x1_hi,y1, x2_lo,x2_hi,y2
                     self.emit_store_expr_u16(&x1, zp + 0);
                     self.emit_store_expr_u8(&y1, zp + 2);
@@ -11968,8 +12225,8 @@ impl Codegen {
                     self.emit16(0x0000);
                     match stmt {
                         Stmt::RectErase(..) => self.rect_erase_patches.push(patch),
-                        Stmt::RectXor(..)   => self.rect_xor_patches.push(patch),
-                        _                   => self.rect_patches.push(patch),
+                        Stmt::RectXor(..) => self.rect_xor_patches.push(patch),
+                        _ => self.rect_patches.push(patch),
                     }
                 }
             }
@@ -12729,8 +12986,10 @@ impl Codegen {
 
         // Emit plot-erase helper (clear pixel, AND ~mask) — also used by rect erase and line erase
         let mut plot_erase_helper_addr: Option<u16> = None;
-        if !self.plot_erase_patches.is_empty() || !self.rect_erase_patches.is_empty()
-            || !self.line_erase_patches.is_empty() {
+        if !self.plot_erase_patches.is_empty()
+            || !self.rect_erase_patches.is_empty()
+            || !self.line_erase_patches.is_empty()
+        {
             let addr = self.current_addr();
             self.emit_plot_erase_helper();
             plot_erase_helper_addr = Some(addr);
@@ -12742,8 +13001,10 @@ impl Codegen {
 
         // Emit plot-xor helper (XOR pixel, EOR mask) — also used by rect xor and line xor
         let mut plot_xor_helper_addr: Option<u16> = None;
-        if !self.plot_xor_patches.is_empty() || !self.rect_xor_patches.is_empty()
-            || !self.line_xor_patches.is_empty() {
+        if !self.plot_xor_patches.is_empty()
+            || !self.rect_xor_patches.is_empty()
+            || !self.line_xor_patches.is_empty()
+        {
             let addr = self.current_addr();
             self.emit_plot_xor_helper();
             plot_xor_helper_addr = Some(addr);
@@ -13039,6 +13300,16 @@ impl Codegen {
             .collect();
         subroutines.sort_by_key(|s| s.addr);
 
+        let mut labels: Vec<crate::compiler::LabelEntry> = self
+            .labels
+            .iter()
+            .map(|(name, &addr)| crate::compiler::LabelEntry {
+                name: name.clone(),
+                addr,
+            })
+            .collect();
+        labels.sort_by_key(|label| label.addr);
+
         let mut arrays: Vec<ArrayEntry> = self
             .arrays
             .iter()
@@ -13055,6 +13326,7 @@ impl Codegen {
             code_size: self.code.len(),
             variables,
             subroutines,
+            labels,
             arrays,
             plot_zp: self.plot_zp,
             line_zp: self.line_zp,

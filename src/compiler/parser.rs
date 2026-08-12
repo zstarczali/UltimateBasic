@@ -285,10 +285,22 @@ impl Parser {
                     let ptype = if self.peek() == &Token::Colon {
                         self.advance();
                         match self.peek() {
-                            Token::Int => { self.advance(); Some(VarType::Int) }
-                            Token::Str => { self.advance(); Some(VarType::Str) }
-                            Token::Float => { self.advance(); Some(VarType::Float) }
-                            Token::Word => { self.advance(); Some(VarType::Word) }
+                            Token::Int => {
+                                self.advance();
+                                Some(VarType::Int)
+                            }
+                            Token::Str => {
+                                self.advance();
+                                Some(VarType::Str)
+                            }
+                            Token::Float => {
+                                self.advance();
+                                Some(VarType::Float)
+                            }
+                            Token::Word => {
+                                self.advance();
+                                Some(VarType::Word)
+                            }
                             _ => None,
                         }
                     } else {
@@ -1122,7 +1134,12 @@ impl Parser {
                     false
                 };
                 self.expect_newline();
-                Some(Stmt::Graphics { on, multi, block, dbuf })
+                Some(Stmt::Graphics {
+                    on,
+                    multi,
+                    block,
+                    dbuf,
+                })
             }
             Token::Flip => {
                 self.advance();
@@ -1275,10 +1292,22 @@ impl Parser {
                 let ret_type = if self.peek() == &Token::Colon {
                     self.advance();
                     match self.peek() {
-                        Token::Int => { self.advance(); Some(VarType::Int) }
-                        Token::Str => { self.advance(); Some(VarType::Str) }
-                        Token::Float => { self.advance(); Some(VarType::Float) }
-                        Token::Word => { self.advance(); Some(VarType::Word) }
+                        Token::Int => {
+                            self.advance();
+                            Some(VarType::Int)
+                        }
+                        Token::Str => {
+                            self.advance();
+                            Some(VarType::Str)
+                        }
+                        Token::Float => {
+                            self.advance();
+                            Some(VarType::Float)
+                        }
+                        Token::Word => {
+                            self.advance();
+                            Some(VarType::Word)
+                        }
                         _ => None,
                     }
                 } else {
@@ -1303,7 +1332,10 @@ impl Parser {
             }
             Token::Return => {
                 self.advance();
-                let expr = if matches!(self.peek(), Token::Newline | Token::Eof | Token::Colon | Token::Else) {
+                let expr = if matches!(
+                    self.peek(),
+                    Token::Newline | Token::Eof | Token::Colon | Token::Else
+                ) {
                     None
                 } else {
                     Some(self.parse_expr())
@@ -1556,11 +1588,17 @@ impl Parser {
                     0u8
                 };
                 let x1 = self.parse_expr();
-                if self.peek() == &Token::Comma { self.advance(); }
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
                 let y1 = self.parse_expr();
-                if self.peek() == &Token::Comma { self.advance(); }
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
                 let x2 = self.parse_expr();
-                if self.peek() == &Token::Comma { self.advance(); }
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
                 let y2 = self.parse_expr();
                 self.expect_newline();
                 Some(match mode {
@@ -1670,17 +1708,23 @@ impl Parser {
                     0u8
                 };
                 let x1 = self.parse_expr();
-                if self.peek() == &Token::Comma { self.advance(); }
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
                 let y1 = self.parse_expr();
-                if self.peek() == &Token::Comma { self.advance(); }
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
                 let x2 = self.parse_expr();
-                if self.peek() == &Token::Comma { self.advance(); }
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
                 let y2 = self.parse_expr();
                 self.expect_newline();
                 Some(match mode {
                     1 => Stmt::LineErase { x1, y1, x2, y2 },
-                    2 => Stmt::LineXor   { x1, y1, x2, y2 },
-                    _ => Stmt::Line      { x1, y1, x2, y2 },
+                    2 => Stmt::LineXor { x1, y1, x2, y2 },
+                    _ => Stmt::Line { x1, y1, x2, y2 },
                 })
             }
             Token::Gcls => {

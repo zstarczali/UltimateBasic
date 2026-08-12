@@ -11,9 +11,9 @@ pub enum Expr {
     ReuPresent, // reu_present() — 1 if REU detected, 0 otherwise
     Turbo,   // turbo() — 1 if U64 turbo active (bits 0-3 of $D031 != 0), else 0
     Joy(u8), // joy(1) or joy(2) — read joystick port, returns inverted bits 0-4
-    MouseX,    // mouse_x()  — SID $D419 POT X register (0-255, accumulated)
-    MouseXHi,  // mouse_x_hi() — MSB of 9-bit X position
-    MouseY,    // mouse_y()  — SID $D41A POT Y register (0-255)
+    MouseX,  // mouse_x()  — SID $D419 POT X register (0-255, accumulated)
+    MouseXHi, // mouse_x_hi() — MSB of 9-bit X position
+    MouseY,  // mouse_y()  — SID $D41A POT Y register (0-255)
     MouseBtn, // mouse_btn() — CIA1 $DC00 bits: bit0=left(fire), bit1=right(up direction)
     Sin(Box<Expr>), // sin(angle) — 8-bit angle 0-255, returns 0-255 (center=128)
     Cos(Box<Expr>), // cos(angle) — same as sin with +64 offset
@@ -150,9 +150,9 @@ pub enum Stmt {
         addr: u16,
         arg: Option<Expr>,
     }, // sys addr [, val] — optional LDA #val before JSR
-    WaitKey,   // waitkey() standalone statement — CIA1 matrix scan until any key
+    WaitKey, // waitkey() standalone statement — CIA1 matrix scan until any key
     WaitGetch, // wait key — blocking KERNAL getch ($FFE4 loop until keypress)
-    IrqExit,   // irq_exit — JMP $EA81 (proper IRQ handler exit)
+    IrqExit, // irq_exit — JMP $EA81 (proper IRQ handler exit)
     /// `sid volume N` — write N to $D418 (master volume + filter mode, bits 0-3 = vol 0-15).
     SidVolume(Expr),
     /// `sid stop` — zero all 25 SID registers ($D400–$D418), silencing all voices.
@@ -167,8 +167,13 @@ pub enum Stmt {
         expr: Expr,
     },
     SubDef(String, Vec<(String, Option<VarType>)>, Vec<Stmt>), // name, params, body
-    FnDef(String, Vec<(String, Option<VarType>)>, Option<VarType>, Vec<Stmt>), // name, params, return_type, body
-    Call(String, Vec<Expr>, usize),         // name, args, line
+    FnDef(
+        String,
+        Vec<(String, Option<VarType>)>,
+        Option<VarType>,
+        Vec<Stmt>,
+    ), // name, params, return_type, body
+    Call(String, Vec<Expr>, usize),                            // name, args, line
     Return(Option<Expr>),
     Const(String, Expr),
     Label(String),
@@ -260,9 +265,9 @@ pub enum Stmt {
     PlotErase(Expr, Expr), // plot erase x, y — clear pixel in bitmap
     PlotXor(Expr, Expr), // plot xor x, y — XOR pixel in bitmap
     Paint(Expr, Expr), // paint x, y — 4-connected flood fill from (x,y)
-    Rect(Expr, Expr, Expr, Expr),      // rect x1,y1,x2,y2 — draw rectangle outline (set)
+    Rect(Expr, Expr, Expr, Expr), // rect x1,y1,x2,y2 — draw rectangle outline (set)
     RectErase(Expr, Expr, Expr, Expr), // rect erase x1,y1,x2,y2 — erase rectangle outline
-    RectXor(Expr, Expr, Expr, Expr),   // rect xor x1,y1,x2,y2 — XOR rectangle outline
+    RectXor(Expr, Expr, Expr, Expr), // rect xor x1,y1,x2,y2 — XOR rectangle outline
     SpriteExpandX {
         id: Expr,
         on: bool,

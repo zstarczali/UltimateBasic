@@ -1,5 +1,6 @@
 pub mod ast;
 pub mod codegen;
+pub mod debug_output;
 pub mod lexer;
 pub mod parser;
 
@@ -24,6 +25,12 @@ pub struct SubEntry {
     pub addr: u16,
 }
 
+/// Named BASIC label with its final absolute machine-code address.
+pub struct LabelEntry {
+    pub name: String,
+    pub addr: u16,
+}
+
 /// Byte array in heap RAM ($C000+).
 pub struct ArrayEntry {
     pub name: String,
@@ -37,6 +44,7 @@ pub struct MemoryMap {
     pub code_size: usize,
     pub variables: Vec<VarEntry>,    // sorted by ZP address
     pub subroutines: Vec<SubEntry>,  // sorted by address
+    pub labels: Vec<LabelEntry>,     // sorted by address
     pub arrays: Vec<ArrayEntry>,     // sorted by base address
     pub plot_zp: Option<u8>,         // 6-byte ZP block for plot helper
     pub line_zp: Option<u8>,         // 15-byte ZP block for Bresenham line helper (16-bit x)

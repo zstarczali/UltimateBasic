@@ -1,7 +1,14 @@
 // build.rs – combines assets/ultimate_basic_*.ico → assets/icon.ico + sets Windows file properties
+#[cfg(target_os = "windows")]
 use std::fs;
 
 fn main() {
+    #[cfg(target_os = "windows")]
+    build_windows_resources();
+}
+
+#[cfg(target_os = "windows")]
+fn build_windows_resources() {
     let sizes = [16u32, 32, 48, 64, 128, 256, 512];
     let paths: Vec<String> = sizes
         .iter()
@@ -18,9 +25,7 @@ fn main() {
         println!("cargo:rerun-if-changed={p}");
     }
 
-    #[cfg(target_os = "windows")]
-    {
-        let mut res = winresource::WindowsResource::new();
+    let mut res = winresource::WindowsResource::new();
         res.set(
             "FileDescription",
             "Ultimate Basic – C64/C64 Ultimate BASIC compiler",
@@ -31,11 +36,11 @@ fn main() {
         res.set("FileVersion", env!("CARGO_PKG_VERSION"));
         res.set("ProductVersion", env!("CARGO_PKG_VERSION"));
         res.set_icon("assets/icon.ico");
-        res.compile().expect("Failed to compile Windows resources");
-    }
+    res.compile().expect("Failed to compile Windows resources");
 }
 
 /// Reads multiple single-size .ico files and combines them into one multi-resolution .ico.
+#[cfg(target_os = "windows")]
 fn combine_icos(paths: &[&str]) -> Vec<u8> {
     struct Entry {
         width: u8,
