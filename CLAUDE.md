@@ -8,6 +8,7 @@ A custom BASIC-like language compiler targeting the Commodore 64 and Commodore 6
 cargo build --release
 cargo test
 ub build demo.ub -o demo.prg
+ub build demo.ub --debug       # also generate .sym, .dbg and .vs debugger files
 ub build demo.ub --d64 disk.d64
 ub build demo.ub --d64          # auto: demo.d64
 ub build demo.ub --d64 disk.d64 --add music.prg --add loader.prg
@@ -1262,6 +1263,7 @@ ub build <input.ub> [OPTIONS]
   -o, --output <file>   Output .prg file (default: <input>.prg)
   -v, --verbose         Show full ZP layout + code hex dump after build
   --no-stub             Skip the BASIC SYS stub (code loads at $0801)
+  --debug               Also produce .sym, .dbg and .vs debugger files
   --d64 [file]          Also produce a .d64 disk image;
                           without a filename defaults to <output>.d64
   --add <file>          Add an extra file to the .d64 disk image;
@@ -1272,6 +1274,15 @@ ub build <input.ub> [OPTIONS]
 A memory map is always printed on successful build (variables, subroutines, arrays,
 load address). `--verbose` additionally shows the internal ZP allocation (plot helper,
 data pointer) and a full hex dump of the generated machine code.
+
+`--debug` writes three files next to the `.prg`, using the output file's stem:
+
+- `.sym`: KickAssembler-compatible importable symbols
+- `.dbg`: C64Debugger/RetroDebugger segment and address labels
+- `.vs`: VICE monitor `al` commands, loadable with `-moncommands` or `ll`
+
+The exports include program boundaries, variables, arrays, subroutines, and BASIC
+labels. The `.dbg` format does not yet include instruction-to-source-line mappings.
 
 ---
 
