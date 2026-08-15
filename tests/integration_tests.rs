@@ -2047,6 +2047,23 @@ fn incbin_embeds_bytes() {
     );
 }
 
+#[test]
+fn incbin_at_absolute_address_pads_and_embeds_bytes() {
+    let dir = std::env::temp_dir().join(format!("ultimate-basic-incbin-at-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("charset.bin"), [0x9A, 0xA9, 0xAA, 0x6A]).unwrap();
+    let source_path = dir.join("main.ub");
+    let result = compile_with_path(
+        "incbin \"charset.bin\", $2000\n",
+        &CompileOptions { basic_stub: false },
+        Some(&source_path),
+    );
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let payload = &result.prg[2..];
+    let offset = 0x2000usize - 0x0801usize;
+    assert_eq!(&payload[offset..offset + 4], &[0x9A, 0xA9, 0xAA, 0x6A]);
+}
+
 // ── load sid ─────────────────────────────────────────────────────────────────
 
 /// Build a minimal PSID v1 file (118-byte header + music data).

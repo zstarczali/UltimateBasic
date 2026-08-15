@@ -1032,7 +1032,8 @@ which branches to the label. Forward references (label defined after `onerr goto
 ### Compile-time file embedding
 
 ```basic
-incbin "sprites.bin"     # embed raw binary bytes at current code position
+incbin "sprites.bin"            # embed raw binary bytes at current code position
+incbin "charset.bin", $2000     # embed at an absolute address, padding as needed
 include "defs.ub"        # inline another .ub source file (lexed+parsed in place)
 ```
 

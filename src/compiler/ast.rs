@@ -251,7 +251,11 @@ pub enum Stmt {
     }, // line xor x1,y1,x2,y2 — Bresenham line (toggle pixels, EOR mask)
     Gcls,                   // gcls — clear bitmap screen
     Bye,                    // bye/exit — cls then RTS back to BASIC
-    Incbin(String),         // incbin "file" — embed raw binary file bytes inline
+    Incbin {
+        path: String,
+        data: Vec<u8>,
+        address: Option<u16>,
+    }, // incbin "file" [, address] — embed bytes inline or at an absolute address
     /// `load sid "file.sid"` — embed SID music data at its native load address.
     /// Header is parsed at compile time; `sid_init` and `sid_play` become constants.
     LoadSid {

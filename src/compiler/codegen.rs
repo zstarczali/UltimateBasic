@@ -654,6 +654,8 @@ pub struct Codegen {
     koala_show_patches: Vec<usize>,
     koala_layout_error: Option<String>,
     listing_spans: Vec<crate::compiler::ListingSpan>,
+    addressed_incbins: Vec<(u16, String, Vec<u8>)>,
+    incbin_errors: Vec<String>,
 }
 
 /// Carry SID metadata through pre_scan → compile().
@@ -758,6 +760,8 @@ impl Codegen {
             koala_show_patches: vec![],
             koala_layout_error: None,
             listing_spans: vec![],
+            addressed_incbins: vec![],
+            incbin_errors: vec![],
         }
     }
 
@@ -1486,6 +1490,9 @@ impl Codegen {
                         load_addr: *load_addr,
                         data: data.clone(),
                     });
+                }
+                Stmt::Incbin { path, data, address: Some(address) } => {
+                    self.addressed_incbins.push((*address, path.clone(), data.clone()));
                 }
                 _ => {}
             }
@@ -10581,14 +10588,8 @@ impl Codegen {
                 self.emit(0x4C);
                 self.emit16(0xA659); // JMP $A659
             }
-            Stmt::Incbin(path) => match std::fs::read(path) {
-                Ok(bytes) => {
-                    for b in bytes {
-                        self.emit(b);
-                    }
-                }
-                Err(e) => eprintln!("incbin: cannot read '{}': {}", path, e),
-            },
+            Stmt::Incbin { data, address: None, .. } => self.code.extend_from_slice(data),
+            Stmt::Incbin { address: Some(_), .. } => {}
             Stmt::LoadSid { .. } => {
                 // SID data is embedded at the end of compile(), not inline here.
             }
@@ -13761,6 +13762,20 @@ impl Codegen {
             }
         }
 
+        self.addressed_incbins.sort_by_key(|entry| entry.0);
+        for (address, path, data) in self.addressed_incbins.clone() {
+            let code_end = self.load_addr as usize + self.code.len();
+            if (address as usize) < code_end {
+                self.incbin_errors.push(format!(
+                    "incbin '{}': target ${address:04X} overlaps generated data ending at ${code_end:04X}",
+                    path
+                ));
+                continue;
+            }
+            self.code.resize(address as usize - self.load_addr as usize, 0x00);
+            self.code.extend_from_slice(&data);
+        }
+
         // Embed SID music data at its native C64 load address.
         // Pad the code segment with zeros to reach the target address, then
         // append the raw music bytes.  This must happen AFTER all helpers and
@@ -13813,6 +13828,7 @@ impl Codegen {
         if let Some(error) = &self.koala_layout_error {
             errs.push(error.clone());
         }
+        errs.extend(self.incbin_errors.iter().cloned());
         errs
     }
 

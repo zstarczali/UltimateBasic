@@ -2021,9 +2021,33 @@ impl Parser {
                 self.advance();
                 if let Token::StringLit(path) = self.peek().clone() {
                     self.advance();
+                    let address = if self.peek() == &Token::Comma {
+                        self.advance();
+                        match self.parse_expr() {
+                            Expr::Number(value) => Some(value as u16),
+                            _ => {
+                                self.errors.push("incbin: address must be a 16-bit constant".to_string());
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
                     self.expect_newline();
-                    Some(Stmt::Incbin(path))
+                    let resolved = self
+                        .base_dir
+                        .as_ref()
+                        .map(|base| base.join(&path))
+                        .unwrap_or_else(|| std::path::PathBuf::from(&path));
+                    match std::fs::read(&resolved) {
+                        Ok(data) => Some(Stmt::Incbin { path, data, address }),
+                        Err(error) => {
+                            self.errors.push(format!("incbin: cannot read '{}': {}", resolved.display(), error));
+                            None
+                        }
+                    }
                 } else {
+                    self.errors.push("incbin expects a quoted filename".to_string());
                     self.expect_newline();
                     None
                 }
