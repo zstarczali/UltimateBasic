@@ -1,5 +1,7 @@
 # Ultimate Basic
 
+Current version: **1.5.2**
+
 A modern BASIC-like language that compiles directly to 6502 machine code for the
 **Commodore 64** and **Commodore 64 Ultimate**. It produces `.prg` files that run in
 VICE or on real hardware, and can also build `.d64` disk images.
@@ -32,6 +34,7 @@ cargo test                 # unit + integration tests
 ub build demo.ub -o demo.prg          # compile to a .prg (prints a memory map)
 ub build demo.ub -v                   # also print ZP layout + hex dump
 ub build demo.ub --debug              # also write .sym, .dbg and .vs symbols
+ub build demo.ub --asm                # also write a readable 6502 codegen listing
 ub build demo.ub --d64 disk.d64       # also build a .d64 disk image
 ub build demo.ub --d64 disk.d64 --add music.prg   # embed extra files in the .d64
 ```
@@ -42,6 +45,7 @@ ub build demo.ub --d64 disk.d64 --add music.prg   # embed extra files in the .d6
 | `-v, --verbose` | Print full zero-page layout and a hex dump |
 | `--no-stub` | Skip the BASIC `SYS` stub (code loads at `$0801`) |
 | `--debug` | Also produce KickAssembler `.sym`, C64Debugger `.dbg`, and VICE `.vs` files |
+| `--asm` | Also produce a readable 6502 codegen listing as `<output>.asm` |
 | `--d64 [file]` | Also produce a `.d64` (default: `<output>.d64`) |
 | `--add <file>` | Add an extra file to the `.d64` (repeatable) |
 
@@ -49,6 +53,30 @@ With `--debug`, the compiler writes three files beside the program: an importabl
 KickAssembler `.sym`, a C64Debugger/RetroDebugger `.dbg`, and a VICE monitor `.vs`.
 They contain the program boundaries, variables, arrays, subroutines, and BASIC labels.
 The `.dbg` export currently provides address symbols but not source-line stepping data.
+
+With `--asm`, the compiler writes a readable assembly listing beside the program. Unlike
+a plain disassembly of the finished PRG, it is built from code-generation metadata and
+retains UB statement comments, zero-page variable names, array/subroutine/BASIC-label
+symbols, generated branch/JMP/JSR labels, instruction addresses, and emitted machine-code
+bytes. Compiler-generated helper routines are included in the same listing.
+The output uses KickAssembler syntax and can be assembled again. Known data regions—such
+as `data`, maps, sprite/character definitions, lookup tables, SID/Koala payloads, and
+`incbin` content—are emitted as `.byte` blocks instead of being mistaken for instructions.
+
+## What's new in 1.5.2
+
+- Added `ub build <file.ub> --asm` and `<file>.asm` codegen listings.
+- Listings retain UB statement boundaries and compiler symbols instead of producing only
+  a bare post-build disassembly.
+- Zero-page variables and arrays are emitted as named assembler constants.
+- BASIC labels, subroutines, relative branches, and generated in-program JMP/JSR targets
+  receive readable labels.
+- Every instruction includes its C64 address and generated machine-code bytes, making the
+  output useful for inspection, debugging, optimization, and comparison with the PRG.
+- Compiler helpers use descriptive `ub_helper_*` labels, while known embedded data is
+  emitted with named `.byte` regions in reassemblable KickAssembler syntax.
+- Added listing tests and documentation in the README, manual, CLI help, release notes,
+  and compiler developer guide.
 
 ## A taste
 

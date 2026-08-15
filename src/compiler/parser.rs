@@ -2026,7 +2026,8 @@ impl Parser {
                         match self.parse_expr() {
                             Expr::Number(value) => Some(value as u16),
                             _ => {
-                                self.errors.push("incbin: address must be a 16-bit constant".to_string());
+                                self.errors
+                                    .push("incbin: address must be a 16-bit constant".to_string());
                                 None
                             }
                         }
@@ -2040,14 +2041,23 @@ impl Parser {
                         .map(|base| base.join(&path))
                         .unwrap_or_else(|| std::path::PathBuf::from(&path));
                     match std::fs::read(&resolved) {
-                        Ok(data) => Some(Stmt::Incbin { path, data, address }),
+                        Ok(data) => Some(Stmt::Incbin {
+                            path,
+                            data,
+                            address,
+                        }),
                         Err(error) => {
-                            self.errors.push(format!("incbin: cannot read '{}': {}", resolved.display(), error));
+                            self.errors.push(format!(
+                                "incbin: cannot read '{}': {}",
+                                resolved.display(),
+                                error
+                            ));
                             None
                         }
                     }
                 } else {
-                    self.errors.push("incbin expects a quoted filename".to_string());
+                    self.errors
+                        .push("incbin expects a quoted filename".to_string());
                     self.expect_newline();
                     None
                 }

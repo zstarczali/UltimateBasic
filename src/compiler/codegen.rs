@@ -654,6 +654,8 @@ pub struct Codegen {
     koala_show_patches: Vec<usize>,
     koala_layout_error: Option<String>,
     listing_spans: Vec<crate::compiler::ListingSpan>,
+    listing_symbols: Vec<crate::compiler::ListingSymbol>,
+    data_regions: Vec<crate::compiler::DataRegion>,
     addressed_incbins: Vec<(u16, String, Vec<u8>)>,
     incbin_errors: Vec<String>,
 }
@@ -760,6 +762,8 @@ impl Codegen {
             koala_show_patches: vec![],
             koala_layout_error: None,
             listing_spans: vec![],
+            listing_symbols: vec![],
+            data_regions: vec![],
             addressed_incbins: vec![],
             incbin_errors: vec![],
         }
@@ -1491,8 +1495,13 @@ impl Codegen {
                         data: data.clone(),
                     });
                 }
-                Stmt::Incbin { path, data, address: Some(address) } => {
-                    self.addressed_incbins.push((*address, path.clone(), data.clone()));
+                Stmt::Incbin {
+                    path,
+                    data,
+                    address: Some(address),
+                } => {
+                    self.addressed_incbins
+                        .push((*address, path.clone(), data.clone()));
                 }
                 _ => {}
             }
@@ -1521,6 +1530,23 @@ impl Codegen {
 
     fn current_addr(&self) -> u16 {
         self.load_addr + self.code.len() as u16
+    }
+
+    fn listing_symbol(&mut self, name: &str) {
+        self.listing_symbols.push(crate::compiler::ListingSymbol {
+            offset: self.code.len(),
+            name: name.to_string(),
+        });
+    }
+
+    fn listing_data(&mut self, start: usize, name: &str) {
+        if self.code.len() > start {
+            self.data_regions.push(crate::compiler::DataRegion {
+                start,
+                end: self.code.len(),
+                name: name.to_string(),
+            });
+        }
     }
 
     fn alloc_var(&mut self, name: &str) -> u8 {
@@ -4611,9 +4637,11 @@ impl Codegen {
         self.emit16(0x0000);
 
         let charset_addr = self.current_addr();
+        let charset_start = self.code.len();
         for b in &charset {
             self.emit(*b);
         }
+        self.listing_data(charset_start, "ub_block_charset");
 
         let copy_start = self.current_addr();
         self.code[jmp_pos] = copy_start as u8;
@@ -10588,8 +10616,18 @@ impl Codegen {
                 self.emit(0x4C);
                 self.emit16(0xA659); // JMP $A659
             }
-            Stmt::Incbin { data, address: None, .. } => self.code.extend_from_slice(data),
-            Stmt::Incbin { address: Some(_), .. } => {}
+            Stmt::Incbin {
+                path,
+                data,
+                address: None,
+            } => {
+                let start = self.code.len();
+                self.code.extend_from_slice(data);
+                self.listing_data(start, &format!("incbin_{}", path));
+            }
+            Stmt::Incbin {
+                address: Some(_), ..
+            } => {}
             Stmt::LoadSid { .. } => {
                 // SID data is embedded at the end of compile(), not inline here.
             }
@@ -10600,9 +10638,11 @@ impl Codegen {
                 self.emit(0x00);
                 self.emit(0x00); // placeholder
                 let name_addr = self.current_addr();
+                let name_start = self.code.len();
                 for c in filename.chars() {
                     self.emit(ascii_to_petscii(c, false));
                 }
+                self.listing_data(name_start, "ub_load_filename");
                 let after_name = self.current_addr();
                 self.patch_abs(jmp_pos, after_name);
 
@@ -11247,14 +11287,18 @@ impl Codegen {
                 let skip_patch = self.code.len();
                 self.emit16(0x0000);
                 let char_addr = self.current_addr();
+                let char_start = self.code.len();
                 for byte in chars {
                     self.emit(*byte);
                 }
+                self.listing_data(char_start, "ub_map_chars");
                 let color_addr = colors.as_ref().map(|data| {
                     let addr = self.current_addr();
+                    let color_start = self.code.len();
                     for byte in data {
                         self.emit(*byte & 0x0F);
                     }
+                    self.listing_data(color_start, "ub_map_colors");
                     addr
                 });
                 let after_data = self.current_addr();
@@ -11502,11 +11546,13 @@ impl Codegen {
 
                 // 8 bytes of character data (zero-padded if fewer supplied)
                 let data_addr = self.current_addr();
+                let data_start = self.code.len();
                 let mut data = bytes.clone();
                 data.resize(8, 0);
                 for b in &data {
                     self.emit(*b);
                 }
+                self.listing_data(data_start, &format!("ub_char_{id}_data"));
 
                 // Patch JMP to instruction immediately after the data block
                 let past_data = self.current_addr();
@@ -12788,17 +12834,21 @@ impl Codegen {
                 self.emit16(0x0000);
 
                 // Zero-padding to reach 64-byte boundary
+                let padding_start = self.code.len();
                 for _ in 0..padding {
                     self.emit(0x00);
                 }
+                self.listing_data(padding_start, &format!("ub_sprite_{id}_padding"));
 
                 // 63 bytes of sprite data (zero-padded if fewer supplied)
+                let data_start = self.code.len();
                 let mut data = bytes.clone();
                 data.resize(63, 0);
                 for b in &data {
                     self.emit(*b);
                 }
                 self.emit(0x00); // 1 filler byte — completes the 64-byte block
+                self.listing_data(data_start, &format!("ub_sprite_{id}_data"));
 
                 // Patch JMP to instruction immediately after the data block
                 let past_data = self.current_addr();
@@ -13462,6 +13512,7 @@ impl Codegen {
         if !self.plot_patches.is_empty() || !self.line_patches.is_empty() {
             let addr = self.current_addr();
             plot_helper_addr = Some(addr);
+            self.listing_symbol("ub_helper_plot");
             self.emit_plot_helper();
             for &pos in &self.plot_patches.clone() {
                 self.code[pos] = addr as u8;
@@ -13473,6 +13524,7 @@ impl Codegen {
         if !self.line_patches.is_empty() {
             if let Some(plot_addr) = plot_helper_addr {
                 let dl_addr = self.current_addr();
+                self.listing_symbol("ub_helper_line");
                 self.emit_drawline_helper(plot_addr);
                 for &pos in &self.line_patches.clone() {
                     self.code[pos] = dl_addr as u8;
@@ -13485,6 +13537,7 @@ impl Codegen {
         if !self.circle_patches.is_empty() {
             if let Some(plot_addr) = plot_helper_addr {
                 let circle_addr = self.current_addr();
+                self.listing_symbol("ub_helper_circle");
                 self.emit_circle_helper(plot_addr);
                 for &pos in &self.circle_patches.clone() {
                     self.code[pos] = circle_addr as u8;
@@ -13500,6 +13553,7 @@ impl Codegen {
             || !self.line_erase_patches.is_empty()
         {
             let addr = self.current_addr();
+            self.listing_symbol("ub_helper_plot_erase");
             self.emit_plot_erase_helper();
             plot_erase_helper_addr = Some(addr);
             for &pos in &self.plot_erase_patches.clone() {
@@ -13515,6 +13569,7 @@ impl Codegen {
             || !self.line_xor_patches.is_empty()
         {
             let addr = self.current_addr();
+            self.listing_symbol("ub_helper_plot_xor");
             self.emit_plot_xor_helper();
             plot_xor_helper_addr = Some(addr);
             for &pos in &self.plot_xor_patches.clone() {
@@ -13527,6 +13582,7 @@ impl Codegen {
         if !self.line_erase_patches.is_empty() {
             if let Some(erase_addr) = plot_erase_helper_addr {
                 let dl_addr = self.current_addr();
+                self.listing_symbol("ub_helper_line_erase");
                 self.emit_drawline_helper(erase_addr);
                 for &pos in &self.line_erase_patches.clone() {
                     self.code[pos] = dl_addr as u8;
@@ -13539,6 +13595,7 @@ impl Codegen {
         if !self.line_xor_patches.is_empty() {
             if let Some(xor_addr) = plot_xor_helper_addr {
                 let dl_addr = self.current_addr();
+                self.listing_symbol("ub_helper_line_xor");
                 self.emit_drawline_helper(xor_addr);
                 for &pos in &self.line_xor_patches.clone() {
                     self.code[pos] = dl_addr as u8;
@@ -13551,6 +13608,7 @@ impl Codegen {
         let mut plot4_helper_addr: Option<u16> = None;
         if !self.plot4_patches.is_empty() || !self.circle4_patches.is_empty() {
             let addr = self.current_addr();
+            self.listing_symbol("ub_helper_plot4");
             self.emit_plot4_helper();
             for &pos in &self.plot4_patches.clone() {
                 self.code[pos] = addr as u8;
@@ -13563,6 +13621,7 @@ impl Codegen {
         if !self.circle4_patches.is_empty() {
             if let Some(plot4_addr) = plot4_helper_addr {
                 let addr = self.current_addr();
+                self.listing_symbol("ub_helper_circle4");
                 self.emit_circle4_helper(plot4_addr);
                 for &pos in &self.circle4_patches.clone() {
                     self.code[pos] = addr as u8;
@@ -13574,6 +13633,7 @@ impl Codegen {
         // Emit plot4 clear-pixel helper and patch all JSR targets
         if !self.plot4_erase_patches.is_empty() {
             let addr = self.current_addr();
+            self.listing_symbol("ub_helper_plot4_erase");
             self.emit_plot4_erase_helper();
             for &pos in &self.plot4_erase_patches.clone() {
                 self.code[pos] = addr as u8;
@@ -13585,6 +13645,7 @@ impl Codegen {
         if !self.paint_patches.is_empty() {
             if let Some(plot_addr) = plot_helper_addr {
                 let paint_addr = self.current_addr();
+                self.listing_symbol("ub_helper_paint");
                 self.emit_paint_helper(plot_addr);
                 for &pos in &self.paint_patches.clone() {
                     self.code[pos] = paint_addr as u8;
@@ -13597,6 +13658,7 @@ impl Codegen {
         if !self.rect_patches.is_empty() {
             if let Some(plot_addr) = plot_helper_addr {
                 let addr = self.current_addr();
+                self.listing_symbol("ub_helper_rect");
                 self.emit_rect_helper(plot_addr);
                 for &pos in &self.rect_patches.clone() {
                     self.code[pos] = addr as u8;
@@ -13607,6 +13669,7 @@ impl Codegen {
         if !self.rect_erase_patches.is_empty() {
             if let Some(erase_addr) = plot_erase_helper_addr {
                 let addr = self.current_addr();
+                self.listing_symbol("ub_helper_rect_erase");
                 self.emit_rect_helper(erase_addr);
                 for &pos in &self.rect_erase_patches.clone() {
                     self.code[pos] = addr as u8;
@@ -13617,6 +13680,7 @@ impl Codegen {
         if !self.rect_xor_patches.is_empty() {
             if let Some(xor_addr) = plot_xor_helper_addr {
                 let addr = self.current_addr();
+                self.listing_symbol("ub_helper_rect_xor");
                 self.emit_rect_helper(xor_addr);
                 for &pos in &self.rect_xor_patches.clone() {
                     self.code[pos] = addr as u8;
@@ -13627,6 +13691,7 @@ impl Codegen {
 
         // Emit data block and patch init code
         if !self.data_bytes.is_empty() {
+            let data_start = self.code.len();
             let data_addr = self.current_addr();
             if let Some(pos) = self.data_ptr_lo_patch {
                 self.code[pos] = data_addr as u8;
@@ -13637,15 +13702,18 @@ impl Codegen {
             for &b in &self.data_bytes.clone() {
                 self.emit(b);
             }
+            self.listing_data(data_start, "ub_data");
         }
 
         // Emit sin/cos lookup table and patch all LDA abs,X references
         if !self.sin_table_patches.is_empty() {
+            let table_start = self.code.len();
             let table_addr = self.current_addr();
             self.sin_table_addr = Some(table_addr);
             for b in Self::sin_table() {
                 self.emit(b);
             }
+            self.listing_data(table_start, "ub_sin_table");
             for &pos in &self.sin_table_patches.clone() {
                 self.code[pos] = table_addr as u8;
                 self.code[pos + 1] = (table_addr >> 8) as u8;
@@ -13654,6 +13722,7 @@ impl Codegen {
 
         // Emit print_hex helper and patch all JSR targets
         if !self.hex_helper_patches.is_empty() {
+            self.listing_symbol("ub_helper_print_hex");
             let hex_addr = self.emit_print_hex_helper();
             for &pos in &self.hex_helper_patches.clone() {
                 self.code[pos] = hex_addr as u8;
@@ -13663,6 +13732,7 @@ impl Codegen {
 
         // Emit print_bin helper and patch all JSR targets
         if !self.bin_helper_patches.is_empty() {
+            self.listing_symbol("ub_helper_print_bin");
             let bin_addr = self.emit_print_bin_helper();
             for &pos in &self.bin_helper_patches.clone() {
                 self.code[pos] = bin_addr as u8;
@@ -13673,6 +13743,7 @@ impl Codegen {
         // Emit multicolor pixel (mplot) helper and patch all JSR targets
         if !self.mplot_patches.is_empty() {
             let mplot_addr = self.current_addr();
+            self.listing_symbol("ub_helper_mplot");
             self.emit_mplot_helper();
             for &pos in &self.mplot_patches.clone() {
                 self.code[pos] = mplot_addr as u8;
@@ -13682,6 +13753,7 @@ impl Codegen {
 
         // Emit str$() helper and patch all JSR targets
         if !self.strn_helper_patches.is_empty() {
+            self.listing_symbol("ub_helper_str_string");
             let helper_addr = self.emit_strn_helper();
             for &pos in &self.strn_helper_patches.clone() {
                 self.code[pos] = helper_addr as u8;
@@ -13692,6 +13764,7 @@ impl Codegen {
         // Emit 1351 mouse read helper and patch all JSR targets
         if !self.mouse_patches.is_empty() {
             let mouse_addr = self.current_addr();
+            self.listing_symbol("ub_helper_mouse_read");
             self.emit_mouse_read_helper();
             for &pos in &self.mouse_patches.clone() {
                 self.code[pos] = mouse_addr as u8;
@@ -13703,6 +13776,7 @@ impl Codegen {
         // Emitted once; all `music play` setup sequences are patched to point here.
         if !self.music_wrap_patches.is_empty() {
             let wrap_addr = self.current_addr();
+            self.listing_symbol("ub_helper_music_irq");
             let play_addr = self.sid_play_addr.unwrap_or(0);
             self.emit(0xA9);
             self.emit(0x01); // LDA #$01
@@ -13726,6 +13800,7 @@ impl Codegen {
         if !self.koala_show_patches.is_empty() {
             if let Some(background) = self.koala.as_ref().map(|k| k.background) {
                 let helper_addr = self.current_addr();
+                self.listing_symbol("ub_helper_koala_show");
                 self.emit_koala_show_helper(background);
                 for &pos in &self.koala_show_patches.clone() {
                     self.code[pos] = helper_addr as u8;
@@ -13752,13 +13827,17 @@ impl Codegen {
                     "koala load requires generated code and helpers to end below $2000 (ended at ${code_end:04X})"
                 ));
             } else {
+                let padding_start = self.code.len();
                 while self.load_addr as usize + self.code.len() < 0x6000 {
                     self.emit(0x00);
                 }
+                self.listing_data(padding_start, "ub_padding_to_koala");
+                let koala_start = self.code.len();
                 self.code.extend_from_slice(&koala.bitmap);
                 self.code.extend_from_slice(&koala.screen);
                 self.code.extend_from_slice(&koala.colors);
                 self.emit(koala.background);
+                self.listing_data(koala_start, "ub_koala_data");
             }
         }
 
@@ -13772,8 +13851,13 @@ impl Codegen {
                 ));
                 continue;
             }
-            self.code.resize(address as usize - self.load_addr as usize, 0x00);
+            let padding_start = self.code.len();
+            self.code
+                .resize(address as usize - self.load_addr as usize, 0x00);
+            self.listing_data(padding_start, "ub_incbin_padding");
+            let data_start = self.code.len();
             self.code.extend_from_slice(&data);
+            self.listing_data(data_start, &format!("incbin_{path}"));
         }
 
         // Embed SID music data at its native C64 load address.
@@ -13789,12 +13873,16 @@ impl Codegen {
                 );
             } else {
                 let pad = (sid.load_addr - code_end) as usize;
+                let padding_start = self.code.len();
                 for _ in 0..pad {
                     self.emit(0x00);
                 }
+                self.listing_data(padding_start, "ub_padding_to_sid");
+                let sid_start = self.code.len();
                 for &b in &sid.data {
                     self.emit(b);
                 }
+                self.listing_data(sid_start, "ub_sid_data");
             }
         }
 
@@ -13907,6 +13995,8 @@ impl Codegen {
                 .cloned()
                 .collect(),
             listing_spans: self.listing_spans.clone(),
+            listing_symbols: self.listing_symbols.clone(),
+            data_regions: self.data_regions.clone(),
         }
     }
 }
@@ -13921,19 +14011,47 @@ fn stmt_listing_name(stmt: &Stmt) -> String {
         Stmt::FnDef(name, _, _, _) => format!("fn {name}"),
         Stmt::VarDecl { name, .. } => format!("var {name}"),
         Stmt::Assign(name, _) => format!("{name} = ..."),
-        Stmt::Print { .. } => "print".into(),
+        Stmt::Color { target, expr } => format!(
+            "color {} {}",
+            format!("{target:?}").to_ascii_lowercase(),
+            expr_listing(expr)
+        ),
+        Stmt::Print { args, no_newline } => {
+            let values = args.iter().map(expr_listing).collect::<Vec<_>>().join(", ");
+            let separator = if values.is_empty() { "" } else { " " };
+            format!(
+                "print{separator}{values}{}",
+                if *no_newline { ";" } else { "" }
+            )
+        }
         Stmt::PrintAt { .. } => "print at".into(),
         Stmt::AsmSource(_) => "asm { ... }".into(),
         Stmt::AsmBytes(_) => "asm bytes".into(),
         _ => {
             let debug = format!("{stmt:?}");
-            debug
-                .split(['(', '{'])
-                .next()
-                .unwrap_or("statement")
-                .to_ascii_lowercase()
+            listing_words(debug.split(['(', '{']).next().unwrap_or("statement"))
         }
     }
+}
+
+fn expr_listing(expr: &Expr) -> String {
+    match expr {
+        Expr::Number(value) => value.to_string(),
+        Expr::StringLit(value) => format!("\"{}\"", value.replace('"', "\"\"")),
+        Expr::Var(name) => name.clone(),
+        _ => "...".to_string(),
+    }
+}
+
+fn listing_words(name: &str) -> String {
+    let mut out = String::new();
+    for (index, ch) in name.trim().chars().enumerate() {
+        if index > 0 && ch.is_ascii_uppercase() {
+            out.push(' ');
+        }
+        out.push(ch.to_ascii_lowercase());
+    }
+    out
 }
 
 /// Convert an approximate MHz value to the U64 Turbo Control speed index (bits 0-3 of $D031).

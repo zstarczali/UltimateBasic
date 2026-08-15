@@ -1305,6 +1305,7 @@ ub build <input.ub> [OPTIONS]
   -v, --verbose         Show full ZP layout + code hex dump after build
   --no-stub             Skip the BASIC SYS stub (code loads at $0801)
   --debug               Also produce .sym, .dbg and .vs debugger files
+  --asm                 Also produce a readable 6502 codegen .asm listing
   --d64 [file]          Also produce a .d64 disk image;
                           without a filename defaults to <output>.d64
   --add <file>          Add an extra file to the .d64 disk image;

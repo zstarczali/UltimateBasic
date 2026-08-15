@@ -123,6 +123,8 @@ mod tests {
             code_bytes: vec![],
             unused_vars: vec![],
             listing_spans: vec![],
+            listing_symbols: vec![],
+            data_regions: vec![],
         }
     }
 

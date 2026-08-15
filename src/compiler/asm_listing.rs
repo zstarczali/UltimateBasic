@@ -14,14 +14,14 @@ pub fn generate(map: &MemoryMap, source_path: Option<&Path>) -> String {
     }
     writeln!(
         out,
-        "; This is a codegen listing: UB statements, symbols and generated helpers are retained.\n"
+        "; Reassemblable KickAssembler source generated from codegen metadata.\n"
     )
     .unwrap();
 
     for var in &map.variables {
         writeln!(
             out,
-            "{:<24} = ${:02X} ; {}",
+            ".label {:<17} = ${:02X} ; {}",
             symbol(&var.name),
             var.zp_addr,
             var.type_str
@@ -31,7 +31,7 @@ pub fn generate(map: &MemoryMap, source_path: Option<&Path>) -> String {
     for array in &map.arrays {
         writeln!(
             out,
-            "{:<24} = ${:04X} ; {} bytes",
+            ".label {:<17} = ${:04X} ; {} bytes",
             symbol(&array.name),
             array.base_addr,
             array.size
@@ -51,10 +51,26 @@ pub fn generate(map: &MemoryMap, source_path: Option<&Path>) -> String {
     for label in &map.labels {
         named.insert(label.addr, symbol(&label.name));
     }
+    for item in &map.listing_symbols {
+        named.insert(
+            map.load_addr.wrapping_add(item.offset as u16),
+            symbol(&item.name),
+        );
+    }
+    for region in &map.data_regions {
+        named.insert(
+            map.load_addr.wrapping_add(region.start as u16),
+            symbol(&region.name),
+        );
+    }
 
     let mut branch_targets = BTreeSet::new();
     let mut pos = 0usize;
     while pos < map.code_bytes.len() {
+        if let Some(region) = data_region_at(map, pos) {
+            pos = region.end;
+            continue;
+        }
         let op = map.code_bytes[pos];
         let Some((mnem, mode, size)) = listing_opcode(op) else {
             pos += 1;
@@ -104,6 +120,12 @@ pub fn generate(map: &MemoryMap, source_path: Option<&Path>) -> String {
             }
         }
 
+        if let Some(region) = data_region_at(map, pos) {
+            write_data_region(&mut out, map, region);
+            pos = region.end;
+            continue;
+        }
+
         let opcode = map.code_bytes[pos];
         let Some((mnem, mode, size)) = listing_opcode(opcode) else {
             writeln!(out, "    .byte ${opcode:02X}              ; ${addr:04X}").unwrap();
@@ -141,6 +163,38 @@ pub fn generate(map: &MemoryMap, source_path: Option<&Path>) -> String {
         pos += size;
     }
     out
+}
+
+fn data_region_at(map: &MemoryMap, offset: usize) -> Option<&super::DataRegion> {
+    map.data_regions
+        .iter()
+        .filter(|region| region.start <= offset && offset < region.end)
+        .min_by_key(|region| region.start)
+}
+
+fn write_data_region(out: &mut String, map: &MemoryMap, region: &super::DataRegion) {
+    let bytes = &map.code_bytes[region.start..region.end];
+    let start_addr = map.load_addr.wrapping_add(region.start as u16);
+    writeln!(out, "    ; data: {} ({} bytes)", region.name, bytes.len()).unwrap();
+    if bytes.iter().all(|&byte| byte == 0) && bytes.len() > 16 {
+        writeln!(
+            out,
+            "    .fill {}, $00               ; ${start_addr:04X}-${:04X}",
+            bytes.len(),
+            start_addr.wrapping_add(bytes.len() as u16).wrapping_sub(1)
+        )
+        .unwrap();
+        return;
+    }
+    for (line, chunk) in bytes.chunks(16).enumerate() {
+        let addr = start_addr.wrapping_add((line * 16) as u16);
+        let values = chunk
+            .iter()
+            .map(|byte| format!("${byte:02X}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        writeln!(out, "    .byte {values:<79} ; ${addr:04X}").unwrap();
+    }
 }
 
 fn format_operand(
@@ -210,9 +264,22 @@ mod tests {
             "var x = 1\nx = x + 1\nprint x\n",
             &CompileOptions { basic_stub: false },
         );
-        assert!(result.asm.contains("x                        = $02"));
+        assert!(result.asm.contains(".label x                 = $02"));
         assert!(result.asm.contains("; UB: var x"));
         assert!(result.asm.contains("lda  #$01"));
         assert!(result.asm.contains("sta  x"));
+    }
+
+    #[test]
+    fn listing_names_helpers_and_keeps_data_as_bytes() {
+        let result = compile(
+            "graphics on\nplot 1, 2\nvar x = 0\ndata 1, 2, 3\nread x\n",
+            &CompileOptions { basic_stub: false },
+        );
+        assert!(result.asm.contains("* = $0801"));
+        assert!(result.asm.contains("ub_helper_plot:"));
+        assert!(result.asm.contains("jsr  ub_helper_plot"));
+        assert!(result.asm.contains("ub_data:"));
+        assert!(result.asm.contains(".byte $01, $02, $03"));
     }
 }
