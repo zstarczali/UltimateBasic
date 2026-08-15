@@ -58,7 +58,12 @@ pub enum Token {
     SpriteBgHit, // sprbghit() — $D01F sprite-background collision
     SpriteX,     // sprite_x(id) — read sprite X position ($D000 + id*2)
     SpriteY,     // sprite_y(id) — read sprite Y position ($D001 + id*2)
-    SpriteFrame, // sprite_frame id, addr — update sprite pointer $07F8+id = addr>>6
+    BoxHit,      // box_hit(l1,t1,r1,b1,l2,t2,r2,b2) — software AABB collision
+    SpriteFrame, // sprite_frame id, addr [, frame] — update sprite animation frame
+    Map,         // map load/draw/set/color — character tile-map handling
+    MapTile,     // map_tile(x,y) — read tile
+    MapColor,    // map_color(x,y) — read map color
+    Koala,       // koala load/show/hide — Koala Painter bitmap import
     Times,       // times N ... end — counted loop (N iterations), alias for loop N
     Sprdef,      // sprdef id ... end — align+embed sprite data, init $07F8+id
     Gosub,       // gosub label — JSR to a label (complement to 'return')
@@ -634,7 +639,12 @@ impl Lexer {
             "sprbghit" => Token::SpriteBgHit,
             "sprite_x" => Token::SpriteX,
             "sprite_y" => Token::SpriteY,
+            "box_hit" => Token::BoxHit,
             "sprite_frame" => Token::SpriteFrame,
+            "map" => Token::Map,
+            "map_tile" => Token::MapTile,
+            "map_color" => Token::MapColor,
+            "koala" => Token::Koala,
             "times" => Token::Times,
             "sprdef" => Token::Sprdef,
             "gosub" => Token::Gosub,

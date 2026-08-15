@@ -174,6 +174,10 @@ impl TestCpu {
                 let value = self.mem[zp as usize];
                 self.adc(value);
             }
+            0x69 => {
+                let value = self.fetch_byte();
+                self.adc(value);
+            }
             0x68 => {
                 self.a = self.pop();
                 self.set_zn(self.a);
@@ -267,6 +271,10 @@ impl TestCpu {
                 let imm = self.fetch_byte();
                 self.compare(self.a, imm);
             }
+            0xC0 => {
+                let imm = self.fetch_byte();
+                self.compare(self.y, imm);
+            }
             0xE0 => {
                 let imm = self.fetch_byte();
                 self.compare(self.x, imm);
@@ -301,7 +309,6 @@ impl TestCpu {
         }
 
         true
-
     }
 
     fn fetch_byte(&mut self) -> u8 {
@@ -2038,6 +2045,23 @@ fn incbin_embeds_bytes() {
         res.prg.windows(3).any(|w| w == [0x42, 0x43, 0x44]),
         "incbin bytes should appear in output"
     );
+}
+
+#[test]
+fn incbin_at_absolute_address_pads_and_embeds_bytes() {
+    let dir = std::env::temp_dir().join(format!("ultimate-basic-incbin-at-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("charset.bin"), [0x9A, 0xA9, 0xAA, 0x6A]).unwrap();
+    let source_path = dir.join("main.ub");
+    let result = compile_with_path(
+        "incbin \"charset.bin\", $2000\n",
+        &CompileOptions { basic_stub: false },
+        Some(&source_path),
+    );
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let payload = &result.prg[2..];
+    let offset = 0x2000usize - 0x0801usize;
+    assert_eq!(&payload[offset..offset + 4], &[0x9A, 0xA9, 0xAA, 0x6A]);
 }
 
 // ── load sid ─────────────────────────────────────────────────────────────────
@@ -5118,9 +5142,7 @@ fn typed_string_sub_param_compiles_and_copies_pointer() {
 #[test]
 fn fn_with_return_value_compiles_and_emits_jsr() {
     // fn square(x) — return x*x — called as var s = square(5)
-    let prg = compile_raw(
-        "fn square(x)\n  return x * x\nend\nvar s = square(5)",
-    );
+    let prg = compile_raw("fn square(x)\n  return x * x\nend\nvar s = square(5)");
     let bytes = &prg[2..];
     // Should emit JSR ($20) to call the function
     assert!(
@@ -5473,6 +5495,58 @@ fn sprite_frame_var_id_emits_sta_07f8_x() {
     );
 }
 
+#[test]
+fn sprite_frame_animation_adds_runtime_frame_to_base_pointer() {
+    let src = "var frame = 3\nsprite_frame 0, $2000, frame";
+    let res = compile(src, &CompileOptions { basic_stub: false });
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    let mut cpu = TestCpu::new(&res.prg);
+    cpu.run_until_main_rts(10_000);
+    assert_eq!(
+        cpu.mem[0x07F8], 0x83,
+        "frame 3 at base $2000 must select VIC pointer $80 + 3"
+    );
+}
+
+#[test]
+fn box_hit_detects_overlapping_and_separated_boxes() {
+    let src = concat!(
+        "var overlap = box_hit(10, 20, 30, 40, 25, 35, 50, 60)\n",
+        "var separate = box_hit(10, 20, 30, 40, 31, 20, 50, 40)"
+    );
+    let res = compile(src, &CompileOptions { basic_stub: false });
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    let overlap_zp = res
+        .map
+        .variables
+        .iter()
+        .find(|v| v.name == "overlap")
+        .unwrap()
+        .zp_addr;
+    let separate_zp = res
+        .map
+        .variables
+        .iter()
+        .find(|v| v.name == "separate")
+        .unwrap()
+        .zp_addr;
+    let mut cpu = TestCpu::new(&res.prg);
+    cpu.run_until_main_rts(10_000);
+    assert_eq!(cpu.mem[overlap_zp as usize], 1);
+    assert_eq!(cpu.mem[separate_zp as usize], 0);
+}
+
+#[test]
+fn box_hit_treats_touching_edges_as_collision() {
+    let src = "var hit = box_hit(10, 10, 20, 20, 20, 15, 30, 25)";
+    let res = compile(src, &CompileOptions { basic_stub: false });
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    let hit_zp = res.map.variables[0].zp_addr;
+    let mut cpu = TestCpu::new(&res.prg);
+    cpu.run_until_main_rts(10_000);
+    assert_eq!(cpu.mem[hit_zp as usize], 1);
+}
+
 // ── chardef ───────────────────────────────────────────────────────────────
 
 #[test]
@@ -5702,4 +5776,191 @@ fn onerr_forward_ref_patches() {
         bytes.windows(3).any(|w| w == [0x8D, 0x01, 0x03]),
         "onerr forward-ref: expected STA $0301"
     );
+}
+
+// ── UBMP character maps ────────────────────────────────────────────────────
+
+fn write_test_ubmap(multicolor: bool) -> (std::path::PathBuf, Vec<u8>, Vec<u8>) {
+    let unique = format!(
+        "ultimate-basic-map-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let dir = std::env::temp_dir().join(unique);
+    std::fs::create_dir_all(&dir).unwrap();
+    let chars: Vec<u8> = (0..1000).map(|i| (i & 0xff) as u8).collect();
+    let colors: Vec<u8> = (0..1000).map(|i| ((i % 8) + 8) as u8).collect();
+    let mut file = b"UBMP".to_vec();
+    file.push(1); // version
+    file.push(1 | if multicolor { 2 } else { 0 }); // color data + optional MCM
+    file.extend_from_slice(&40u16.to_le_bytes());
+    file.extend_from_slice(&25u16.to_le_bytes());
+    file.extend_from_slice(&[6, 2, 5]); // D021/D022/D023
+    file.extend_from_slice(&chars);
+    file.extend_from_slice(&colors);
+    std::fs::write(dir.join("level.ubmap"), file).unwrap();
+    (dir, chars, colors)
+}
+
+#[test]
+fn map_load_and_draw_copies_chars_colors_and_sets_multicolor() {
+    let (dir, chars, colors) = write_test_ubmap(true);
+    let source_path = dir.join("main.ub");
+    let res = compile_with_path(
+        "map load \"level.ubmap\"\nmap draw 0, 0",
+        &CompileOptions { basic_stub: false },
+        Some(&source_path),
+    );
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    let mut cpu = TestCpu::new(&res.prg);
+    cpu.run_until_main_rts(200_000);
+    assert_eq!(&cpu.mem[0x0400..0x07E8], chars.as_slice());
+    assert_eq!(&cpu.mem[0xD800..0xDBE8], colors.as_slice());
+    assert_eq!(cpu.mem[0xD016] & 0x10, 0x10);
+    assert_eq!(cpu.mem[0xD021], 6);
+    assert_eq!(cpu.mem[0xD022], 2);
+    assert_eq!(cpu.mem[0xD023], 5);
+}
+
+#[test]
+fn map_tile_set_and_color_are_writable_and_queryable() {
+    let (dir, chars, _) = write_test_ubmap(false);
+    let source_path = dir.join("main.ub");
+    let src = concat!(
+        "map load \"level.ubmap\"\n",
+        "var before = map_tile(2, 3)\n",
+        "map set 2, 3, 99\n",
+        "var after = map_tile(2, 3)\n",
+        "map color 2, 3, 4\n",
+        "var shade = map_color(2, 3)"
+    );
+    let res = compile_with_path(
+        src,
+        &CompileOptions { basic_stub: false },
+        Some(&source_path),
+    );
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    let zp = |name: &str| {
+        res.map
+            .variables
+            .iter()
+            .find(|v| v.name == name)
+            .unwrap()
+            .zp_addr as usize
+    };
+    let mut cpu = TestCpu::new(&res.prg);
+    cpu.run_until_main_rts(100_000);
+    assert_eq!(cpu.mem[zp("before")], chars[3 * 40 + 2]);
+    assert_eq!(cpu.mem[zp("after")], 99);
+    assert_eq!(cpu.mem[zp("shade")], 4);
+    assert_eq!(cpu.mem[0xD016] & 0x10, 0, "normal map must clear MCM");
+}
+
+#[test]
+fn map_load_rejects_invalid_ubmp_files() {
+    let dir = std::env::temp_dir().join(format!("ultimate-basic-bad-map-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("broken.ubmap"), b"not a map").unwrap();
+    let res = compile_with_path(
+        "map load \"broken.ubmap\"",
+        &CompileOptions { basic_stub: false },
+        Some(&dir.join("main.ub")),
+    );
+    assert!(res.errors.iter().any(|e| e.contains("neither UBMP")));
+}
+
+#[test]
+fn map_load_accepts_visualassembler_multicolor_binary() {
+    let dir = std::env::temp_dir().join(format!("ultimate-basic-va-map-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let chars: Vec<u8> = (0..1000).map(|i| (i & 0xff) as u8).collect();
+    let colors: Vec<u8> = (0..1000).map(|i| ((i % 8) + 8) as u8).collect();
+    let mut file = chars.clone();
+    file.extend_from_slice(&colors);
+    file.extend_from_slice(
+        br#"{"version":1,"kind":"me-map","baseLength":2000,"settings":{"multicolor":true,"bgColor":0,"mc1Color":3,"mc2Color":14}}VA-BIN1!"#,
+    );
+    file.extend_from_slice(&[0xC0, 0x00, 0xFF]);
+    std::fs::write(dir.join("level.bin"), file).unwrap();
+    let res = compile_with_path(
+        "map load \"level.bin\"\nmap draw 0, 0",
+        &CompileOptions { basic_stub: false },
+        Some(&dir.join("main.ub")),
+    );
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    let mut cpu = TestCpu::new(&res.prg);
+    cpu.run_until_main_rts(200_000);
+    assert_eq!(&cpu.mem[0x0400..0x07E8], chars.as_slice());
+    assert_eq!(&cpu.mem[0xD800..0xDBE8], colors.as_slice());
+    assert_eq!(cpu.mem[0xD016] & 0x10, 0x10);
+    assert_eq!(cpu.mem[0xD021], 0);
+    assert_eq!(cpu.mem[0xD022], 3);
+    assert_eq!(cpu.mem[0xD023], 14);
+}
+
+fn write_test_koala() -> (std::path::PathBuf, Vec<u8>, Vec<u8>, Vec<u8>) {
+    let dir = std::env::temp_dir().join(format!("ultimate-basic-koala-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let bitmap: Vec<u8> = (0..8000).map(|i| ((i * 17) & 0xff) as u8).collect();
+    let screen: Vec<u8> = (0..1000).map(|i| ((i * 3) & 0xff) as u8).collect();
+    let colors: Vec<u8> = (0..1000).map(|i| (i % 16) as u8).collect();
+    let mut file = vec![0x00, 0x60];
+    file.extend_from_slice(&bitmap);
+    file.extend_from_slice(&screen);
+    file.extend_from_slice(&colors);
+    file.push(6);
+    std::fs::write(dir.join("picture.kla"), file).unwrap();
+    (dir, bitmap, screen, colors)
+}
+
+#[test]
+fn koala_load_and_show_imports_picture_and_configures_vic() {
+    let (dir, bitmap, screen, colors) = write_test_koala();
+    let res = compile_with_path(
+        "koala load \"picture.kla\"\nkoala show",
+        &CompileOptions { basic_stub: false },
+        Some(&dir.join("main.ub")),
+    );
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    let mut cpu = TestCpu::new(&res.prg);
+    cpu.run_until_main_rts(2_000_000);
+    assert_eq!(&cpu.mem[0x2000..0x3F40], bitmap.as_slice());
+    assert_eq!(&cpu.mem[0x0400..0x07E8], screen.as_slice());
+    assert_eq!(&cpu.mem[0xD800..0xDBE8], colors.as_slice());
+    assert_eq!(cpu.mem[0xD011] & 0x20, 0x20);
+    assert_eq!(cpu.mem[0xD016] & 0x10, 0x10);
+    assert_eq!(cpu.mem[0xD018], 0x18);
+    assert_eq!(cpu.mem[0xD021], 6);
+}
+
+#[test]
+fn koala_hide_returns_to_text_mode() {
+    let (dir, _, _, _) = write_test_koala();
+    let res = compile_with_path(
+        "koala load \"picture.kla\"\nkoala show\nkoala hide",
+        &CompileOptions { basic_stub: false },
+        Some(&dir.join("main.ub")),
+    );
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    let mut cpu = TestCpu::new(&res.prg);
+    cpu.run_until_main_rts(2_000_000);
+    assert_eq!(cpu.mem[0xD011] & 0x20, 0);
+    assert_eq!(cpu.mem[0xD016] & 0x10, 0);
+    assert_eq!(cpu.mem[0xD018], 0x14);
+}
+
+#[test]
+fn koala_load_rejects_invalid_files() {
+    let dir = std::env::temp_dir().join(format!("ultimate-basic-bad-koala-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("broken.kla"), b"not a koala").unwrap();
+    let res = compile_with_path(
+        "koala load \"broken.kla\"",
+        &CompileOptions { basic_stub: false },
+        Some(&dir.join("main.ub")),
+    );
+    assert!(res.errors.iter().any(|e| e.contains("expected 10001")));
 }

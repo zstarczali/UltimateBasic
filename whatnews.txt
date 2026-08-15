@@ -1,8 +1,70 @@
+Ultimate Basic v1.5.2 – Release Notes
+======================================
+
+2026-08-15 – Readable assembly codegen listings
+--------------------------------------------------
+  - Added the `--asm` build option:
+      ub build demo.ub --asm
+    A successful build writes `demo.asm` next to the selected `.prg` output.
+  - The listing is generated from compiler metadata rather than being only a bare
+    disassembly of the completed PRG.
+  - UB statement boundaries are retained as comments alongside their emitted code.
+  - Zero-page variables, arrays, subroutines, BASIC labels, relative branches, and
+    in-program JMP/JSR targets receive readable symbols or generated labels.
+  - Each instruction includes its final C64 address and exact machine-code bytes.
+  - Compiler-generated helpers are included in final memory order, while unknown
+    opcodes are preserved as `.byte` directives.
+  - Helper entry points now use descriptive `ub_helper_*` labels.
+  - Known data regions (DATA, maps, sprite/character definitions, lookup tables,
+    incbins, SID and Koala payloads) are emitted as named `.byte` blocks instead of
+    being disassembled as instructions; long zero gaps use `.fill`.
+  - Output uses reassemblable KickAssembler syntax, including `.label` constants and
+    a valid `* = origin` program counter directive.
+  - Added automated listing tests and full README.md, MANUAL.md, CLI-help, and
+    developer-guide documentation.
+
 Ultimate Basic v1.5.1 – Release Notes
 ======================================
 
+2026-08-15 – Koala Painter image import
+--------------------------------------------------
+  - Added compile-time loading of standard and raw Koala Painter images:
+      koala load "picture.kla"
+      koala show
+      koala hide
+  - Added file, memory-layout, and SID-conflict diagnostics plus emulation-backed
+    tests and full manual documentation.
+
+2026-08-15 – Character tile maps
+--------------------------------------------------
+  - Added compile-time loading and validation of self-describing `.ubmap` files:
+      map load "level.ubmap"
+    VisualAssembler `me-map` `.bin` exports are also accepted directly, without an
+    `.ubmap` conversion step.
+  - Added 40x25 viewport rendering from arbitrary map origins:
+      map draw map_x, map_y
+    Character codes go to $0400 and optional per-cell colors go to $D800.
+  - Added writable runtime access with `map_tile()`, `map_color()`, `map set`, and
+    `map color`, allowing game logic and destructible maps without reloading data.
+  - Added normal and multicolor character-map modes. Multicolor maps configure
+    $D016 MCM and the three shared colors in $D021-$D023.
+  - Documented the byte-exact UBMP v1 format, flags, row-major arrays, viewport
+    constraints, and charset relationship in MANUAL.md and CLAUDE.md.
+  - Added emulation-backed tests for normal/multicolor setup, screen and color-RAM
+    rendering, tile/color mutation and queries, and invalid-file diagnostics.
+
 2026-08-12 – Debug symbol exports
 --------------------------------------------------
+  - Added side-effect-free software bounding-box collision detection:
+      var hit = box_hit(l1, t1, r1, b1, l2, t2, r2, b2)
+    It returns 1 for overlapping or edge-touching inclusive AABBs and 0 otherwise,
+    without reading or clearing the VIC-II $D01E/$D01F collision registers.
+  - Extended `sprite_frame` with an optional animation frame expression:
+      sprite_frame id, base_addr, frame
+    Consecutive frames occupy 64-byte slots; the original two-argument syntax is
+    unchanged and remains backward compatible.
+  - Added emulation-backed integration tests for overlap, separation, touching edges,
+    and runtime animation-frame pointer selection.
   - Added the `--debug` build option:
       ub build demo.ub --debug
     A successful build now writes three debugger files next to the `.prg`, using

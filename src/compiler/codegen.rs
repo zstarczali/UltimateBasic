@@ -227,6 +227,40 @@ fn asm_opcode(mnem: &str, mode: AMode) -> Option<u8> {
     })
 }
 
+pub(crate) fn listing_opcode(opcode: u8) -> Option<(&'static str, &'static str, usize)> {
+    use AMode::*;
+    const MNEMONICS: &[&str] = &[
+        "ADC", "AND", "ASL", "BCC", "BCS", "BEQ", "BIT", "BMI", "BNE", "BPL", "BRK", "BVC", "BVS",
+        "CLC", "CLD", "CLI", "CLV", "CMP", "CPX", "CPY", "DEC", "DEX", "DEY", "EOR", "INC", "INX",
+        "INY", "JMP", "JSR", "LDA", "LDX", "LDY", "LSR", "NOP", "ORA", "PHA", "PHP", "PLA", "PLP",
+        "ROL", "ROR", "RTI", "RTS", "SBC", "SEC", "SED", "SEI", "STA", "STX", "STY", "TAX", "TAY",
+        "TSX", "TXA", "TXS", "TYA",
+    ];
+    const MODES: &[(AMode, &str, usize)] = &[
+        (Acc, "acc", 1),
+        (Imp, "imp", 1),
+        (Imm, "imm", 2),
+        (Zp, "zp", 2),
+        (Zpx, "zpx", 2),
+        (Zpy, "zpy", 2),
+        (Izx, "izx", 2),
+        (Izy, "izy", 2),
+        (Rel, "rel", 2),
+        (Abs, "abs", 3),
+        (Abx, "abx", 3),
+        (Aby, "aby", 3),
+        (Ind, "ind", 3),
+    ];
+    for &mnem in MNEMONICS {
+        for &(mode, name, size) in MODES {
+            if asm_opcode(mnem, mode) == Some(opcode) {
+                return Some((mnem, name, size));
+            }
+        }
+    }
+    None
+}
+
 fn asm_mode_size(mode: AMode) -> u16 {
     use AMode::*;
     match mode {
@@ -615,12 +649,37 @@ pub struct Codegen {
     fn_ret_zp: Option<u8>, // 2-byte ZP pair for fn return value (word/float fns)
     fn_ret_type: Option<VarType>, // return type of the fn currently being generated
     used_vars: std::collections::HashSet<String>, // variables that have been read
+    map: Option<MapInfo>, // currently loaded writable UBMP data
+    koala: Option<KoalaData>,
+    koala_show_patches: Vec<usize>,
+    koala_layout_error: Option<String>,
+    listing_spans: Vec<crate::compiler::ListingSpan>,
+    listing_symbols: Vec<crate::compiler::ListingSymbol>,
+    data_regions: Vec<crate::compiler::DataRegion>,
+    addressed_incbins: Vec<(u16, String, Vec<u8>)>,
+    incbin_errors: Vec<String>,
 }
 
 /// Carry SID metadata through pre_scan → compile().
 struct SidData {
     load_addr: u16,
     data: Vec<u8>,
+}
+
+#[derive(Clone, Copy)]
+struct MapInfo {
+    chars: u16,
+    colors: Option<u16>,
+    width: u8,
+    multicolor: bool,
+    bg: [u8; 3],
+}
+
+struct KoalaData {
+    bitmap: Vec<u8>,
+    screen: Vec<u8>,
+    colors: Vec<u8>,
+    background: u8,
 }
 
 impl Codegen {
@@ -698,6 +757,15 @@ impl Codegen {
             fn_ret_zp: None,
             fn_ret_type: None,
             used_vars: std::collections::HashSet::new(),
+            map: None,
+            koala: None,
+            koala_show_patches: vec![],
+            koala_layout_error: None,
+            listing_spans: vec![],
+            listing_symbols: vec![],
+            data_regions: vec![],
+            addressed_incbins: vec![],
+            incbin_errors: vec![],
         }
     }
 
@@ -889,6 +957,10 @@ impl Codegen {
             Expr::Clamp(a, b, c) => {
                 Self::expr_has_strn(a) || Self::expr_has_strn(b) || Self::expr_has_strn(c)
             }
+            Expr::BoxHit(args) => args.iter().any(|e| Self::expr_has_strn(e)),
+            Expr::MapTile(x, y) | Expr::MapColor(x, y) => {
+                Self::expr_has_strn(x) || Self::expr_has_strn(y)
+            }
             _ => false,
         }
     }
@@ -964,6 +1036,10 @@ impl Codegen {
             Expr::Min(a, b) | Expr::Max(a, b) => Self::expr_has_mouse(a) || Self::expr_has_mouse(b),
             Expr::Clamp(a, b, c) => {
                 Self::expr_has_mouse(a) || Self::expr_has_mouse(b) || Self::expr_has_mouse(c)
+            }
+            Expr::BoxHit(args) => args.iter().any(|e| Self::expr_has_mouse(e)),
+            Expr::MapTile(x, y) | Expr::MapColor(x, y) => {
+                Self::expr_has_mouse(x) || Self::expr_has_mouse(y)
             }
             _ => false,
         }
@@ -1419,6 +1495,14 @@ impl Codegen {
                         data: data.clone(),
                     });
                 }
+                Stmt::Incbin {
+                    path,
+                    data,
+                    address: Some(address),
+                } => {
+                    self.addressed_incbins
+                        .push((*address, path.clone(), data.clone()));
+                }
                 _ => {}
             }
         }
@@ -1446,6 +1530,23 @@ impl Codegen {
 
     fn current_addr(&self) -> u16 {
         self.load_addr + self.code.len() as u16
+    }
+
+    fn listing_symbol(&mut self, name: &str) {
+        self.listing_symbols.push(crate::compiler::ListingSymbol {
+            offset: self.code.len(),
+            name: name.to_string(),
+        });
+    }
+
+    fn listing_data(&mut self, start: usize, name: &str) {
+        if self.code.len() > start {
+            self.data_regions.push(crate::compiler::DataRegion {
+                start,
+                end: self.code.len(),
+                name: name.to_string(),
+            });
+        }
     }
 
     fn alloc_var(&mut self, name: &str) -> u8 {
@@ -1839,6 +1940,65 @@ impl Codegen {
                         self.emit(0xB1);
                         self.emit(ptr); // LDA (ptr),Y → $D001 + id*2
                     }
+                }
+            }
+            Expr::BoxHit(args) => {
+                // Inclusive-edge AABB test:
+                // not (r1 < l2 or r2 < l1 or b1 < t2 or b2 < t1).
+                // Store every argument first so arbitrary expressions are evaluated once.
+                let base = self.tmp_zp;
+                self.tmp_zp += 8;
+                for (offset, expr) in args.iter().enumerate() {
+                    self.eval_expr(expr);
+                    self.emit(0x85); // STA zp
+                    self.emit(base + offset as u8);
+                }
+
+                let comparisons = [(2u8, 4u8), (6, 0), (3, 5), (7, 1)];
+                let mut false_branches = Vec::with_capacity(4);
+                for (left, right) in comparisons {
+                    self.emit(0xA5); // LDA left edge
+                    self.emit(base + left);
+                    self.emit(0xC5); // CMP right edge
+                    self.emit(base + right);
+                    self.emit(0x90); // BCC false (left < right)
+                    false_branches.push(self.code.len());
+                    self.emit(0x00);
+                }
+
+                self.emit(0xA9); // LDA #1 (overlap)
+                self.emit(0x01);
+                self.emit(0x4C); // JMP done
+                let done_patch = self.code.len();
+                self.emit16(0x0000);
+
+                let false_addr = self.current_addr();
+                self.emit(0xA9); // LDA #0 (separated)
+                self.emit(0x00);
+                let done_addr = self.current_addr();
+                for branch in false_branches {
+                    self.patch_bxx(branch, false_addr);
+                }
+                self.patch_abs(done_patch, done_addr);
+            }
+            Expr::MapTile(x, y) | Expr::MapColor(x, y) => {
+                let color = matches!(expr, Expr::MapColor(..));
+                let base = self
+                    .map
+                    .and_then(|info| if color { info.colors } else { Some(info.chars) });
+                if let (Some(info), Some(base_addr)) = (self.map, base) {
+                    let ptr = self.emit_map_pointer(base_addr, info.width, x, y);
+                    self.emit(0xA0);
+                    self.emit(0x00); // LDY #0
+                    self.emit(0xB1);
+                    self.emit(ptr); // LDA (ptr),Y
+                    if color {
+                        self.emit(0x29);
+                        self.emit(0x0F);
+                    }
+                } else {
+                    self.emit(0xA9);
+                    self.emit(0x00);
                 }
             }
             Expr::Joy(port) => {
@@ -3734,6 +3894,230 @@ impl Codegen {
         self.code[lo_pos + 1] = (target >> 8) as u8;
     }
 
+    /// Build a 16-bit pointer to `base + y*width + x` in temporary zero page.
+    fn emit_map_pointer(&mut self, base_addr: u16, width: u8, x: &Expr, y: &Expr) -> u8 {
+        let ptr = self.tmp_zp;
+        let rows = ptr + 2;
+        self.tmp_zp += 3;
+
+        self.emit(0xA9);
+        self.emit(base_addr as u8);
+        self.emit(0x85);
+        self.emit(ptr);
+        self.emit(0xA9);
+        self.emit((base_addr >> 8) as u8);
+        self.emit(0x85);
+        self.emit(ptr + 1);
+        self.eval_expr(y);
+        self.emit(0x85);
+        self.emit(rows);
+        self.emit(0xF0); // BEQ rows_done
+        let rows_done = self.code.len();
+        self.emit(0x00);
+        let row_loop = self.current_addr();
+        self.emit(0x18); // CLC
+        self.emit(0xA5);
+        self.emit(ptr);
+        self.emit(0x69);
+        self.emit(width); // ADC #width
+        self.emit(0x85);
+        self.emit(ptr);
+        self.emit(0xA5);
+        self.emit(ptr + 1);
+        self.emit(0x69);
+        self.emit(0x00); // carry into high byte
+        self.emit(0x85);
+        self.emit(ptr + 1);
+        self.emit(0xC6);
+        self.emit(rows); // DEC rows
+        self.emit(0xD0);
+        let loop_patch = self.code.len();
+        self.emit(0x00);
+        self.patch_bxx(loop_patch, row_loop);
+        let after_rows = self.current_addr();
+        self.patch_bxx(rows_done, after_rows);
+
+        self.eval_expr(x);
+        self.emit(0x18); // CLC
+        self.emit(0x65);
+        self.emit(ptr); // ADC ptr lo
+        self.emit(0x85);
+        self.emit(ptr);
+        self.emit(0x90); // BCC no_x_carry
+        let no_carry = self.code.len();
+        self.emit(0x00);
+        self.emit(0xE6);
+        self.emit(ptr + 1);
+        let after_carry = self.current_addr();
+        self.patch_bxx(no_carry, after_carry);
+        ptr
+    }
+
+    fn emit_add_u8_to_ptr(&mut self, ptr: u8, amount: u8) {
+        self.emit(0x18); // CLC
+        self.emit(0xA5);
+        self.emit(ptr);
+        self.emit(0x69);
+        self.emit(amount);
+        self.emit(0x85);
+        self.emit(ptr);
+        self.emit(0xA5);
+        self.emit(ptr + 1);
+        self.emit(0x69);
+        self.emit(0x00);
+        self.emit(0x85);
+        self.emit(ptr + 1);
+    }
+
+    fn emit_map_draw(&mut self, info: MapInfo, x: &Expr, y: &Expr) {
+        let src = self.emit_map_pointer(info.chars, info.width, x, y);
+        let colors = info
+            .colors
+            .map(|base| self.emit_map_pointer(base, info.width, x, y));
+        let screen = self.tmp_zp;
+        let color_ram = screen + 2;
+        let rows = screen + 4;
+        self.tmp_zp += 5;
+
+        for (ptr, addr) in [(screen, 0x0400u16), (color_ram, 0xD800u16)] {
+            self.emit(0xA9);
+            self.emit(addr as u8);
+            self.emit(0x85);
+            self.emit(ptr);
+            self.emit(0xA9);
+            self.emit((addr >> 8) as u8);
+            self.emit(0x85);
+            self.emit(ptr + 1);
+        }
+        self.emit(0xA9);
+        self.emit(25);
+        self.emit(0x85);
+        self.emit(rows);
+        let row_loop = self.current_addr();
+        self.emit(0xA0);
+        self.emit(0x00); // LDY #0
+        let col_loop = self.current_addr();
+        self.emit(0xB1);
+        self.emit(src); // LDA (src),Y
+        self.emit(0x91);
+        self.emit(screen); // STA (screen),Y
+        if let Some(color_src) = colors {
+            self.emit(0xB1);
+            self.emit(color_src);
+            self.emit(0x29);
+            self.emit(0x0F); // colors are always VIC nibble values
+            self.emit(0x91);
+            self.emit(color_ram);
+        }
+        self.emit(0xC8); // INY
+        self.emit(0xC0);
+        self.emit(40); // CPY #40
+        self.emit(0xD0);
+        let col_patch = self.code.len();
+        self.emit(0x00);
+        self.patch_bxx(col_patch, col_loop);
+
+        self.emit_add_u8_to_ptr(src, info.width);
+        if let Some(color_src) = colors {
+            self.emit_add_u8_to_ptr(color_src, info.width);
+        }
+        self.emit_add_u8_to_ptr(screen, 40);
+        if colors.is_some() {
+            self.emit_add_u8_to_ptr(color_ram, 40);
+        }
+        self.emit(0xC6);
+        self.emit(rows);
+        self.emit(0xD0);
+        let row_patch = self.code.len();
+        self.emit(0x00);
+        self.patch_bxx(row_patch, row_loop);
+    }
+
+    fn emit_koala_copy(&mut self, source: u16, destination: u16, length: usize) {
+        let src = TMP_BASE;
+        let dst = TMP_BASE + 2;
+        for (ptr, addr) in [(src, source), (dst, destination)] {
+            self.emit(0xA9);
+            self.emit(addr as u8);
+            self.emit(0x85);
+            self.emit(ptr);
+            self.emit(0xA9);
+            self.emit((addr >> 8) as u8);
+            self.emit(0x85);
+            self.emit(ptr + 1);
+        }
+        let pages = length / 256;
+        if pages != 0 {
+            self.emit(0xA2);
+            self.emit(pages as u8); // LDX #pages
+            self.emit(0xA0);
+            self.emit(0x00); // LDY #0
+            let page_loop = self.current_addr();
+            self.emit(0xB1);
+            self.emit(src);
+            self.emit(0x91);
+            self.emit(dst);
+            self.emit(0xC8); // INY
+            self.emit(0xD0);
+            let byte_patch = self.code.len();
+            self.emit(0x00);
+            self.patch_bxx(byte_patch, page_loop);
+            self.emit(0xE6);
+            self.emit(src + 1);
+            self.emit(0xE6);
+            self.emit(dst + 1);
+            self.emit(0xCA); // DEX
+            self.emit(0xD0);
+            let page_patch = self.code.len();
+            self.emit(0x00);
+            self.patch_bxx(page_patch, page_loop);
+        }
+        let remainder = length % 256;
+        if remainder != 0 {
+            self.emit(0xA0);
+            self.emit(0x00);
+            let rem_loop = self.current_addr();
+            self.emit(0xB1);
+            self.emit(src);
+            self.emit(0x91);
+            self.emit(dst);
+            self.emit(0xC8);
+            self.emit(0xC0);
+            self.emit(remainder as u8);
+            self.emit(0xD0);
+            let rem_patch = self.code.len();
+            self.emit(0x00);
+            self.patch_bxx(rem_patch, rem_loop);
+        }
+    }
+
+    fn emit_koala_show_helper(&mut self, background: u8) {
+        self.emit_koala_copy(0x6000, 0x2000, 8000);
+        self.emit_koala_copy(0x7F40, 0x0400, 1000);
+        self.emit_koala_copy(0x8328, 0xD800, 1000);
+        self.emit(0xAD);
+        self.emit16(0xD011);
+        self.emit(0x09);
+        self.emit(0x20); // set BMM
+        self.emit(0x8D);
+        self.emit16(0xD011);
+        self.emit(0xAD);
+        self.emit16(0xD016);
+        self.emit(0x09);
+        self.emit(0x10); // set MCM
+        self.emit(0x8D);
+        self.emit16(0xD016);
+        self.emit(0xA9);
+        self.emit(0x18); // screen $0400, bitmap $2000
+        self.emit(0x8D);
+        self.emit16(0xD018);
+        self.emit(0xA9);
+        self.emit(background & 0x0F);
+        self.emit(0x8D);
+        self.emit16(0xD021);
+        self.emit(0x60); // RTS
+    }
+
     fn emit_store_expr_u8(&mut self, expr: &Expr, zp: u8) {
         let expr = expr.clone();
         self.eval_expr(&expr);
@@ -4253,9 +4637,11 @@ impl Codegen {
         self.emit16(0x0000);
 
         let charset_addr = self.current_addr();
+        let charset_start = self.code.len();
         for b in &charset {
             self.emit(*b);
         }
+        self.listing_data(charset_start, "ub_block_charset");
 
         let copy_start = self.current_addr();
         self.code[jmp_pos] = copy_start as u8;
@@ -8912,6 +9298,19 @@ impl Codegen {
     }
 
     fn gen_stmt(&mut self, stmt: &Stmt) {
+        let start = self.code.len();
+        self.gen_stmt_inner(stmt);
+        let end = self.code.len();
+        if end > start {
+            self.listing_spans.push(crate::compiler::ListingSpan {
+                start,
+                end,
+                source: stmt_listing_name(stmt),
+            });
+        }
+    }
+
+    fn gen_stmt_inner(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::VarDecl { name, vtype, expr } => {
                 // Infer type from expr when not annotated
@@ -10217,14 +10616,18 @@ impl Codegen {
                 self.emit(0x4C);
                 self.emit16(0xA659); // JMP $A659
             }
-            Stmt::Incbin(path) => match std::fs::read(path) {
-                Ok(bytes) => {
-                    for b in bytes {
-                        self.emit(b);
-                    }
-                }
-                Err(e) => eprintln!("incbin: cannot read '{}': {}", path, e),
-            },
+            Stmt::Incbin {
+                path,
+                data,
+                address: None,
+            } => {
+                let start = self.code.len();
+                self.code.extend_from_slice(data);
+                self.listing_data(start, &format!("incbin_{}", path));
+            }
+            Stmt::Incbin {
+                address: Some(_), ..
+            } => {}
             Stmt::LoadSid { .. } => {
                 // SID data is embedded at the end of compile(), not inline here.
             }
@@ -10235,9 +10638,11 @@ impl Codegen {
                 self.emit(0x00);
                 self.emit(0x00); // placeholder
                 let name_addr = self.current_addr();
+                let name_start = self.code.len();
                 for c in filename.chars() {
                     self.emit(ascii_to_petscii(c, false));
                 }
+                self.listing_data(name_start, "ub_load_filename");
                 let after_name = self.current_addr();
                 self.patch_abs(jmp_pos, after_name);
 
@@ -10750,7 +11155,7 @@ impl Codegen {
                 }
             }
 
-            Stmt::SpriteFrame { id, addr } => {
+            Stmt::SpriteFrame { id, addr, frame } => {
                 // Compute addr >> 6 into A, then store at $07F8+id (or $07F8,X for var id)
                 let id = id.clone();
                 let addr = addr.clone();
@@ -10793,6 +11198,19 @@ impl Codegen {
                     }
                 }
 
+                // Optional animation frame: consecutive frames occupy 64 bytes,
+                // therefore adding the frame index to the VIC pointer selects it.
+                if let Some(frame) = frame {
+                    let base_ptr = self.tmp_zp;
+                    self.tmp_zp += 1;
+                    self.emit(0x85);
+                    self.emit(base_ptr); // STA base_ptr
+                    self.eval_expr(frame);
+                    self.emit(0x18); // CLC
+                    self.emit(0x65); // ADC base_ptr
+                    self.emit(base_ptr);
+                }
+
                 // Step 2: store A to $07F8+id
                 match &id {
                     Expr::Number(n) => {
@@ -10815,6 +11233,141 @@ impl Codegen {
                         self.emit(0x9D);
                         self.emit(0xF8);
                         self.emit(0x07); // STA $07F8,X
+                    }
+                }
+            }
+
+            Stmt::KoalaLoad {
+                bitmap,
+                screen,
+                colors,
+                background,
+            } => {
+                self.koala = Some(KoalaData {
+                    bitmap: bitmap.clone(),
+                    screen: screen.clone(),
+                    colors: colors.clone(),
+                    background: *background,
+                });
+            }
+            Stmt::KoalaShow => {
+                self.emit(0x20); // JSR koala_show_helper
+                let patch = self.code.len();
+                self.emit16(0x0000);
+                self.koala_show_patches.push(patch);
+            }
+            Stmt::KoalaHide => {
+                self.emit(0xAD);
+                self.emit16(0xD011);
+                self.emit(0x29);
+                self.emit(0xDF); // clear BMM
+                self.emit(0x8D);
+                self.emit16(0xD011);
+                self.emit(0xAD);
+                self.emit16(0xD016);
+                self.emit(0x29);
+                self.emit(0xEF); // clear MCM
+                self.emit(0x8D);
+                self.emit16(0xD016);
+                self.emit(0xA9);
+                self.emit(0x14); // screen $0400, charset $1000
+                self.emit(0x8D);
+                self.emit16(0xD018);
+            }
+            Stmt::MapLoad {
+                width,
+                height: _,
+                flags,
+                bg,
+                chars,
+                colors,
+            } => {
+                // Keep map bytes in writable program RAM and jump over them at runtime.
+                self.emit(0x4C); // JMP after_data
+                let skip_patch = self.code.len();
+                self.emit16(0x0000);
+                let char_addr = self.current_addr();
+                let char_start = self.code.len();
+                for byte in chars {
+                    self.emit(*byte);
+                }
+                self.listing_data(char_start, "ub_map_chars");
+                let color_addr = colors.as_ref().map(|data| {
+                    let addr = self.current_addr();
+                    let color_start = self.code.len();
+                    for byte in data {
+                        self.emit(*byte & 0x0F);
+                    }
+                    self.listing_data(color_start, "ub_map_colors");
+                    addr
+                });
+                let after_data = self.current_addr();
+                self.patch_abs(skip_patch, after_data);
+                let info = MapInfo {
+                    chars: char_addr,
+                    colors: color_addr,
+                    width: *width,
+                    multicolor: flags & 2 != 0,
+                    bg: *bg,
+                };
+                self.map = Some(info);
+
+                self.emit(0xAD);
+                self.emit16(0xD016); // LDA $D016
+                if info.multicolor {
+                    self.emit(0x09);
+                    self.emit(0x10); // ORA #MCM
+                } else {
+                    self.emit(0x29);
+                    self.emit(0xEF); // AND #!MCM
+                }
+                self.emit(0x8D);
+                self.emit16(0xD016);
+                for (offset, color) in info.bg.iter().enumerate() {
+                    self.emit(0xA9);
+                    self.emit(*color & 0x0F);
+                    self.emit(0x8D);
+                    self.emit16(0xD021 + offset as u16);
+                }
+            }
+            Stmt::MapDraw { x, y } => {
+                if let Some(info) = self.map {
+                    self.emit_map_draw(info, x, y);
+                }
+            }
+            Stmt::MapSet { x, y, tile } => {
+                if let Some(info) = self.map {
+                    let value = self.tmp_zp;
+                    self.tmp_zp += 1;
+                    self.eval_expr(tile);
+                    self.emit(0x85);
+                    self.emit(value);
+                    let ptr = self.emit_map_pointer(info.chars, info.width, x, y);
+                    self.emit(0xA0);
+                    self.emit(0x00);
+                    self.emit(0xA5);
+                    self.emit(value);
+                    self.emit(0x91);
+                    self.emit(ptr);
+                }
+            }
+            Stmt::MapSetColor { x, y, color } => {
+                if let Some(info) = self.map {
+                    if let Some(base) = info.colors {
+                        let value = self.tmp_zp;
+                        self.tmp_zp += 1;
+                        self.eval_expr(color);
+                        self.emit(0x29);
+                        self.emit(0x0F);
+                        self.emit(0x85);
+                        self.emit(value);
+                        let ptr = self.emit_map_pointer(base, info.width, x, y);
+                        self.emit(0xA0);
+                        self.emit(0x00);
+                        self.emit(0xA5);
+                        self.emit(value);
+                        self.emit(0x91);
+                        self.emit(ptr);
                     }
                 }
             }
@@ -10993,11 +11546,13 @@ impl Codegen {
 
                 // 8 bytes of character data (zero-padded if fewer supplied)
                 let data_addr = self.current_addr();
+                let data_start = self.code.len();
                 let mut data = bytes.clone();
                 data.resize(8, 0);
                 for b in &data {
                     self.emit(*b);
                 }
+                self.listing_data(data_start, &format!("ub_char_{id}_data"));
 
                 // Patch JMP to instruction immediately after the data block
                 let past_data = self.current_addr();
@@ -12279,17 +12834,21 @@ impl Codegen {
                 self.emit16(0x0000);
 
                 // Zero-padding to reach 64-byte boundary
+                let padding_start = self.code.len();
                 for _ in 0..padding {
                     self.emit(0x00);
                 }
+                self.listing_data(padding_start, &format!("ub_sprite_{id}_padding"));
 
                 // 63 bytes of sprite data (zero-padded if fewer supplied)
+                let data_start = self.code.len();
                 let mut data = bytes.clone();
                 data.resize(63, 0);
                 for b in &data {
                     self.emit(*b);
                 }
                 self.emit(0x00); // 1 filler byte — completes the 64-byte block
+                self.listing_data(data_start, &format!("ub_sprite_{id}_data"));
 
                 // Patch JMP to instruction immediately after the data block
                 let past_data = self.current_addr();
@@ -12953,6 +13512,7 @@ impl Codegen {
         if !self.plot_patches.is_empty() || !self.line_patches.is_empty() {
             let addr = self.current_addr();
             plot_helper_addr = Some(addr);
+            self.listing_symbol("ub_helper_plot");
             self.emit_plot_helper();
             for &pos in &self.plot_patches.clone() {
                 self.code[pos] = addr as u8;
@@ -12964,6 +13524,7 @@ impl Codegen {
         if !self.line_patches.is_empty() {
             if let Some(plot_addr) = plot_helper_addr {
                 let dl_addr = self.current_addr();
+                self.listing_symbol("ub_helper_line");
                 self.emit_drawline_helper(plot_addr);
                 for &pos in &self.line_patches.clone() {
                     self.code[pos] = dl_addr as u8;
@@ -12976,6 +13537,7 @@ impl Codegen {
         if !self.circle_patches.is_empty() {
             if let Some(plot_addr) = plot_helper_addr {
                 let circle_addr = self.current_addr();
+                self.listing_symbol("ub_helper_circle");
                 self.emit_circle_helper(plot_addr);
                 for &pos in &self.circle_patches.clone() {
                     self.code[pos] = circle_addr as u8;
@@ -12991,6 +13553,7 @@ impl Codegen {
             || !self.line_erase_patches.is_empty()
         {
             let addr = self.current_addr();
+            self.listing_symbol("ub_helper_plot_erase");
             self.emit_plot_erase_helper();
             plot_erase_helper_addr = Some(addr);
             for &pos in &self.plot_erase_patches.clone() {
@@ -13006,6 +13569,7 @@ impl Codegen {
             || !self.line_xor_patches.is_empty()
         {
             let addr = self.current_addr();
+            self.listing_symbol("ub_helper_plot_xor");
             self.emit_plot_xor_helper();
             plot_xor_helper_addr = Some(addr);
             for &pos in &self.plot_xor_patches.clone() {
@@ -13018,6 +13582,7 @@ impl Codegen {
         if !self.line_erase_patches.is_empty() {
             if let Some(erase_addr) = plot_erase_helper_addr {
                 let dl_addr = self.current_addr();
+                self.listing_symbol("ub_helper_line_erase");
                 self.emit_drawline_helper(erase_addr);
                 for &pos in &self.line_erase_patches.clone() {
                     self.code[pos] = dl_addr as u8;
@@ -13030,6 +13595,7 @@ impl Codegen {
         if !self.line_xor_patches.is_empty() {
             if let Some(xor_addr) = plot_xor_helper_addr {
                 let dl_addr = self.current_addr();
+                self.listing_symbol("ub_helper_line_xor");
                 self.emit_drawline_helper(xor_addr);
                 for &pos in &self.line_xor_patches.clone() {
                     self.code[pos] = dl_addr as u8;
@@ -13042,6 +13608,7 @@ impl Codegen {
         let mut plot4_helper_addr: Option<u16> = None;
         if !self.plot4_patches.is_empty() || !self.circle4_patches.is_empty() {
             let addr = self.current_addr();
+            self.listing_symbol("ub_helper_plot4");
             self.emit_plot4_helper();
             for &pos in &self.plot4_patches.clone() {
                 self.code[pos] = addr as u8;
@@ -13054,6 +13621,7 @@ impl Codegen {
         if !self.circle4_patches.is_empty() {
             if let Some(plot4_addr) = plot4_helper_addr {
                 let addr = self.current_addr();
+                self.listing_symbol("ub_helper_circle4");
                 self.emit_circle4_helper(plot4_addr);
                 for &pos in &self.circle4_patches.clone() {
                     self.code[pos] = addr as u8;
@@ -13065,6 +13633,7 @@ impl Codegen {
         // Emit plot4 clear-pixel helper and patch all JSR targets
         if !self.plot4_erase_patches.is_empty() {
             let addr = self.current_addr();
+            self.listing_symbol("ub_helper_plot4_erase");
             self.emit_plot4_erase_helper();
             for &pos in &self.plot4_erase_patches.clone() {
                 self.code[pos] = addr as u8;
@@ -13076,6 +13645,7 @@ impl Codegen {
         if !self.paint_patches.is_empty() {
             if let Some(plot_addr) = plot_helper_addr {
                 let paint_addr = self.current_addr();
+                self.listing_symbol("ub_helper_paint");
                 self.emit_paint_helper(plot_addr);
                 for &pos in &self.paint_patches.clone() {
                     self.code[pos] = paint_addr as u8;
@@ -13088,6 +13658,7 @@ impl Codegen {
         if !self.rect_patches.is_empty() {
             if let Some(plot_addr) = plot_helper_addr {
                 let addr = self.current_addr();
+                self.listing_symbol("ub_helper_rect");
                 self.emit_rect_helper(plot_addr);
                 for &pos in &self.rect_patches.clone() {
                     self.code[pos] = addr as u8;
@@ -13098,6 +13669,7 @@ impl Codegen {
         if !self.rect_erase_patches.is_empty() {
             if let Some(erase_addr) = plot_erase_helper_addr {
                 let addr = self.current_addr();
+                self.listing_symbol("ub_helper_rect_erase");
                 self.emit_rect_helper(erase_addr);
                 for &pos in &self.rect_erase_patches.clone() {
                     self.code[pos] = addr as u8;
@@ -13108,6 +13680,7 @@ impl Codegen {
         if !self.rect_xor_patches.is_empty() {
             if let Some(xor_addr) = plot_xor_helper_addr {
                 let addr = self.current_addr();
+                self.listing_symbol("ub_helper_rect_xor");
                 self.emit_rect_helper(xor_addr);
                 for &pos in &self.rect_xor_patches.clone() {
                     self.code[pos] = addr as u8;
@@ -13118,6 +13691,7 @@ impl Codegen {
 
         // Emit data block and patch init code
         if !self.data_bytes.is_empty() {
+            let data_start = self.code.len();
             let data_addr = self.current_addr();
             if let Some(pos) = self.data_ptr_lo_patch {
                 self.code[pos] = data_addr as u8;
@@ -13128,15 +13702,18 @@ impl Codegen {
             for &b in &self.data_bytes.clone() {
                 self.emit(b);
             }
+            self.listing_data(data_start, "ub_data");
         }
 
         // Emit sin/cos lookup table and patch all LDA abs,X references
         if !self.sin_table_patches.is_empty() {
+            let table_start = self.code.len();
             let table_addr = self.current_addr();
             self.sin_table_addr = Some(table_addr);
             for b in Self::sin_table() {
                 self.emit(b);
             }
+            self.listing_data(table_start, "ub_sin_table");
             for &pos in &self.sin_table_patches.clone() {
                 self.code[pos] = table_addr as u8;
                 self.code[pos + 1] = (table_addr >> 8) as u8;
@@ -13145,6 +13722,7 @@ impl Codegen {
 
         // Emit print_hex helper and patch all JSR targets
         if !self.hex_helper_patches.is_empty() {
+            self.listing_symbol("ub_helper_print_hex");
             let hex_addr = self.emit_print_hex_helper();
             for &pos in &self.hex_helper_patches.clone() {
                 self.code[pos] = hex_addr as u8;
@@ -13154,6 +13732,7 @@ impl Codegen {
 
         // Emit print_bin helper and patch all JSR targets
         if !self.bin_helper_patches.is_empty() {
+            self.listing_symbol("ub_helper_print_bin");
             let bin_addr = self.emit_print_bin_helper();
             for &pos in &self.bin_helper_patches.clone() {
                 self.code[pos] = bin_addr as u8;
@@ -13164,6 +13743,7 @@ impl Codegen {
         // Emit multicolor pixel (mplot) helper and patch all JSR targets
         if !self.mplot_patches.is_empty() {
             let mplot_addr = self.current_addr();
+            self.listing_symbol("ub_helper_mplot");
             self.emit_mplot_helper();
             for &pos in &self.mplot_patches.clone() {
                 self.code[pos] = mplot_addr as u8;
@@ -13173,6 +13753,7 @@ impl Codegen {
 
         // Emit str$() helper and patch all JSR targets
         if !self.strn_helper_patches.is_empty() {
+            self.listing_symbol("ub_helper_str_string");
             let helper_addr = self.emit_strn_helper();
             for &pos in &self.strn_helper_patches.clone() {
                 self.code[pos] = helper_addr as u8;
@@ -13183,6 +13764,7 @@ impl Codegen {
         // Emit 1351 mouse read helper and patch all JSR targets
         if !self.mouse_patches.is_empty() {
             let mouse_addr = self.current_addr();
+            self.listing_symbol("ub_helper_mouse_read");
             self.emit_mouse_read_helper();
             for &pos in &self.mouse_patches.clone() {
                 self.code[pos] = mouse_addr as u8;
@@ -13194,6 +13776,7 @@ impl Codegen {
         // Emitted once; all `music play` setup sequences are patched to point here.
         if !self.music_wrap_patches.is_empty() {
             let wrap_addr = self.current_addr();
+            self.listing_symbol("ub_helper_music_irq");
             let play_addr = self.sid_play_addr.unwrap_or(0);
             self.emit(0xA9);
             self.emit(0x01); // LDA #$01
@@ -13212,7 +13795,70 @@ impl Codegen {
             }
         }
 
+        // Keep the Koala display helper below $2000: displaying the picture
+        // replaces $2000-$3F3F with bitmap data.
+        if !self.koala_show_patches.is_empty() {
+            if let Some(background) = self.koala.as_ref().map(|k| k.background) {
+                let helper_addr = self.current_addr();
+                self.listing_symbol("ub_helper_koala_show");
+                self.emit_koala_show_helper(background);
+                for &pos in &self.koala_show_patches.clone() {
+                    self.code[pos] = helper_addr as u8;
+                    self.code[pos + 1] = (helper_addr >> 8) as u8;
+                }
+            } else {
+                self.koala_layout_error = Some("koala show requires koala load".to_string());
+            }
+        }
+
         self.patch_forward_refs();
+
+        // Store the original Koala payload at $6000.  The show helper copies
+        // it to VIC bank 0 ($2000 bitmap, $0400 screen and $D800 color RAM).
+        if let Some(koala) = self.koala.take() {
+            if self.sid.is_some() {
+                self.koala_layout_error =
+                    Some("koala load cannot be combined with load sid in one program".to_string());
+                self.sid = None;
+            }
+            let code_end = self.load_addr as usize + self.code.len();
+            if code_end > 0x2000 {
+                self.koala_layout_error = Some(format!(
+                    "koala load requires generated code and helpers to end below $2000 (ended at ${code_end:04X})"
+                ));
+            } else {
+                let padding_start = self.code.len();
+                while self.load_addr as usize + self.code.len() < 0x6000 {
+                    self.emit(0x00);
+                }
+                self.listing_data(padding_start, "ub_padding_to_koala");
+                let koala_start = self.code.len();
+                self.code.extend_from_slice(&koala.bitmap);
+                self.code.extend_from_slice(&koala.screen);
+                self.code.extend_from_slice(&koala.colors);
+                self.emit(koala.background);
+                self.listing_data(koala_start, "ub_koala_data");
+            }
+        }
+
+        self.addressed_incbins.sort_by_key(|entry| entry.0);
+        for (address, path, data) in self.addressed_incbins.clone() {
+            let code_end = self.load_addr as usize + self.code.len();
+            if (address as usize) < code_end {
+                self.incbin_errors.push(format!(
+                    "incbin '{}': target ${address:04X} overlaps generated data ending at ${code_end:04X}",
+                    path
+                ));
+                continue;
+            }
+            let padding_start = self.code.len();
+            self.code
+                .resize(address as usize - self.load_addr as usize, 0x00);
+            self.listing_data(padding_start, "ub_incbin_padding");
+            let data_start = self.code.len();
+            self.code.extend_from_slice(&data);
+            self.listing_data(data_start, &format!("incbin_{path}"));
+        }
 
         // Embed SID music data at its native C64 load address.
         // Pad the code segment with zeros to reach the target address, then
@@ -13227,12 +13873,16 @@ impl Codegen {
                 );
             } else {
                 let pad = (sid.load_addr - code_end) as usize;
+                let padding_start = self.code.len();
                 for _ in 0..pad {
                     self.emit(0x00);
                 }
+                self.listing_data(padding_start, "ub_padding_to_sid");
+                let sid_start = self.code.len();
                 for &b in &sid.data {
                     self.emit(b);
                 }
+                self.listing_data(sid_start, "ub_sid_data");
             }
         }
 
@@ -13263,6 +13913,10 @@ impl Codegen {
                 ));
             }
         }
+        if let Some(error) = &self.koala_layout_error {
+            errs.push(error.clone());
+        }
+        errs.extend(self.incbin_errors.iter().cloned());
         errs
     }
 
@@ -13340,8 +13994,64 @@ impl Codegen {
                 .filter(|name| !self.used_vars.contains(*name))
                 .cloned()
                 .collect(),
+            listing_spans: self.listing_spans.clone(),
+            listing_symbols: self.listing_symbols.clone(),
+            data_regions: self.data_regions.clone(),
         }
     }
+}
+
+fn stmt_listing_name(stmt: &Stmt) -> String {
+    match stmt {
+        Stmt::Label(name) => format!("label {name}"),
+        Stmt::Goto(name, _) => format!("goto {name}"),
+        Stmt::Gosub(name, _) => format!("gosub {name}"),
+        Stmt::Call(name, _, _) => format!("call {name}"),
+        Stmt::SubDef(name, _, _) => format!("sub {name}"),
+        Stmt::FnDef(name, _, _, _) => format!("fn {name}"),
+        Stmt::VarDecl { name, .. } => format!("var {name}"),
+        Stmt::Assign(name, _) => format!("{name} = ..."),
+        Stmt::Color { target, expr } => format!(
+            "color {} {}",
+            format!("{target:?}").to_ascii_lowercase(),
+            expr_listing(expr)
+        ),
+        Stmt::Print { args, no_newline } => {
+            let values = args.iter().map(expr_listing).collect::<Vec<_>>().join(", ");
+            let separator = if values.is_empty() { "" } else { " " };
+            format!(
+                "print{separator}{values}{}",
+                if *no_newline { ";" } else { "" }
+            )
+        }
+        Stmt::PrintAt { .. } => "print at".into(),
+        Stmt::AsmSource(_) => "asm { ... }".into(),
+        Stmt::AsmBytes(_) => "asm bytes".into(),
+        _ => {
+            let debug = format!("{stmt:?}");
+            listing_words(debug.split(['(', '{']).next().unwrap_or("statement"))
+        }
+    }
+}
+
+fn expr_listing(expr: &Expr) -> String {
+    match expr {
+        Expr::Number(value) => value.to_string(),
+        Expr::StringLit(value) => format!("\"{}\"", value.replace('"', "\"\"")),
+        Expr::Var(name) => name.clone(),
+        _ => "...".to_string(),
+    }
+}
+
+fn listing_words(name: &str) -> String {
+    let mut out = String::new();
+    for (index, ch) in name.trim().chars().enumerate() {
+        if index > 0 && ch.is_ascii_uppercase() {
+            out.push(' ');
+        }
+        out.push(ch.to_ascii_lowercase());
+    }
+    out
 }
 
 /// Convert an approximate MHz value to the U64 Turbo Control speed index (bits 0-3 of $D031).

@@ -234,6 +234,170 @@ impl Parser {
         })
     }
 
+    /// Read and validate the compact UltimateBasic character-map format.
+    fn parse_map_file(&mut self, filename: &str) -> Option<Stmt> {
+        let path = self
+            .base_dir
+            .as_ref()
+            .map(|base| base.join(filename))
+            .unwrap_or_else(|| std::path::PathBuf::from(filename));
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.errors.push(format!(
+                    "map load: cannot read '{}': {}",
+                    path.display(),
+                    error
+                ));
+                return None;
+            }
+        };
+        if bytes.len() < 13 || &bytes[..4] != b"UBMP" {
+            // VisualAssembler map exports contain the 1000 screen bytes and
+            // 1000 color bytes first, followed by optional assets and a JSON
+            // metadata trailer.  Accept that file directly so users do not
+            // need a separate UBMP conversion step.
+            if bytes.len() >= 2000 && bytes.windows(15).any(|w| w == b"\"kind\":\"me-map\"") {
+                let metadata_start = bytes[2000..]
+                    .windows(10)
+                    .position(|w| w == b"{\"version\"")
+                    .map(|offset| 2000 + offset);
+                let metadata = metadata_start
+                    .map(|offset| String::from_utf8_lossy(&bytes[offset..]).into_owned())
+                    .unwrap_or_default();
+                let number = |key: &str| -> u8 {
+                    metadata
+                        .find(key)
+                        .and_then(|start| {
+                            let tail = &metadata[start + key.len()..];
+                            let digits: String = tail
+                                .chars()
+                                .skip_while(|c| !c.is_ascii_digit())
+                                .take_while(|c| c.is_ascii_digit())
+                                .collect();
+                            digits.parse::<u8>().ok()
+                        })
+                        .unwrap_or(0)
+                };
+                let multicolor = metadata.contains("\"multicolor\":true");
+                return Some(Stmt::MapLoad {
+                    width: 40,
+                    height: 25,
+                    flags: 1 | if multicolor { 2 } else { 0 },
+                    bg: [
+                        number("\"bgColor\"") & 15,
+                        number("\"mc1Color\"") & 15,
+                        number("\"mc2Color\"") & 15,
+                    ],
+                    chars: bytes[..1000].to_vec(),
+                    colors: Some(bytes[1000..2000].iter().map(|c| c & 15).collect()),
+                });
+            }
+            self.errors.push(format!(
+                "map load: '{}' is neither UBMP nor a VisualAssembler map binary",
+                filename
+            ));
+            return None;
+        }
+        if bytes[4] != 1 {
+            self.errors.push(format!(
+                "map load: '{}' uses unsupported UBMP version {}",
+                filename, bytes[4]
+            ));
+            return None;
+        }
+        let flags = bytes[5];
+        if flags & !0x03 != 0 {
+            self.errors.push(format!(
+                "map load: '{}' contains unsupported flags ${:02X}",
+                filename, flags
+            ));
+            return None;
+        }
+        let width = u16::from_le_bytes([bytes[6], bytes[7]]);
+        let height = u16::from_le_bytes([bytes[8], bytes[9]]);
+        if width == 0 || height == 0 || width > 255 || height > 255 {
+            self.errors.push(format!(
+                "map load: '{}' dimensions must be 1-255 (got {}x{})",
+                filename, width, height
+            ));
+            return None;
+        }
+        let cells = width as usize * height as usize;
+        let expected = 13 + cells + if flags & 1 != 0 { cells } else { 0 };
+        if bytes.len() != expected {
+            self.errors.push(format!(
+                "map load: '{}' has {} bytes, expected {} for {}x{}{}",
+                filename,
+                bytes.len(),
+                expected,
+                width,
+                height,
+                if flags & 1 != 0 { " with colors" } else { "" }
+            ));
+            return None;
+        }
+        let chars = bytes[13..13 + cells].to_vec();
+        let colors = (flags & 1 != 0).then(|| bytes[13 + cells..].to_vec());
+        Some(Stmt::MapLoad {
+            width: width as u8,
+            height: height as u8,
+            flags,
+            bg: [bytes[10] & 15, bytes[11] & 15, bytes[12] & 15],
+            chars,
+            colors,
+        })
+    }
+
+    fn parse_koala_file(&mut self, filename: &str) -> Option<Stmt> {
+        let path = self
+            .base_dir
+            .as_ref()
+            .map(|base| base.join(filename))
+            .unwrap_or_else(|| std::path::PathBuf::from(filename));
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.errors.push(format!(
+                    "koala load: cannot read '{}': {}",
+                    path.display(),
+                    error
+                ));
+                return None;
+            }
+        };
+        let payload = match bytes.len() {
+            10001 => bytes.as_slice(),
+            10003 => {
+                let load_addr = u16::from_le_bytes([bytes[0], bytes[1]]);
+                if load_addr != 0x6000 {
+                    self.errors.push(format!(
+                        "koala load: '{}' has load address ${:04X}, expected $6000",
+                        filename, load_addr
+                    ));
+                    return None;
+                }
+                &bytes[2..]
+            }
+            size => {
+                self.errors.push(format!(
+                    "koala load: '{}' has {} bytes, expected 10001 (raw) or 10003 (with load address)",
+                    filename, size
+                ));
+                return None;
+            }
+        };
+        Some(Stmt::KoalaLoad {
+            bitmap: payload[..8000].to_vec(),
+            screen: payload[8000..9000].to_vec(),
+            colors: payload[9000..10000]
+                .iter()
+                .map(|value| value & 0x0F)
+                .collect(),
+            background: payload[10000] & 0x0F,
+        })
+    }
+
     fn peek(&self) -> &Token {
         self.tokens.get(self.pos).unwrap_or(&Token::Eof)
     }
@@ -1436,8 +1600,124 @@ impl Parser {
                     self.advance();
                 }
                 let addr = self.parse_expr();
+                let frame = if self.peek() == &Token::Comma {
+                    self.advance();
+                    Some(self.parse_expr())
+                } else {
+                    None
+                };
                 self.expect_newline();
-                Some(Stmt::SpriteFrame { id, addr })
+                Some(Stmt::SpriteFrame { id, addr, frame })
+            }
+            Token::Map => {
+                self.advance();
+                match self.peek().clone() {
+                    Token::Load => {
+                        self.advance();
+                        let filename = match self.advance() {
+                            Token::StringLit(path) => path,
+                            other => {
+                                self.errors.push(format!(
+                                    "line {}: map load expects a filename, got {}",
+                                    self.line,
+                                    token_label(&other)
+                                ));
+                                self.expect_newline();
+                                return None;
+                            }
+                        };
+                        self.expect_newline();
+                        self.parse_map_file(&filename)
+                    }
+                    Token::Ident(command) if command == "draw" => {
+                        self.advance();
+                        let x = self.parse_expr();
+                        if self.peek() == &Token::Comma {
+                            self.advance();
+                        }
+                        let y = self.parse_expr();
+                        self.expect_newline();
+                        Some(Stmt::MapDraw { x, y })
+                    }
+                    Token::Ident(command) if command == "set" => {
+                        self.advance();
+                        let x = self.parse_expr();
+                        if self.peek() == &Token::Comma {
+                            self.advance();
+                        }
+                        let y = self.parse_expr();
+                        if self.peek() == &Token::Comma {
+                            self.advance();
+                        }
+                        let tile = self.parse_expr();
+                        self.expect_newline();
+                        Some(Stmt::MapSet { x, y, tile })
+                    }
+                    Token::Color => {
+                        self.advance();
+                        let x = self.parse_expr();
+                        if self.peek() == &Token::Comma {
+                            self.advance();
+                        }
+                        let y = self.parse_expr();
+                        if self.peek() == &Token::Comma {
+                            self.advance();
+                        }
+                        let color = self.parse_expr();
+                        self.expect_newline();
+                        Some(Stmt::MapSetColor { x, y, color })
+                    }
+                    other => {
+                        self.errors.push(format!(
+                            "line {}: expected map load/draw/set/color, got {}",
+                            self.line,
+                            token_label(&other)
+                        ));
+                        self.expect_newline();
+                        None
+                    }
+                }
+            }
+            Token::Koala => {
+                self.advance();
+                match self.peek().clone() {
+                    Token::Load => {
+                        self.advance();
+                        let filename = match self.advance() {
+                            Token::StringLit(path) => path,
+                            other => {
+                                self.errors.push(format!(
+                                    "line {}: koala load expects a filename, got {}",
+                                    self.line,
+                                    token_label(&other)
+                                ));
+                                self.expect_newline();
+                                return None;
+                            }
+                        };
+                        self.expect_newline();
+                        self.parse_koala_file(&filename)
+                    }
+                    Token::Ident(command) if command == "show" => {
+                        self.advance();
+                        self.expect_newline();
+                        Some(Stmt::KoalaShow)
+                    }
+                    Token::Ident(command) if command == "hide" => {
+                        self.advance();
+                        self.expect_newline();
+                        Some(Stmt::KoalaHide)
+                    }
+                    other => {
+                        self.errors.push(format!(
+                            "line {}: expected koala load/show/hide, got {}",
+                            self.line,
+                            token_label(&other)
+                        ));
+                        self.expect_newline();
+                        None
+                    }
+                }
             }
             Token::Mplot => {
                 self.advance();
@@ -1741,9 +2021,43 @@ impl Parser {
                 self.advance();
                 if let Token::StringLit(path) = self.peek().clone() {
                     self.advance();
+                    let address = if self.peek() == &Token::Comma {
+                        self.advance();
+                        match self.parse_expr() {
+                            Expr::Number(value) => Some(value as u16),
+                            _ => {
+                                self.errors
+                                    .push("incbin: address must be a 16-bit constant".to_string());
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
                     self.expect_newline();
-                    Some(Stmt::Incbin(path))
+                    let resolved = self
+                        .base_dir
+                        .as_ref()
+                        .map(|base| base.join(&path))
+                        .unwrap_or_else(|| std::path::PathBuf::from(&path));
+                    match std::fs::read(&resolved) {
+                        Ok(data) => Some(Stmt::Incbin {
+                            path,
+                            data,
+                            address,
+                        }),
+                        Err(error) => {
+                            self.errors.push(format!(
+                                "incbin: cannot read '{}': {}",
+                                resolved.display(),
+                                error
+                            ));
+                            None
+                        }
+                    }
                 } else {
+                    self.errors
+                        .push("incbin expects a quoted filename".to_string());
                     self.expect_newline();
                     None
                 }
@@ -2698,6 +3012,41 @@ impl Parser {
                     self.advance();
                 }
                 Expr::SpriteY(Box::new(id))
+            }
+            Token::BoxHit => {
+                if self.peek() == &Token::LParen {
+                    self.advance();
+                }
+                let mut args = Vec::with_capacity(8);
+                for index in 0..8 {
+                    args.push(Box::new(self.parse_expr()));
+                    if index < 7 && self.peek() == &Token::Comma {
+                        self.advance();
+                    }
+                }
+                if self.peek() == &Token::RParen {
+                    self.advance();
+                }
+                Expr::BoxHit(args.try_into().expect("box_hit requires eight arguments"))
+            }
+            Token::MapTile | Token::MapColor => {
+                let color = matches!(self.tokens[self.pos - 1], Token::MapColor);
+                if self.peek() == &Token::LParen {
+                    self.advance();
+                }
+                let x = self.parse_expr();
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
+                let y = self.parse_expr();
+                if self.peek() == &Token::RParen {
+                    self.advance();
+                }
+                if color {
+                    Expr::MapColor(Box::new(x), Box::new(y))
+                } else {
+                    Expr::MapTile(Box::new(x), Box::new(y))
+                }
             }
             Token::Joy => {
                 if self.peek() == &Token::LParen {
