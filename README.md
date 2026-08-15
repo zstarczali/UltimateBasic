@@ -10,6 +10,13 @@ subroutines and functions, structured control flow, and direct, high-level acces
 C64's hardware: bitmap and block graphics, sprites, SID sound and music, raster/CIA/NMI
 interrupts, REU transfers, disk I/O, and inline 6502 assembly.
 
+Sprite support includes hardware collision registers, side-effect-free software AABB
+tests with `box_hit()`, and frame selection from consecutive sprite animation data.
+Character tile maps can be embedded from self-describing `.ubmap` files, rendered as
+40×25 viewports, queried and modified at runtime, in normal or multicolor text mode.
+Koala Painter images can also be validated, embedded, shown in multicolor bitmap
+mode, and hidden again with `koala load`, `koala show`, and `koala hide`.
+
 © 2026 Zsolt Tarczali
 
 ## Build

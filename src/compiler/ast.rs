@@ -35,13 +35,19 @@ pub enum Expr {
     SpriteBgHit, // sprbghit() — read $D01F (sprite–background collision, cleared on read)
     SpriteX(Box<Expr>), // sprite_x(id) — read sprite X position from $D000 + id*2
     SpriteY(Box<Expr>), // sprite_y(id) — read sprite Y position from $D001 + id*2
-    StrLen(Box<Expr>), // len(s)  — length of null-terminated string var, 0–255
-    Asc(Box<Expr>), // asc(s)  — PETSCII code of first character (0 if empty)
-    Peek16(Box<Expr>), // peek16(addr) — read 16-bit word: lo at addr, hi at addr+1
-    Spc(Box<Expr>), // spc(n) — in print: print n spaces
-    Tab(Box<Expr>), // tab(n) — in print: move cursor to column n
-    Val(Box<Expr>), // val(s) — runtime PETSCII decimal string → 8-bit int
-    FixedLit(u16), // Q8.8 fixed-point literal (e.g. 3.5 → hi=3, lo=128)
+    /// `box_hit(l1,t1,r1,b1,l2,t2,r2,b2)` — software AABB collision (inclusive edges)
+    BoxHit([Box<Expr>; 8]),
+    /// `map_tile(x,y)` — read a character from the currently loaded tile map
+    MapTile(Box<Expr>, Box<Expr>),
+    /// `map_color(x,y)` — read a color from the currently loaded tile map
+    MapColor(Box<Expr>, Box<Expr>),
+    StrLen(Box<Expr>),     // len(s)  — length of null-terminated string var, 0–255
+    Asc(Box<Expr>),        // asc(s)  — PETSCII code of first character (0 if empty)
+    Peek16(Box<Expr>),     // peek16(addr) — read 16-bit word: lo at addr, hi at addr+1
+    Spc(Box<Expr>),        // spc(n) — in print: print n spaces
+    Tab(Box<Expr>),        // tab(n) — in print: move cursor to column n
+    Val(Box<Expr>),        // val(s) — runtime PETSCII decimal string → 8-bit int
+    FixedLit(u16),         // Q8.8 fixed-point literal (e.g. 3.5 → hi=3, lo=128)
     FixedToInt(Box<Expr>), // int(f) — extract integer part (hi byte) of a float variable
     FnCall(String, Vec<Expr>), // fn_name(args) — call a function, result in A
 }
@@ -98,6 +104,39 @@ pub enum ReuOp {
 
 #[derive(Debug, Clone)]
 pub enum Stmt {
+    /// Compile-time imported Koala Painter image.
+    KoalaLoad {
+        bitmap: Vec<u8>,
+        screen: Vec<u8>,
+        colors: Vec<u8>,
+        background: u8,
+    },
+    KoalaShow,
+    KoalaHide,
+    /// Parsed `.ubmap` data embedded into writable program RAM.
+    MapLoad {
+        width: u8,
+        height: u8,
+        flags: u8,
+        bg: [u8; 3],
+        chars: Vec<u8>,
+        colors: Option<Vec<u8>>,
+    },
+    /// Draw a 40x25 viewport from map coordinates x,y.
+    MapDraw {
+        x: Expr,
+        y: Expr,
+    },
+    MapSet {
+        x: Expr,
+        y: Expr,
+        tile: Expr,
+    },
+    MapSetColor {
+        x: Expr,
+        y: Expr,
+        color: Expr,
+    },
     VarDecl {
         name: String,
         vtype: Option<VarType>,
@@ -393,11 +432,12 @@ pub enum Stmt {
     FillColor(Expr),
     /// `gosub label` — JSR to a label; complement to the existing `return` (RTS)
     Gosub(String, usize),
-    /// `sprite_frame id, addr` — update sprite data pointer $07F8+id = addr>>6
+    /// `sprite_frame id, addr [, frame]` — update sprite pointer to addr>>6 + frame
     /// id: 0-7 const or var; addr: 64-byte-aligned address (const, word var, or 8-bit expr)
     SpriteFrame {
         id: Expr,
         addr: Expr,
+        frame: Option<Expr>,
     },
     /// `chardef id ... end` — inline 8-byte char definition; copies to charset_base+id*8 at runtime
     Chardef {

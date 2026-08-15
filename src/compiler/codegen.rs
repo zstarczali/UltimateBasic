@@ -615,12 +615,32 @@ pub struct Codegen {
     fn_ret_zp: Option<u8>, // 2-byte ZP pair for fn return value (word/float fns)
     fn_ret_type: Option<VarType>, // return type of the fn currently being generated
     used_vars: std::collections::HashSet<String>, // variables that have been read
+    map: Option<MapInfo>, // currently loaded writable UBMP data
+    koala: Option<KoalaData>,
+    koala_show_patches: Vec<usize>,
+    koala_layout_error: Option<String>,
 }
 
 /// Carry SID metadata through pre_scan → compile().
 struct SidData {
     load_addr: u16,
     data: Vec<u8>,
+}
+
+#[derive(Clone, Copy)]
+struct MapInfo {
+    chars: u16,
+    colors: Option<u16>,
+    width: u8,
+    multicolor: bool,
+    bg: [u8; 3],
+}
+
+struct KoalaData {
+    bitmap: Vec<u8>,
+    screen: Vec<u8>,
+    colors: Vec<u8>,
+    background: u8,
 }
 
 impl Codegen {
@@ -698,6 +718,10 @@ impl Codegen {
             fn_ret_zp: None,
             fn_ret_type: None,
             used_vars: std::collections::HashSet::new(),
+            map: None,
+            koala: None,
+            koala_show_patches: vec![],
+            koala_layout_error: None,
         }
     }
 
@@ -889,6 +913,10 @@ impl Codegen {
             Expr::Clamp(a, b, c) => {
                 Self::expr_has_strn(a) || Self::expr_has_strn(b) || Self::expr_has_strn(c)
             }
+            Expr::BoxHit(args) => args.iter().any(|e| Self::expr_has_strn(e)),
+            Expr::MapTile(x, y) | Expr::MapColor(x, y) => {
+                Self::expr_has_strn(x) || Self::expr_has_strn(y)
+            }
             _ => false,
         }
     }
@@ -964,6 +992,10 @@ impl Codegen {
             Expr::Min(a, b) | Expr::Max(a, b) => Self::expr_has_mouse(a) || Self::expr_has_mouse(b),
             Expr::Clamp(a, b, c) => {
                 Self::expr_has_mouse(a) || Self::expr_has_mouse(b) || Self::expr_has_mouse(c)
+            }
+            Expr::BoxHit(args) => args.iter().any(|e| Self::expr_has_mouse(e)),
+            Expr::MapTile(x, y) | Expr::MapColor(x, y) => {
+                Self::expr_has_mouse(x) || Self::expr_has_mouse(y)
             }
             _ => false,
         }
@@ -1839,6 +1871,65 @@ impl Codegen {
                         self.emit(0xB1);
                         self.emit(ptr); // LDA (ptr),Y → $D001 + id*2
                     }
+                }
+            }
+            Expr::BoxHit(args) => {
+                // Inclusive-edge AABB test:
+                // not (r1 < l2 or r2 < l1 or b1 < t2 or b2 < t1).
+                // Store every argument first so arbitrary expressions are evaluated once.
+                let base = self.tmp_zp;
+                self.tmp_zp += 8;
+                for (offset, expr) in args.iter().enumerate() {
+                    self.eval_expr(expr);
+                    self.emit(0x85); // STA zp
+                    self.emit(base + offset as u8);
+                }
+
+                let comparisons = [(2u8, 4u8), (6, 0), (3, 5), (7, 1)];
+                let mut false_branches = Vec::with_capacity(4);
+                for (left, right) in comparisons {
+                    self.emit(0xA5); // LDA left edge
+                    self.emit(base + left);
+                    self.emit(0xC5); // CMP right edge
+                    self.emit(base + right);
+                    self.emit(0x90); // BCC false (left < right)
+                    false_branches.push(self.code.len());
+                    self.emit(0x00);
+                }
+
+                self.emit(0xA9); // LDA #1 (overlap)
+                self.emit(0x01);
+                self.emit(0x4C); // JMP done
+                let done_patch = self.code.len();
+                self.emit16(0x0000);
+
+                let false_addr = self.current_addr();
+                self.emit(0xA9); // LDA #0 (separated)
+                self.emit(0x00);
+                let done_addr = self.current_addr();
+                for branch in false_branches {
+                    self.patch_bxx(branch, false_addr);
+                }
+                self.patch_abs(done_patch, done_addr);
+            }
+            Expr::MapTile(x, y) | Expr::MapColor(x, y) => {
+                let color = matches!(expr, Expr::MapColor(..));
+                let base = self
+                    .map
+                    .and_then(|info| if color { info.colors } else { Some(info.chars) });
+                if let (Some(info), Some(base_addr)) = (self.map, base) {
+                    let ptr = self.emit_map_pointer(base_addr, info.width, x, y);
+                    self.emit(0xA0);
+                    self.emit(0x00); // LDY #0
+                    self.emit(0xB1);
+                    self.emit(ptr); // LDA (ptr),Y
+                    if color {
+                        self.emit(0x29);
+                        self.emit(0x0F);
+                    }
+                } else {
+                    self.emit(0xA9);
+                    self.emit(0x00);
                 }
             }
             Expr::Joy(port) => {
@@ -3732,6 +3823,230 @@ impl Codegen {
     fn patch_abs(&mut self, lo_pos: usize, target: u16) {
         self.code[lo_pos] = target as u8;
         self.code[lo_pos + 1] = (target >> 8) as u8;
+    }
+
+    /// Build a 16-bit pointer to `base + y*width + x` in temporary zero page.
+    fn emit_map_pointer(&mut self, base_addr: u16, width: u8, x: &Expr, y: &Expr) -> u8 {
+        let ptr = self.tmp_zp;
+        let rows = ptr + 2;
+        self.tmp_zp += 3;
+
+        self.emit(0xA9);
+        self.emit(base_addr as u8);
+        self.emit(0x85);
+        self.emit(ptr);
+        self.emit(0xA9);
+        self.emit((base_addr >> 8) as u8);
+        self.emit(0x85);
+        self.emit(ptr + 1);
+        self.eval_expr(y);
+        self.emit(0x85);
+        self.emit(rows);
+        self.emit(0xF0); // BEQ rows_done
+        let rows_done = self.code.len();
+        self.emit(0x00);
+        let row_loop = self.current_addr();
+        self.emit(0x18); // CLC
+        self.emit(0xA5);
+        self.emit(ptr);
+        self.emit(0x69);
+        self.emit(width); // ADC #width
+        self.emit(0x85);
+        self.emit(ptr);
+        self.emit(0xA5);
+        self.emit(ptr + 1);
+        self.emit(0x69);
+        self.emit(0x00); // carry into high byte
+        self.emit(0x85);
+        self.emit(ptr + 1);
+        self.emit(0xC6);
+        self.emit(rows); // DEC rows
+        self.emit(0xD0);
+        let loop_patch = self.code.len();
+        self.emit(0x00);
+        self.patch_bxx(loop_patch, row_loop);
+        let after_rows = self.current_addr();
+        self.patch_bxx(rows_done, after_rows);
+
+        self.eval_expr(x);
+        self.emit(0x18); // CLC
+        self.emit(0x65);
+        self.emit(ptr); // ADC ptr lo
+        self.emit(0x85);
+        self.emit(ptr);
+        self.emit(0x90); // BCC no_x_carry
+        let no_carry = self.code.len();
+        self.emit(0x00);
+        self.emit(0xE6);
+        self.emit(ptr + 1);
+        let after_carry = self.current_addr();
+        self.patch_bxx(no_carry, after_carry);
+        ptr
+    }
+
+    fn emit_add_u8_to_ptr(&mut self, ptr: u8, amount: u8) {
+        self.emit(0x18); // CLC
+        self.emit(0xA5);
+        self.emit(ptr);
+        self.emit(0x69);
+        self.emit(amount);
+        self.emit(0x85);
+        self.emit(ptr);
+        self.emit(0xA5);
+        self.emit(ptr + 1);
+        self.emit(0x69);
+        self.emit(0x00);
+        self.emit(0x85);
+        self.emit(ptr + 1);
+    }
+
+    fn emit_map_draw(&mut self, info: MapInfo, x: &Expr, y: &Expr) {
+        let src = self.emit_map_pointer(info.chars, info.width, x, y);
+        let colors = info
+            .colors
+            .map(|base| self.emit_map_pointer(base, info.width, x, y));
+        let screen = self.tmp_zp;
+        let color_ram = screen + 2;
+        let rows = screen + 4;
+        self.tmp_zp += 5;
+
+        for (ptr, addr) in [(screen, 0x0400u16), (color_ram, 0xD800u16)] {
+            self.emit(0xA9);
+            self.emit(addr as u8);
+            self.emit(0x85);
+            self.emit(ptr);
+            self.emit(0xA9);
+            self.emit((addr >> 8) as u8);
+            self.emit(0x85);
+            self.emit(ptr + 1);
+        }
+        self.emit(0xA9);
+        self.emit(25);
+        self.emit(0x85);
+        self.emit(rows);
+        let row_loop = self.current_addr();
+        self.emit(0xA0);
+        self.emit(0x00); // LDY #0
+        let col_loop = self.current_addr();
+        self.emit(0xB1);
+        self.emit(src); // LDA (src),Y
+        self.emit(0x91);
+        self.emit(screen); // STA (screen),Y
+        if let Some(color_src) = colors {
+            self.emit(0xB1);
+            self.emit(color_src);
+            self.emit(0x29);
+            self.emit(0x0F); // colors are always VIC nibble values
+            self.emit(0x91);
+            self.emit(color_ram);
+        }
+        self.emit(0xC8); // INY
+        self.emit(0xC0);
+        self.emit(40); // CPY #40
+        self.emit(0xD0);
+        let col_patch = self.code.len();
+        self.emit(0x00);
+        self.patch_bxx(col_patch, col_loop);
+
+        self.emit_add_u8_to_ptr(src, info.width);
+        if let Some(color_src) = colors {
+            self.emit_add_u8_to_ptr(color_src, info.width);
+        }
+        self.emit_add_u8_to_ptr(screen, 40);
+        if colors.is_some() {
+            self.emit_add_u8_to_ptr(color_ram, 40);
+        }
+        self.emit(0xC6);
+        self.emit(rows);
+        self.emit(0xD0);
+        let row_patch = self.code.len();
+        self.emit(0x00);
+        self.patch_bxx(row_patch, row_loop);
+    }
+
+    fn emit_koala_copy(&mut self, source: u16, destination: u16, length: usize) {
+        let src = TMP_BASE;
+        let dst = TMP_BASE + 2;
+        for (ptr, addr) in [(src, source), (dst, destination)] {
+            self.emit(0xA9);
+            self.emit(addr as u8);
+            self.emit(0x85);
+            self.emit(ptr);
+            self.emit(0xA9);
+            self.emit((addr >> 8) as u8);
+            self.emit(0x85);
+            self.emit(ptr + 1);
+        }
+        let pages = length / 256;
+        if pages != 0 {
+            self.emit(0xA2);
+            self.emit(pages as u8); // LDX #pages
+            self.emit(0xA0);
+            self.emit(0x00); // LDY #0
+            let page_loop = self.current_addr();
+            self.emit(0xB1);
+            self.emit(src);
+            self.emit(0x91);
+            self.emit(dst);
+            self.emit(0xC8); // INY
+            self.emit(0xD0);
+            let byte_patch = self.code.len();
+            self.emit(0x00);
+            self.patch_bxx(byte_patch, page_loop);
+            self.emit(0xE6);
+            self.emit(src + 1);
+            self.emit(0xE6);
+            self.emit(dst + 1);
+            self.emit(0xCA); // DEX
+            self.emit(0xD0);
+            let page_patch = self.code.len();
+            self.emit(0x00);
+            self.patch_bxx(page_patch, page_loop);
+        }
+        let remainder = length % 256;
+        if remainder != 0 {
+            self.emit(0xA0);
+            self.emit(0x00);
+            let rem_loop = self.current_addr();
+            self.emit(0xB1);
+            self.emit(src);
+            self.emit(0x91);
+            self.emit(dst);
+            self.emit(0xC8);
+            self.emit(0xC0);
+            self.emit(remainder as u8);
+            self.emit(0xD0);
+            let rem_patch = self.code.len();
+            self.emit(0x00);
+            self.patch_bxx(rem_patch, rem_loop);
+        }
+    }
+
+    fn emit_koala_show_helper(&mut self, background: u8) {
+        self.emit_koala_copy(0x6000, 0x2000, 8000);
+        self.emit_koala_copy(0x7F40, 0x0400, 1000);
+        self.emit_koala_copy(0x8328, 0xD800, 1000);
+        self.emit(0xAD);
+        self.emit16(0xD011);
+        self.emit(0x09);
+        self.emit(0x20); // set BMM
+        self.emit(0x8D);
+        self.emit16(0xD011);
+        self.emit(0xAD);
+        self.emit16(0xD016);
+        self.emit(0x09);
+        self.emit(0x10); // set MCM
+        self.emit(0x8D);
+        self.emit16(0xD016);
+        self.emit(0xA9);
+        self.emit(0x18); // screen $0400, bitmap $2000
+        self.emit(0x8D);
+        self.emit16(0xD018);
+        self.emit(0xA9);
+        self.emit(background & 0x0F);
+        self.emit(0x8D);
+        self.emit16(0xD021);
+        self.emit(0x60); // RTS
     }
 
     fn emit_store_expr_u8(&mut self, expr: &Expr, zp: u8) {
@@ -10750,7 +11065,7 @@ impl Codegen {
                 }
             }
 
-            Stmt::SpriteFrame { id, addr } => {
+            Stmt::SpriteFrame { id, addr, frame } => {
                 // Compute addr >> 6 into A, then store at $07F8+id (or $07F8,X for var id)
                 let id = id.clone();
                 let addr = addr.clone();
@@ -10793,6 +11108,19 @@ impl Codegen {
                     }
                 }
 
+                // Optional animation frame: consecutive frames occupy 64 bytes,
+                // therefore adding the frame index to the VIC pointer selects it.
+                if let Some(frame) = frame {
+                    let base_ptr = self.tmp_zp;
+                    self.tmp_zp += 1;
+                    self.emit(0x85);
+                    self.emit(base_ptr); // STA base_ptr
+                    self.eval_expr(frame);
+                    self.emit(0x18); // CLC
+                    self.emit(0x65); // ADC base_ptr
+                    self.emit(base_ptr);
+                }
+
                 // Step 2: store A to $07F8+id
                 match &id {
                     Expr::Number(n) => {
@@ -10815,6 +11143,137 @@ impl Codegen {
                         self.emit(0x9D);
                         self.emit(0xF8);
                         self.emit(0x07); // STA $07F8,X
+                    }
+                }
+            }
+
+            Stmt::KoalaLoad {
+                bitmap,
+                screen,
+                colors,
+                background,
+            } => {
+                self.koala = Some(KoalaData {
+                    bitmap: bitmap.clone(),
+                    screen: screen.clone(),
+                    colors: colors.clone(),
+                    background: *background,
+                });
+            }
+            Stmt::KoalaShow => {
+                self.emit(0x20); // JSR koala_show_helper
+                let patch = self.code.len();
+                self.emit16(0x0000);
+                self.koala_show_patches.push(patch);
+            }
+            Stmt::KoalaHide => {
+                self.emit(0xAD);
+                self.emit16(0xD011);
+                self.emit(0x29);
+                self.emit(0xDF); // clear BMM
+                self.emit(0x8D);
+                self.emit16(0xD011);
+                self.emit(0xAD);
+                self.emit16(0xD016);
+                self.emit(0x29);
+                self.emit(0xEF); // clear MCM
+                self.emit(0x8D);
+                self.emit16(0xD016);
+                self.emit(0xA9);
+                self.emit(0x14); // screen $0400, charset $1000
+                self.emit(0x8D);
+                self.emit16(0xD018);
+            }
+            Stmt::MapLoad {
+                width,
+                height: _,
+                flags,
+                bg,
+                chars,
+                colors,
+            } => {
+                // Keep map bytes in writable program RAM and jump over them at runtime.
+                self.emit(0x4C); // JMP after_data
+                let skip_patch = self.code.len();
+                self.emit16(0x0000);
+                let char_addr = self.current_addr();
+                for byte in chars {
+                    self.emit(*byte);
+                }
+                let color_addr = colors.as_ref().map(|data| {
+                    let addr = self.current_addr();
+                    for byte in data {
+                        self.emit(*byte & 0x0F);
+                    }
+                    addr
+                });
+                let after_data = self.current_addr();
+                self.patch_abs(skip_patch, after_data);
+                let info = MapInfo {
+                    chars: char_addr,
+                    colors: color_addr,
+                    width: *width,
+                    multicolor: flags & 2 != 0,
+                    bg: *bg,
+                };
+                self.map = Some(info);
+
+                self.emit(0xAD);
+                self.emit16(0xD016); // LDA $D016
+                if info.multicolor {
+                    self.emit(0x09);
+                    self.emit(0x10); // ORA #MCM
+                } else {
+                    self.emit(0x29);
+                    self.emit(0xEF); // AND #!MCM
+                }
+                self.emit(0x8D);
+                self.emit16(0xD016);
+                for (offset, color) in info.bg.iter().enumerate() {
+                    self.emit(0xA9);
+                    self.emit(*color & 0x0F);
+                    self.emit(0x8D);
+                    self.emit16(0xD021 + offset as u16);
+                }
+            }
+            Stmt::MapDraw { x, y } => {
+                if let Some(info) = self.map {
+                    self.emit_map_draw(info, x, y);
+                }
+            }
+            Stmt::MapSet { x, y, tile } => {
+                if let Some(info) = self.map {
+                    let value = self.tmp_zp;
+                    self.tmp_zp += 1;
+                    self.eval_expr(tile);
+                    self.emit(0x85);
+                    self.emit(value);
+                    let ptr = self.emit_map_pointer(info.chars, info.width, x, y);
+                    self.emit(0xA0);
+                    self.emit(0x00);
+                    self.emit(0xA5);
+                    self.emit(value);
+                    self.emit(0x91);
+                    self.emit(ptr);
+                }
+            }
+            Stmt::MapSetColor { x, y, color } => {
+                if let Some(info) = self.map {
+                    if let Some(base) = info.colors {
+                        let value = self.tmp_zp;
+                        self.tmp_zp += 1;
+                        self.eval_expr(color);
+                        self.emit(0x29);
+                        self.emit(0x0F);
+                        self.emit(0x85);
+                        self.emit(value);
+                        let ptr = self.emit_map_pointer(base, info.width, x, y);
+                        self.emit(0xA0);
+                        self.emit(0x00);
+                        self.emit(0xA5);
+                        self.emit(value);
+                        self.emit(0x91);
+                        self.emit(ptr);
                     }
                 }
             }
@@ -13212,7 +13671,46 @@ impl Codegen {
             }
         }
 
+        // Keep the Koala display helper below $2000: displaying the picture
+        // replaces $2000-$3F3F with bitmap data.
+        if !self.koala_show_patches.is_empty() {
+            if let Some(background) = self.koala.as_ref().map(|k| k.background) {
+                let helper_addr = self.current_addr();
+                self.emit_koala_show_helper(background);
+                for &pos in &self.koala_show_patches.clone() {
+                    self.code[pos] = helper_addr as u8;
+                    self.code[pos + 1] = (helper_addr >> 8) as u8;
+                }
+            } else {
+                self.koala_layout_error = Some("koala show requires koala load".to_string());
+            }
+        }
+
         self.patch_forward_refs();
+
+        // Store the original Koala payload at $6000.  The show helper copies
+        // it to VIC bank 0 ($2000 bitmap, $0400 screen and $D800 color RAM).
+        if let Some(koala) = self.koala.take() {
+            if self.sid.is_some() {
+                self.koala_layout_error =
+                    Some("koala load cannot be combined with load sid in one program".to_string());
+                self.sid = None;
+            }
+            let code_end = self.load_addr as usize + self.code.len();
+            if code_end > 0x2000 {
+                self.koala_layout_error = Some(format!(
+                    "koala load requires generated code and helpers to end below $2000 (ended at ${code_end:04X})"
+                ));
+            } else {
+                while self.load_addr as usize + self.code.len() < 0x6000 {
+                    self.emit(0x00);
+                }
+                self.code.extend_from_slice(&koala.bitmap);
+                self.code.extend_from_slice(&koala.screen);
+                self.code.extend_from_slice(&koala.colors);
+                self.emit(koala.background);
+            }
+        }
 
         // Embed SID music data at its native C64 load address.
         // Pad the code segment with zeros to reach the target address, then
@@ -13262,6 +13760,9 @@ impl Codegen {
                     "line {src_line}: onerr goto: Undefined label: {name}"
                 ));
             }
+        }
+        if let Some(error) = &self.koala_layout_error {
+            errs.push(error.clone());
         }
         errs
     }

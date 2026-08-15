@@ -566,10 +566,40 @@ var x = sprite_x(0)      # read sprite 0 X position (lo byte, $D000)
 var y = sprite_y(0)      # read sprite 0 Y position ($D001)
 sprite_frame 0, $2000    # set sprite 0 data pointer only: $07F8+id = $2000>>6
                          # (does NOT change X/Y position)
+sprite_frame 0, $2000, frame # animation: select frame at $2000 + frame*64
 ```
 
 X supports full 9-bit range (0–319): use a `word` variable for runtime values > 255.
 Sprite data pointer: `data_addr` must be 64-byte aligned; stored as `addr >> 6` at `$07F8+id`.
+
+For animation, place consecutive 63-byte sprite images in 64-byte slots and pass a
+zero-based frame expression as the optional third argument. The compiler adds the
+frame index to the base VIC pointer, so the existing two-argument form remains fully
+compatible. Timing and looping stay under program control:
+
+```basic
+var frame = 0
+loop
+  sprite_frame 0, $2000, frame
+  frame = frame + 1
+  if frame == 4 then frame = 0 end
+  delay 5
+end
+```
+
+### Software bounding-box collision
+
+```basic
+var touching = box_hit(left1, top1, right1, bottom1,
+                       left2, top2, right2, bottom2)
+```
+
+`box_hit()` performs an axis-aligned bounding-box (AABB) test and returns `1` when
+the two rectangles overlap or touch, otherwise `0`. Unlike `sprite_hit()` and
+`sprite_bg_hit()`, it does not read or clear VIC-II collision registers. The eight
+arguments are arbitrary 8-bit expressions, so boxes may be smaller than the visible
+sprite artwork or may describe non-sprite game objects. Coordinates are inclusive;
+keep `left <= right` and `top <= bottom`.
 
 ### Sprite definition
 
@@ -592,6 +622,85 @@ To use the same shape for multiple sprites, read back the pointer:
 var pg = peek($07F8)   # pointer set by sprdef 0
 poke $07F9, pg         # copy to sprites 1–7
 ```
+
+### Character tile maps (`.ubmap`)
+
+```basic
+map load "levels/world.ubmap"
+map draw map_x, map_y       # draw a 40x25 viewport to screen/color RAM
+
+var tile = map_tile(x, y)   # read character code from the map
+map set x, y, 42            # change character code in writable map data
+
+var shade = map_color(x, y) # read cell color (0 when map has no color data)
+map color x, y, 7           # change cell color when color data is present
+```
+
+`map load` resolves the filename relative to the `.ub` source file, validates it at
+compile time, and embeds its character and optional color arrays in writable program
+RAM. A later `map load` replaces the active map for subsequent map commands.
+
+`map load` also accepts a VisualAssembler `me-map` `.bin` export directly:
+
+```basic
+map load "map-color-mc++.bin"
+```
+
+The first 1000 bytes become the 40×25 character map and the next 1000 bytes become
+cell colors. Multicolor mode and `$D021-$D023` are read from the VisualAssembler
+metadata trailer, so no `.ubmap` conversion is required.
+
+`map draw map_x, map_y` copies a 40×25 viewport beginning at the specified map cell
+to screen RAM `$0400` and, when present, color RAM `$D800`. The map must contain the
+whole requested viewport: keep `map_x <= width-40` and `map_y <= height-25`.
+Coordinates and dimensions are currently 8-bit (0–255).
+
+Normal maps clear the text multicolor bit in `$D016`. Multicolor maps set it and load
+their three global colors into `$D021`, `$D022`, and `$D023`. Character maps contain
+character codes, not charset pixels; combine them with `charset`/`chardef` or another
+charset-loading method. In multicolor text mode, cell colors 8–15 select multicolor
+characters according to the VIC-II rules.
+
+#### UBMP version 1 binary format
+
+All multibyte integers are little-endian:
+
+| Offset | Size | Meaning |
+|---:|---:|---|
+| 0 | 4 | ASCII magic `UBMP` |
+| 4 | 1 | Version, currently `1` |
+| 5 | 1 | Flags: bit 0 = color array present, bit 1 = multicolor text mode |
+| 6 | 2 | Map width, 1–255 cells |
+| 8 | 2 | Map height, 1–255 cells |
+| 10 | 1 | Background 0 (`$D021`), low nibble used |
+| 11 | 1 | Multicolor 1 (`$D022`), low nibble used |
+| 12 | 1 | Multicolor 2 (`$D023`), low nibble used |
+| 13 | width×height | Row-major character codes |
+| following | width×height | Optional row-major color nibbles when flag bit 0 is set |
+
+An UBMP file must have the exact length implied by its header. Invalid magic, version,
+dimensions, or length produces a compile-time error.
+
+### Koala Painter image import
+
+```basic
+koala load "pictures/title.kla"  # validate and embed at compile time
+koala show                       # enter bitmap multicolor mode
+koala hide                       # return to the default text display
+```
+
+`koala load` accepts a standard 10003-byte Koala file (`$6000` load address plus
+10001 data bytes) or a raw 10001-byte payload. Paths are relative to the `.ub` file.
+The payload contains 8000 bitmap bytes, 1000 screen bytes, 1000 color nibbles, and
+one background-color byte.
+
+The compiler stores it at `$6000-$8710`. `koala show` copies the bitmap to `$2000`,
+the screen matrix to `$0400`, colors to `$D800`, and enables bitmap multicolor mode.
+`koala hide` clears bitmap/multicolor mode and restores the default text layout.
+
+Generated code and helpers must finish below `$2000`, because the displayed bitmap
+overwrites `$2000-$3F3F`; the compiler reports an error otherwise. Koala import
+cannot currently be combined with `load sid` in the same program.
 
 ### Custom charset
 

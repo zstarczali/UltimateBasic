@@ -595,6 +595,8 @@ sprite priority 0, on    # sprite behind background ($D01B |= bit0)
 sprite priority 0, off   # sprite in front of background ($D01B &= ~bit0)
 var h = sprite_hit()     # sprite–sprite collision ($D01E, cleared on read)
 var b = sprite_bg_hit()  # sprite–background collision ($D01F, cleared on read)
+var h2 = box_hit(l1,t1,r1,b1,l2,t2,r2,b2) # software AABB; no VIC side effects
+sprite_frame 0, $2000, frame # frame N from consecutive 64-byte animation slots
 
 sprdef 0                 # inline sprite data: 63 bytes, 64-byte aligned, sets $07F8+id
   %00111100,0            # 3 bytes per row × 21 rows = 63 bytes total
@@ -603,6 +605,11 @@ end
 ```
 
 `sprdef id ... end` embeds 63 sprite bytes at the next 64-byte-aligned address in the code segment (preceded by a `JMP` to skip over it), then writes `addr>>6` to `$07F8+id` at runtime. Fewer than 63 bytes are zero-padded. Values must be compile-time constants; use `%` prefix for binary literals.
+
+`sprite_frame id, base, frame` selects animation frame `frame` at
+`base + frame*64`; the original `sprite_frame id, addr` form still selects one
+absolute sprite image. `box_hit()` tests two inclusive 8-bit AABBs and returns 1/0.
+It is independent of the read-clears-on-access `$D01E/$D01F` collision registers.
 
 | Concept | Notes |
 |---|---|
@@ -630,6 +637,39 @@ end
 | `$D01F` | Sprite–background collision (read-clears) |
 | `$D027+id` | Sprite color (0–15) |
 | `$07F8+id` | Sprite data pointer (value = addr >> 6) |
+
+### Character tile maps
+
+```basic
+map load "level.ubmap"       # compile-time validation + embed writable map data
+map draw map_x, map_y        # render 40x25 viewport to $0400 and optional $D800
+var tile = map_tile(x, y)
+map set x, y, tile
+var color = map_color(x, y)
+map color x, y, color
+```
+
+`map load` also accepts VisualAssembler `me-map` `.bin` exports directly. Their
+first 1000 bytes are the 40x25 character map, the next 1000 are cell colors, and
+normal/multicolor settings come from the embedded metadata trailer.
+
+UBMP v1 header: `UBMP`, version byte, flags (bit0=color data, bit1=multicolor),
+little-endian width/height, three VIC background colors, row-major character data,
+then optional row-major color data. Width and height are 1–255. Multicolor maps set
+`$D016` bit 4 and `$D021-$D023`; normal maps clear the MCM bit. `map draw` has no
+clipping, so its 40x25 viewport must remain inside the map.
+
+### Koala Painter images
+
+```basic
+koala load "picture.kla"  # standard 10003-byte or raw 10001-byte file
+koala show                # bitmap $2000, screen $0400, colors $D800
+koala hide                # restore normal text mode
+```
+
+Files are resolved relative to the source and validated at compile time. The payload
+is embedded at `$6000-$8710`; code/helpers must end below `$2000`. Koala import and
+`load sid` are currently mutually exclusive.
 
 ### Memory
 
