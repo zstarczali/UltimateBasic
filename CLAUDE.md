@@ -607,9 +607,11 @@ end
 
 `sprdef id ... end` embeds 63 sprite bytes at the next 64-byte-aligned address in the code segment (preceded by a `JMP` to skip over it), then writes `addr>>6` to `$07F8+id` at runtime. Fewer than 63 bytes are zero-padded. Values must be compile-time constants; use `%` prefix for binary literals.
 
-`sprite_frame id, base, frame` selects animation frame `frame` at
-`base + frame*64`; the original `sprite_frame id, addr` form still selects one
-absolute sprite image. `box_hit()` tests two inclusive 8-bit AABBs and returns 1/0.
+`sprite_frame id, base, frame` is the sprite-animation frame selector: call it from the
+program's animation loop to select frame `frame` at `base + frame*64`. It changes only the
+sprite data pointer; it does not move, enable, time, or automatically advance the sprite.
+The original `sprite_frame id, addr` form still selects one absolute static sprite image.
+`box_hit()` tests two inclusive 8-bit AABBs and returns 1/0.
 It is independent of the read-clears-on-access `$D01E/$D01F` collision registers.
 
 | Concept | Notes |
