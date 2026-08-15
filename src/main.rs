@@ -43,6 +43,7 @@ fn print_help() {
     println!("  --no-stub              Omit BASIC SYS stub (raw machine code at $0801)");
     println!("  --d64 [file]           Also produce a .d64 disk image (default: <output>.d64)");
     println!("  --debug                Produce .sym, .dbg and .vs debugger files");
+    println!("  --asm                  Produce a readable codegen .asm listing");
     println!("  --add <file>           Add extra file(s) to the .d64 image (repeatable)");
     println!("  -h, --help             Show this help");
     println!();
@@ -60,6 +61,7 @@ fn cmd_build(args: &[String]) {
     let mut d64_out: Option<PathBuf> = None;
     let mut extra_files: Vec<PathBuf> = Vec::new();
     let mut debug_files = false;
+    let mut asm_file = false;
 
     let mut i = 2;
     while i < args.len() {
@@ -73,6 +75,7 @@ fn cmd_build(args: &[String]) {
             "--verbose" | "-v" => verbose = true,
             "--no-stub" => basic_stub = false,
             "--debug" => debug_files = true,
+            "--asm" => asm_file = true,
             "--d64" => {
                 // --d64           → auto: <output>.d64  (empty PathBuf as sentinel)
                 // --d64 <file>    → explicit path
@@ -156,6 +159,15 @@ fn cmd_build(args: &[String]) {
             &output_path.with_extension("vs"),
             &debug_output::vice(&result.map),
         );
+    }
+
+    if asm_file {
+        let asm_path = output_path.with_extension("asm");
+        fs::write(&asm_path, &result.asm).unwrap_or_else(|e| {
+            eprintln!("Error writing {}: {e}", asm_path.display());
+            process::exit(1);
+        });
+        println!("  ASM:     {}", asm_path.display());
     }
 
     print_memory_map(&result.map, verbose);

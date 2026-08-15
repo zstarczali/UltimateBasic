@@ -1208,6 +1208,14 @@ Use `--debug` to generate debugger symbols together with the program:
 ub build demo.ub --debug
 ```
 
+Use `--asm` to write a readable 6502 codegen listing next to the PRG. The
+listing contains UB statement comments, compiler symbols, generated labels,
+instruction addresses and machine-code bytes:
+
+```text
+ub build demo.ub --asm
+```
+
 The compiler writes the files next to the `.prg`, using the output file's stem:
 
 | File | Format and purpose |

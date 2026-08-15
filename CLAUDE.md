@@ -9,6 +9,7 @@ cargo build --release
 cargo test
 ub build demo.ub -o demo.prg
 ub build demo.ub --debug       # also generate .sym, .dbg and .vs debugger files
+ub build demo.ub --asm         # also generate a readable 6502 codegen listing
 ub build demo.ub --d64 disk.d64
 ub build demo.ub --d64          # auto: demo.d64
 ub build demo.ub --d64 disk.d64 --add music.prg --add loader.prg

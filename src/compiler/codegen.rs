@@ -227,6 +227,40 @@ fn asm_opcode(mnem: &str, mode: AMode) -> Option<u8> {
     })
 }
 
+pub(crate) fn listing_opcode(opcode: u8) -> Option<(&'static str, &'static str, usize)> {
+    use AMode::*;
+    const MNEMONICS: &[&str] = &[
+        "ADC", "AND", "ASL", "BCC", "BCS", "BEQ", "BIT", "BMI", "BNE", "BPL", "BRK", "BVC", "BVS",
+        "CLC", "CLD", "CLI", "CLV", "CMP", "CPX", "CPY", "DEC", "DEX", "DEY", "EOR", "INC", "INX",
+        "INY", "JMP", "JSR", "LDA", "LDX", "LDY", "LSR", "NOP", "ORA", "PHA", "PHP", "PLA", "PLP",
+        "ROL", "ROR", "RTI", "RTS", "SBC", "SEC", "SED", "SEI", "STA", "STX", "STY", "TAX", "TAY",
+        "TSX", "TXA", "TXS", "TYA",
+    ];
+    const MODES: &[(AMode, &str, usize)] = &[
+        (Acc, "acc", 1),
+        (Imp, "imp", 1),
+        (Imm, "imm", 2),
+        (Zp, "zp", 2),
+        (Zpx, "zpx", 2),
+        (Zpy, "zpy", 2),
+        (Izx, "izx", 2),
+        (Izy, "izy", 2),
+        (Rel, "rel", 2),
+        (Abs, "abs", 3),
+        (Abx, "abx", 3),
+        (Aby, "aby", 3),
+        (Ind, "ind", 3),
+    ];
+    for &mnem in MNEMONICS {
+        for &(mode, name, size) in MODES {
+            if asm_opcode(mnem, mode) == Some(opcode) {
+                return Some((mnem, name, size));
+            }
+        }
+    }
+    None
+}
+
 fn asm_mode_size(mode: AMode) -> u16 {
     use AMode::*;
     match mode {
@@ -619,6 +653,7 @@ pub struct Codegen {
     koala: Option<KoalaData>,
     koala_show_patches: Vec<usize>,
     koala_layout_error: Option<String>,
+    listing_spans: Vec<crate::compiler::ListingSpan>,
 }
 
 /// Carry SID metadata through pre_scan → compile().
@@ -722,6 +757,7 @@ impl Codegen {
             koala: None,
             koala_show_patches: vec![],
             koala_layout_error: None,
+            listing_spans: vec![],
         }
     }
 
@@ -9227,6 +9263,19 @@ impl Codegen {
     }
 
     fn gen_stmt(&mut self, stmt: &Stmt) {
+        let start = self.code.len();
+        self.gen_stmt_inner(stmt);
+        let end = self.code.len();
+        if end > start {
+            self.listing_spans.push(crate::compiler::ListingSpan {
+                start,
+                end,
+                source: stmt_listing_name(stmt),
+            });
+        }
+    }
+
+    fn gen_stmt_inner(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::VarDecl { name, vtype, expr } => {
                 // Infer type from expr when not annotated
@@ -13841,6 +13890,32 @@ impl Codegen {
                 .filter(|name| !self.used_vars.contains(*name))
                 .cloned()
                 .collect(),
+            listing_spans: self.listing_spans.clone(),
+        }
+    }
+}
+
+fn stmt_listing_name(stmt: &Stmt) -> String {
+    match stmt {
+        Stmt::Label(name) => format!("label {name}"),
+        Stmt::Goto(name, _) => format!("goto {name}"),
+        Stmt::Gosub(name, _) => format!("gosub {name}"),
+        Stmt::Call(name, _, _) => format!("call {name}"),
+        Stmt::SubDef(name, _, _) => format!("sub {name}"),
+        Stmt::FnDef(name, _, _, _) => format!("fn {name}"),
+        Stmt::VarDecl { name, .. } => format!("var {name}"),
+        Stmt::Assign(name, _) => format!("{name} = ..."),
+        Stmt::Print { .. } => "print".into(),
+        Stmt::PrintAt { .. } => "print at".into(),
+        Stmt::AsmSource(_) => "asm { ... }".into(),
+        Stmt::AsmBytes(_) => "asm bytes".into(),
+        _ => {
+            let debug = format!("{stmt:?}");
+            debug
+                .split(['(', '{'])
+                .next()
+                .unwrap_or("statement")
+                .to_ascii_lowercase()
         }
     }
 }
