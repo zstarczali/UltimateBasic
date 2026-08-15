@@ -263,8 +263,8 @@ impl Parser {
                     .position(|w| w == b"{\"version\"")
                     .map(|offset| 2000 + offset);
                 let metadata = metadata_start
-                    .and_then(|offset| std::str::from_utf8(&bytes[offset..]).ok())
-                    .unwrap_or("");
+                    .map(|offset| String::from_utf8_lossy(&bytes[offset..]).into_owned())
+                    .unwrap_or_default();
                 let number = |key: &str| -> u8 {
                     metadata
                         .find(key)

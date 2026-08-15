@@ -5883,6 +5883,7 @@ fn map_load_accepts_visualassembler_multicolor_binary() {
     file.extend_from_slice(
         br#"{"version":1,"kind":"me-map","baseLength":2000,"settings":{"multicolor":true,"bgColor":0,"mc1Color":3,"mc2Color":14}}VA-BIN1!"#,
     );
+    file.extend_from_slice(&[0xC0, 0x00, 0xFF]);
     std::fs::write(dir.join("level.bin"), file).unwrap();
     let res = compile_with_path(
         "map load \"level.bin\"\nmap draw 0, 0",
