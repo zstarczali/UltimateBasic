@@ -564,18 +564,28 @@ var h = sprite_hit()     # sprite–sprite collision ($D01E, cleared on read)
 var b = sprite_bg_hit()  # sprite–background collision ($D01F, cleared on read)
 var x = sprite_x(0)      # read sprite 0 X position (lo byte, $D000)
 var y = sprite_y(0)      # read sprite 0 Y position ($D001)
-sprite_frame 0, $2000    # set sprite 0 data pointer only: $07F8+id = $2000>>6
-                         # (does NOT change X/Y position)
-sprite_frame 0, $2000, frame # animation: select frame at $2000 + frame*64
+sprite_frame 0, $2000          # select one static sprite image
+sprite_frame 0, $2000, frame   # select an animation frame from a frame sequence
 ```
 
 X supports full 9-bit range (0–319): use a `word` variable for runtime values > 255.
 Sprite data pointer: `data_addr` must be 64-byte aligned; stored as `addr >> 6` at `$07F8+id`.
 
-For animation, place consecutive 63-byte sprite images in 64-byte slots and pass a
-zero-based frame expression as the optional third argument. The compiler adds the
-frame index to the base VIC pointer, so the existing two-argument form remains fully
-compatible. Timing and looping stay under program control:
+#### Sprite animation with `sprite_frame`
+
+`sprite_frame` is the command used to change the displayed image of a sprite during
+animation. It changes only the sprite's data pointer; it does **not** move the sprite,
+enable it, or advance frames automatically.
+
+Store the animation images consecutively, with each 63-byte sprite image occupying one
+64-byte-aligned slot. Pass the zero-based animation frame as the third argument:
+
+```basic
+sprite_frame sprite_id, first_frame_address, frame_number
+```
+
+For example, with a base address of `$2000`, frame 0 uses `$2000`, frame 1 uses `$2040`,
+frame 2 uses `$2080`, and so on. The program controls animation timing and wrapping:
 
 ```basic
 var frame = 0
@@ -586,6 +596,9 @@ loop
   delay 5
 end
 ```
+
+The two-argument form, `sprite_frame id, address`, simply selects one static sprite image
+and remains backward compatible. Sprite position is still controlled by `sprite id,x,y`.
 
 ### Software bounding-box collision
 
@@ -643,7 +656,7 @@ RAM. A later `map load` replaces the active map for subsequent map commands.
 `map load` also accepts a VisualAssembler `me-map` `.bin` export directly:
 
 ```basic
-map load "map-color-mc++.bin"
+map load "map-multicolor.bin"
 ```
 
 The first 1000 bytes become the 40×25 character map and the next 1000 bytes become

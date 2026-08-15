@@ -14,6 +14,9 @@ interrupts, REU transfers, disk I/O, and inline 6502 assembly.
 
 Sprite support includes hardware collision registers, side-effect-free software AABB
 tests with `box_hit()`, and frame selection from consecutive sprite animation data.
+Use `sprite_frame id, base, frame` inside an animation loop to select successive images
+stored in 64-byte slots; it changes the sprite image only and does not animate or move the
+sprite automatically.
 Character tile maps can be embedded from self-describing `.ubmap` files, rendered as
 40×25 viewports, queried and modified at runtime, in normal or multicolor text mode.
 Koala Painter images can also be validated, embedded, shown in multicolor bitmap
