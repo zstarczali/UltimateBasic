@@ -1,0 +1,17 @@
+{
+  "app": "ultimate-basic",
+  "name": "project",
+  "files": [
+    {
+      "name": "basic.ub",
+      "path": "basic.ub",
+      "type": "file"
+    },
+    {
+      "type": "file",
+      "name": "features.ub",
+      "path": "features.ub"
+    }
+  ],
+  "startupFile": "basic.ub"
+}
