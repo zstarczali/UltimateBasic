@@ -1600,6 +1600,15 @@ impl Codegen {
     // Evaluate expression, result in A (lo byte only for simplicity)
     fn eval_expr(&mut self, expr: &Expr) {
         match expr {
+            Expr::StructGet {
+                arr,
+                idx,
+                field_offset,
+                field_width,
+                elem_size,
+            } => {
+                self.gen_struct_get(arr, idx, *field_offset, *field_width, *elem_size);
+            }
             Expr::Number(n) => {
                 self.emit(0xA9);
                 self.emit(*n as u8); // LDA #n
@@ -9312,6 +9321,19 @@ impl Codegen {
 
     fn gen_stmt_inner(&mut self, stmt: &Stmt) {
         match stmt {
+            // `Type X ... endType` is parser-level metadata: field layouts are
+            // resolved at parse time into StructSet/StructGet nodes. Emit nothing.
+            Stmt::TypeDef { .. } => {}
+            Stmt::StructSet {
+                arr,
+                idx,
+                field_offset,
+                field_width,
+                elem_size,
+                expr,
+            } => {
+                self.gen_struct_set(arr, idx, *field_offset, *field_width, *elem_size, expr);
+            }
             Stmt::VarDecl { name, vtype, expr } => {
                 // Infer type from expr when not annotated
                 let effective = vtype.clone().or_else(|| match expr {
@@ -14056,6 +14078,258 @@ impl Codegen {
             listing_spans: self.listing_spans.clone(),
             listing_symbols: self.listing_symbols.clone(),
             data_regions: self.data_regions.clone(),
+        }
+    }
+
+    // ── Struct-array support (`Type X ... endType` + `arr[i].field`) ──────────
+
+    /// Emit inline code that leaves `A = A * k` for a compile-time constant `k`
+    /// in 1..=128. Uses shift-and-add so the cost scales with popcount(k), not
+    /// with k itself. Callers must have `A` set to the operand on entry.
+    fn emit_mul_a_by_const(&mut self, k: u16) {
+        // Special-cases first — these compile to the tightest possible sequences
+        // and cover the vast majority of realistic struct sizes.
+        match k {
+            0 => {
+                self.emit(0xA9);
+                self.emit(0x00); // LDA #0
+                return;
+            }
+            1 => return,
+            2 => {
+                self.emit(0x0A); // ASL A
+                return;
+            }
+            4 => {
+                self.emit(0x0A);
+                self.emit(0x0A);
+                return;
+            }
+            8 => {
+                self.emit(0x0A);
+                self.emit(0x0A);
+                self.emit(0x0A);
+                return;
+            }
+            16 => {
+                self.emit(0x0A);
+                self.emit(0x0A);
+                self.emit(0x0A);
+                self.emit(0x0A);
+                return;
+            }
+            _ => {}
+        }
+        // General shift-and-add: for each set bit b in k, add (A << b) to acc.
+        // Layout:
+        //   tmp_shift = A     ; running (A << 0), (A << 1), ...
+        //   tmp_acc   = 0     ; accumulator
+        //   for b in 0..msb:
+        //     if bit b of k set: tmp_acc += tmp_shift
+        //     ASL tmp_shift
+        //   if top bit set: tmp_acc += tmp_shift
+        //   A = tmp_acc
+        let tmp_shift = self.tmp_zp;
+        self.tmp_zp += 1;
+        let tmp_acc = self.tmp_zp;
+        self.tmp_zp += 1;
+
+        self.emit(0x85);
+        self.emit(tmp_shift); // STA tmp_shift
+        self.emit(0xA9);
+        self.emit(0x00);
+        self.emit(0x85);
+        self.emit(tmp_acc); // LDA #0 ; STA tmp_acc
+
+        let mut bit = 0u16;
+        while (1u16 << bit) <= k {
+            if (k >> bit) & 1 == 1 {
+                // tmp_acc += tmp_shift  (LDA tmp_shift; CLC; ADC tmp_acc; STA tmp_acc)
+                self.emit(0xA5);
+                self.emit(tmp_shift);
+                self.emit(0x18);
+                self.emit(0x65);
+                self.emit(tmp_acc);
+                self.emit(0x85);
+                self.emit(tmp_acc);
+            }
+            // ASL tmp_shift if there's a bit above us we still might need
+            if (1u16 << (bit + 1)) <= k {
+                self.emit(0x06);
+                self.emit(tmp_shift);
+            }
+            bit += 1;
+        }
+        // Result → A
+        self.emit(0xA5);
+        self.emit(tmp_acc);
+    }
+
+    /// Build a 16-bit pointer `arr_base + idx * elem_size` in `ptr_zp / ptr_zp+1`.
+    /// The Y register is left holding the byte offset within the element, i.e.
+    /// the caller can immediately follow with `LDA (ptr_zp),Y` / `STA (ptr_zp),Y`.
+    /// `idx` may be any Expr; if it's a compile-time Number the base pointer is
+    /// pre-added so `Y = field_offset` alone is enough.
+    fn emit_struct_ptr(
+        &mut self,
+        arr: &str,
+        idx: &Expr,
+        field_offset: u16,
+        elem_size: u16,
+        ptr_zp: u8,
+    ) {
+        let base = self.arrays.get(arr).copied().unwrap_or(0xC000);
+        // Constant index → fold to a fixed pointer.
+        if let Expr::Number(n) = idx {
+            let addr = base
+                .wrapping_add((*n as u16).wrapping_mul(elem_size))
+                .wrapping_add(field_offset);
+            self.emit(0xA9);
+            self.emit(addr as u8);
+            self.emit(0x85);
+            self.emit(ptr_zp);
+            self.emit(0xA9);
+            self.emit((addr >> 8) as u8);
+            self.emit(0x85);
+            self.emit(ptr_zp + 1);
+            self.emit(0xA0);
+            self.emit(0x00); // LDY #0
+            return;
+        }
+        // Variable index: build ptr = base + idx*elem_size ; Y = field_offset.
+        self.eval_expr(idx); // A = idx
+        self.emit_mul_a_by_const(elem_size); // A = idx * elem_size
+        // ptr_lo = base_lo + A ; ptr_hi = base_hi + carry
+        self.emit(0x18); // CLC
+        self.emit(0x69);
+        self.emit(base as u8); // ADC #base_lo
+        self.emit(0x85);
+        self.emit(ptr_zp); // STA ptr_lo
+        self.emit(0xA9);
+        self.emit((base >> 8) as u8); // LDA #base_hi
+        self.emit(0x69);
+        self.emit(0x00); // ADC #0
+        self.emit(0x85);
+        self.emit(ptr_zp + 1); // STA ptr_hi
+        self.emit(0xA0);
+        self.emit(field_offset as u8); // LDY #field_offset
+    }
+
+    fn gen_struct_get(
+        &mut self,
+        arr: &str,
+        idx: &Expr,
+        field_offset: u16,
+        field_width: u8,
+        elem_size: u16,
+    ) {
+        // Constant-index fast path: emit a bare LDA absolute — no pointer needed.
+        if let Expr::Number(n) = idx {
+            let base = self.arrays.get(arr).copied().unwrap_or(0xC000);
+            let addr = base
+                .wrapping_add((*n as u16).wrapping_mul(elem_size))
+                .wrapping_add(field_offset);
+            // For int field: result in A.
+            // For word field: caller (gen_word_assign) may re-issue for hi byte;
+            // here we conservatively load only the lo byte into A, matching the
+            // rest of eval_expr's 8-bit-in-A convention.
+            let _ = field_width;
+            self.emit(0xAD);
+            self.emit16(addr); // LDA addr
+            return;
+        }
+        let _ = field_width;
+        let ptr = self.tmp_zp;
+        self.tmp_zp += 2;
+        self.emit_struct_ptr(arr, idx, field_offset, elem_size, ptr);
+        // LDA (ptr),Y  → A = arr[i].field lo byte
+        self.emit(0xB1);
+        self.emit(ptr);
+    }
+
+    fn gen_struct_set(
+        &mut self,
+        arr: &str,
+        idx: &Expr,
+        field_offset: u16,
+        field_width: u8,
+        elem_size: u16,
+        val_expr: &Expr,
+    ) {
+        let base = self.arrays.get(arr).copied().unwrap_or(0xC000);
+        // Constant-index fast path.
+        if let Expr::Number(n) = idx {
+            let addr = base
+                .wrapping_add((*n as u16).wrapping_mul(elem_size))
+                .wrapping_add(field_offset);
+            if field_width == 2 {
+                // Evaluate 16-bit expr into a temp pair, then STA lo/hi.
+                let tmp_lo = self.tmp_zp;
+                self.tmp_zp += 2;
+                if !self.gen_word_assign(tmp_lo, val_expr) {
+                    self.eval_expr(val_expr);
+                    self.emit(0x85);
+                    self.emit(tmp_lo);
+                    self.emit(0xA9);
+                    self.emit(0x00);
+                    self.emit(0x85);
+                    self.emit(tmp_lo + 1);
+                }
+                self.emit(0xA5);
+                self.emit(tmp_lo);
+                self.emit(0x8D);
+                self.emit16(addr);
+                self.emit(0xA5);
+                self.emit(tmp_lo + 1);
+                self.emit(0x8D);
+                self.emit16(addr.wrapping_add(1));
+            } else {
+                self.eval_expr(val_expr);
+                self.emit(0x8D);
+                self.emit16(addr); // STA addr
+            }
+            return;
+        }
+        // Variable index path.
+        // Evaluate value first (into scratch), then build the pointer, then STA.
+        // For word fields, use gen_word_assign to a temp pair.
+        if field_width == 2 {
+            let tmp_lo = self.tmp_zp;
+            self.tmp_zp += 2;
+            if !self.gen_word_assign(tmp_lo, val_expr) {
+                self.eval_expr(val_expr);
+                self.emit(0x85);
+                self.emit(tmp_lo);
+                self.emit(0xA9);
+                self.emit(0x00);
+                self.emit(0x85);
+                self.emit(tmp_lo + 1);
+            }
+            let ptr = self.tmp_zp;
+            self.tmp_zp += 2;
+            self.emit_struct_ptr(arr, idx, field_offset, elem_size, ptr);
+            self.emit(0xA5);
+            self.emit(tmp_lo);
+            self.emit(0x91);
+            self.emit(ptr); // STA (ptr),Y   lo
+            self.emit(0xC8); // INY
+            self.emit(0xA5);
+            self.emit(tmp_lo + 1);
+            self.emit(0x91);
+            self.emit(ptr); // STA (ptr),Y   hi
+        } else {
+            let tmp_v = self.tmp_zp;
+            self.tmp_zp += 1;
+            self.eval_expr(val_expr);
+            self.emit(0x85);
+            self.emit(tmp_v);
+            let ptr = self.tmp_zp;
+            self.tmp_zp += 2;
+            self.emit_struct_ptr(arr, idx, field_offset, elem_size, ptr);
+            self.emit(0xA5);
+            self.emit(tmp_v);
+            self.emit(0x91);
+            self.emit(ptr); // STA (ptr),Y
         }
     }
 }

@@ -71,6 +71,27 @@ as `data`, maps, sprite/character definitions, lookup tables, SID/Koala payloads
 
 ## What's new in 1.5.4
 
+- Added **`type ... endtype` structs**. Define a fixed layout of `int` (1 byte) or
+  `word` (2 bytes) fields, then allocate an array of instances with the same
+  syntax as any other array:
+
+  ```basic
+  type TEntity
+    var x:  int
+    var y:  int
+    var hp: word
+  endtype
+
+  const N = 8
+  var enemies: TEntity = array(N)   # N × 4 = 32 bytes at $C000
+  enemies[0].x  = 5
+  enemies[i].hp = enemies[i].hp + 1
+  ```
+
+  Constant indices fold to `LDA/STA absolute`; variable indices emit a
+  shift-and-add `idx * elem_size` multiplier followed by `(ptr),Y` access.
+  See `examples/type_demo.ub`. Struct-typed sub/fn parameters, default field
+  values, and nested struct fields are not yet implemented.
 - **Count-down `for`/`loop`** with negative constant `step` now works correctly.
   Previously the exit test was unsigned-only, so `for i = 20 to 0 step -2` either
   ran zero iterations or looped forever depending on whether it wrapped past 0.

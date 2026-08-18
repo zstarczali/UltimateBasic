@@ -29,6 +29,15 @@ pub enum Expr {
     Clamp(Box<Expr>, Box<Expr>, Box<Expr>), // clamp(val, lo, hi) — clamp val to [lo, hi] range (8-bit unsigned)
     Sgn(Box<Expr>),
     ArrayGet(String, Box<Expr>), // arr[idx]
+    /// `arr[idx].field` — read a struct field inside a struct-array element.
+    /// Offset/width are resolved by the parser from the type table.
+    StructGet {
+        arr: String,
+        idx: Box<Expr>,
+        field_offset: u16,
+        field_width: u8, // 1 or 2
+        elem_size: u16,
+    },
     ChrStr(Box<Expr>),           // chr$(n) — character with PETSCII code n
     StrN(Box<Expr>),             // str$(n) — 8-bit integer → 3-digit null-terminated decimal string
     SpriteHit,   // sprhit()    — read $D01E (sprite–sprite collision, cleared on read)
@@ -92,6 +101,9 @@ pub enum VarType {
     Word,
     Array,
     WordArray,
+    /// Array-of-struct: elements are instances of a user-defined `Type`.
+    /// The type name is looked up in the parser's type table for field offsets.
+    StructArray(String),
 }
 
 /// REU (RAM Expansion Unit) transfer type.
@@ -144,6 +156,23 @@ pub enum Stmt {
     },
     Assign(String, Expr),
     ArraySet(String, Expr, Expr), // arr[idx] = val
+    /// `Type Tname ... endType` — user-defined struct.
+    /// Fields are (name, VarType); only Int and Word are supported for now.
+    TypeDef {
+        name: String,
+        fields: Vec<(String, VarType)>,
+    },
+    /// `arr[idx].field = expr` — write a struct field inside a struct-array
+    /// element. Offset/width are resolved by the parser from the type table
+    /// so codegen is self-contained.
+    StructSet {
+        arr: String,
+        idx: Expr,
+        field_offset: u16,
+        field_width: u8, // 1 or 2
+        elem_size: u16,  // stride between successive elements
+        expr: Expr,
+    },
     Print {
         args: Vec<Expr>,
         no_newline: bool,

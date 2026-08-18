@@ -1,6 +1,38 @@
 Ultimate Basic v1.5.4 – Release Notes
 ======================================
 
+2026-08-18 – Struct types (`type ... endtype`)
+--------------------------------------------------
+  - New user-defined struct types with `type NAME ... endtype` blocks. Fields
+    are declared inside as `var name: int` or `var name: word`. Element size is
+    the sum of field widths (no padding).
+      type TEntity
+        var x:  int
+        var y:  int
+        var hp: word           # 1 + 1 + 2 = 4 bytes per element
+      endtype
+  - Array-of-struct declarations look like regular arrays:
+      var enemies: TEntity = array(N)   ; allocates N * elem_size bytes at $C000+
+  - Field access on both sides of assignment:
+      enemies[0].x = 5                  ; constant idx → STA absolute
+      enemies[i].hp = enemies[i].hp + 1 ; variable idx → shift-add mul + (ptr),Y
+  - Constant-index writes/reads fold to bare LDA/STA absolute. Variable-index
+    access emits a small shift-and-add multiplier for idx * elem_size (uses
+    ASL A chains for power-of-two sizes, or a shift-add sequence for arbitrary
+    sizes via two scratch zero-page bytes), then indexed (ptr),Y access.
+  - Word fields write both bytes (little-endian): STA addr / STA addr+1 for
+    constant idx, STA (ptr),Y ; INY ; STA (ptr),Y for variable idx.
+  - The parser resolves `arr[i].field` into Stmt::StructSet and Expr::StructGet
+    nodes that carry (field_offset, field_width, elem_size) — codegen is
+    self-contained and needs no type table lookup.
+  - Not yet implemented in this release: struct-typed sub/fn parameters,
+    default field values (parsed for compatibility with the proposal but not
+    initialized at allocation time), nested struct fields, multi-dimensional
+    struct arrays. Errors reported: struct-typed var without array(N)
+    initializer, and unknown-field access.
+  - Added `examples/type_demo.ub` and CPU-run integration tests for constant
+    and variable index, int and word field widths, and the unknown-field error.
+
 2026-08-18 – Count-down for-loop fix
 --------------------------------------------------
   - `for` / `loop` with a negative constant `step` (e.g. `for i = 20 to 0 step -2`)
