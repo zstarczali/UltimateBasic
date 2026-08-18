@@ -26,8 +26,6 @@ for r = 0 to ROWS - 1
   next
 next
 
-# a=getch()
-
 # Print the table
 cls
 var v = 0

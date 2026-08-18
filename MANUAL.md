@@ -1,4 +1,4 @@
-# Ultimate Basic v1.5.2 — Language Manual
+# Ultimate Basic v1.5.3 — Language Manual
 
 Complete language and CLI reference for Ultimate Basic, a BASIC-like language that
 compiles directly to 6502 machine code for the Commodore 64. Output: `.prg` files
@@ -280,7 +280,7 @@ times[i] = $5678         # variable index → ASL A for stride; (ptr),Y × 2
 var t: word = times[1]   # LDA $C002, LDA $C003
 ```
 
-**Multi-dimensional arrays**
+**Multi-dimensional arrays** (new in 1.5.3)
 
 Arrays may be declared with more than one dimension. They are stored
 **row-major** and indexed with a comma-separated subscript list. The total

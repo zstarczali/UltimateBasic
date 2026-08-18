@@ -1,3 +1,40 @@
+Ultimate Basic v1.5.3 – Release Notes
+======================================
+
+2026-08-18 – Multi-dimensional arrays
+--------------------------------------------------
+  - Arrays can now be declared with more than one dimension using a
+    comma-separated dimension list, for both byte and word arrays:
+      var grid = array(8, 8)        # 8x8 = 64 bytes
+      var wm   = array_word(4, 4)   # 4x4 word elements = 32 bytes
+  - Elements are indexed with a comma-separated subscript list and stored
+    row-major; the flat offset is base + i0*(d1*..) + i1*(d2*..) + ... :
+      grid[row, col] = 42
+      var v = grid[row, col]
+  - Any number of dimensions is supported. Dimensions must be compile-time
+    constants (integer literals or `const` values).
+  - When every subscript is a constant the address is folded at compile time to a
+    single absolute store/load; a variable subscript emits the row*stride + col
+    computation followed by an indexed (ptr),Y access.
+  - A single subscript into a multi-dimensional array is still allowed and is
+    treated as a flat/linear index (e.g. grid[10]).
+  - Indexing with a subscript count that is neither 1 nor the declared rank is
+    reported as a compile-time error.
+  - Implemented entirely in the parser (multi-index folds to one flat index
+    expression), so code generation is unchanged.
+  - Added examples/array2d_demo.ub and integration tests covering constant and
+    variable indices, row-major layout, word-element stride, linear access,
+    const-derived dimensions, and the wrong-rank error.
+
+2026-08-18 – PETSCII bracket encoding fix
+--------------------------------------------------
+  - Fixed string encoding of the '[' , ']' and '^' characters, which previously
+    fell through to the unknown-character placeholder and printed as '?'.
+  - They now emit their correct C64 codes ($5B, $5D, $5E). These code points are
+    identical in the uppercase/graphics and lowercase charsets, so the fix is
+    correct in both `uppercase` and `lowercase` modes.
+  - Added a regression test for bracket encoding in both charset modes.
+
 Ultimate Basic v1.5.2 – Release Notes
 ======================================
 
