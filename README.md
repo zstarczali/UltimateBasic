@@ -2,7 +2,7 @@
 
 <img src="assets/ultimate-basic-banner.png" alt="Ultimate Basic C64 banner" width="50%">
 
-Current version: **1.5.3**
+Current version: **1.5.4**
 
 A modern BASIC-like language that compiles directly to 6502 machine code for the
 **Commodore 64** and **Commodore 64 Ultimate**. It produces `.prg` files that run in
@@ -53,6 +53,7 @@ ub build demo.ub --d64 disk.d64 --add music.prg   # embed extra files in the .d6
 | `--asm` | Also produce a readable 6502 codegen listing as `<output>.asm` |
 | `--d64 [file]` | Also produce a `.d64` (default: `<output>.d64`) |
 | `--add <file>` | Add an extra file to the `.d64` (repeatable) |
+| `--explicit` | Require a `:type` annotation on every `var`, `sub`-param, and `fn`-param |
 
 With `--debug`, the compiler writes three files beside the program: an importable
 KickAssembler `.sym`, a C64Debugger/RetroDebugger `.dbg`, and a VICE monitor `.vs`.
@@ -67,6 +68,31 @@ bytes. Compiler-generated helper routines are included in the same listing.
 The output uses KickAssembler syntax and can be assembled again. Known data regions—such
 as `data`, maps, sprite/character definitions, lookup tables, SID/Koala payloads, and
 `incbin` content—are emitted as `.byte` blocks instead of being mistaken for instructions.
+
+## What's new in 1.5.4
+
+- **Count-down `for`/`loop`** with negative constant `step` now works correctly.
+  Previously the exit test was unsigned-only, so `for i = 20 to 0 step -2` either
+  ran zero iterations or looped forever depending on whether it wrapped past 0.
+  The compiler now picks the exit-branch encoding from the sign of the constant
+  `step`, and emits an extra post-increment `BCS` check that catches the 8-bit
+  underflow when counting down to (or through) 0.
+- A `for`/`loop` with default `step +1` where `from > to` — e.g.
+  `for i = 10 to 1` — used to skip the body silently. It is now a compile-time
+  error directing you to `step -1`:
+
+  ```
+  for-loop: from (10) > to (1) with default step +1 loops 0 times
+    — use 'step -1' to count down
+  ```
+- Added the **`--explicit`** CLI flag. When passed to `ub build`, every `var`,
+  `sub`-param, and `fn`-param declaration must carry a `:type` annotation;
+  arrays and `const` are unaffected. The flag is a build-time switch, so nothing
+  in the source changes to opt in or out. See `examples/explicit_demo.ub` and
+  `examples/explicit_errors_demo.ub`.
+- Added `examples/countdown_demo.ub` and `examples/countdown_errors_demo.ub`,
+  plus new integration tests that both check the emitted branch encoding and
+  run the loop on the test CPU to confirm it terminates.
 
 ## What's new in 1.5.3
 

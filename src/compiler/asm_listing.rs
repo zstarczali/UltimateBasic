@@ -262,7 +262,7 @@ mod tests {
     fn listing_contains_symbols_statements_and_instructions() {
         let result = compile(
             "var x = 1\nx = x + 1\nprint x\n",
-            &CompileOptions { basic_stub: false },
+            &CompileOptions { basic_stub: false, explicit: false },
         );
         assert!(result.asm.contains(".label x                 = $02"));
         assert!(result.asm.contains("; UB: var x"));
@@ -274,7 +274,7 @@ mod tests {
     fn listing_names_helpers_and_keeps_data_as_bytes() {
         let result = compile(
             "graphics on\nplot 1, 2\nvar x = 0\ndata 1, 2, 3\nread x\n",
-            &CompileOptions { basic_stub: false },
+            &CompileOptions { basic_stub: false, explicit: false },
         );
         assert!(result.asm.contains("* = $0801"));
         assert!(result.asm.contains("ub_helper_plot:"));

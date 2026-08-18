@@ -1,3 +1,54 @@
+Ultimate Basic v1.5.4 – Release Notes
+======================================
+
+2026-08-18 – Count-down for-loop fix
+--------------------------------------------------
+  - `for` / `loop` with a negative constant `step` (e.g. `for i = 20 to 0 step -2`)
+    used to compile but never enter the body, and — for values that wrap past 0 —
+    loop forever. The exit test was unsigned-only, so counting down from 20 to 0
+    kept re-entering after the 254 (= -2 mod 256) wrap-around.
+  - The compiler now inspects the sign of a constant `step` at code generation:
+      * positive step or default +1  → BCC/BEQ to body, unchanged (exit when var > to)
+      * negative constant step       → BCS to body (exit when var < to), plus a
+        post-increment `BCS loop_top ; JMP exit` that catches the ADC underflow
+        (carry clear) when var wraps below 0. This is what keeps
+        `for i = N to 0 step -k` finite.
+  - A default-step `for`/`loop` where `from > to` (e.g. `loop i = 10 to 1`, no
+    `step`) used to silently skip the body — 0 iterations, no diagnostic. It is
+    now a compile-time error:
+      "for-loop: from (10) > to (1) with default step +1 loops 0 times
+        — use 'step -1' to count down"
+  - Non-constant `step` (variable or expression) is still treated as positive at
+    compile time. Use a `while` loop when you need count-down with a runtime step.
+  - Added `examples/countdown_demo.ub` (working forms) and
+    `examples/countdown_errors_demo.ub` (the compile-time error form).
+  - Added integration tests: a codegen check that count-down loops emit `BCS`
+    for the body branch, a check that count-up loops still emit `BCC` + `BEQ`,
+    `should_panic` coverage of the from>to default-step error, and CPU-run tests
+    that execute the loop and verify it terminates with the expected iteration count.
+
+2026-08-18 – --explicit CLI flag
+--------------------------------------------------
+  - Added the `--explicit` build flag:
+      ub build myprog.ub --explicit
+    With the flag, every `var`, `sub`-parameter, and `fn`-parameter declaration
+    must carry a `:type` annotation. Untyped declarations become compile-time
+    errors:
+      line 12: 'explicit' mode: 'var loose' has no type
+        — use 'var loose: int|word|float|string'
+      line 14: 'explicit' mode: parameter 'a' has no type
+        — use 'a: int|word|float|string'
+  - Array declarations (`array(N)`, `array_word(N)`) and `const NAME = value`
+    are unaffected — their type is fixed by the declaration form.
+  - The flag is CLI-only; no source-level directive keyword. Existing programs
+    compile unchanged without the flag. Add it to a Makefile / build script to
+    enforce typed style project-wide.
+  - Added `examples/explicit_demo.ub` (annotated code that builds under the flag)
+    and `examples/explicit_errors_demo.ub` (loose code that builds without the
+    flag but reports errors with it).
+  - Added integration tests covering the typed-ok case, untyped var / sub-param /
+    fn-param errors, and the without-flag regression.
+
 Ultimate Basic v1.5.3 – Release Notes
 ======================================
 

@@ -1,0 +1,53 @@
+### Count-down for-loop demo
+### Demonstrates the negative-step and reversed for..next forms.
+### Positive step counting up: unchanged behavior.
+### Negative step counting down: now iterates instead of silently skipping.
+
+var i: int = 0
+
+cls
+color border 6
+color bg    0
+color text  1
+
+print "counting up (default step +1):"
+for i = 1 to 5
+  print i
+next i
+
+print
+print "counting up with step 2:"
+for i = 0 to 10 step 2
+  print i
+next i
+
+print
+print "counting down with step -1:"
+for i = 5 to 1 step -1
+  print i
+next i
+
+print
+print "counting down with step -2:"
+for i = 20 to 0 step -2
+  print i
+next i
+
+print
+print "reversed with variable stop value:"
+var stop_at: int = 3
+for i = 10 to stop_at step -1
+  print i
+next i
+
+print
+print "done."
+
+# note: the following would now be a COMPILE-TIME ERROR because it
+# would loop 0 times silently — the compiler tells you to use step -1:
+#
+#   for i = 10 to 1        # ERROR: from (10) > to (1) with default step +1
+#     print i
+#   next
+
+bye
