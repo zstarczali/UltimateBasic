@@ -45,6 +45,7 @@ fn print_help() {
     println!("  --debug                Produce .sym, .dbg and .vs debugger files");
     println!("  --asm                  Produce a readable codegen .asm listing");
     println!("  --add <file>           Add extra file(s) to the .d64 image (repeatable)");
+    println!("  --explicit             Require :type on every var / sub-param / fn-param");
     println!("  -h, --help             Show this help");
     println!();
     println!("Examples:");
@@ -62,6 +63,7 @@ fn cmd_build(args: &[String]) {
     let mut extra_files: Vec<PathBuf> = Vec::new();
     let mut debug_files = false;
     let mut asm_file = false;
+    let mut explicit = false;
 
     let mut i = 2;
     while i < args.len() {
@@ -76,6 +78,7 @@ fn cmd_build(args: &[String]) {
             "--no-stub" => basic_stub = false,
             "--debug" => debug_files = true,
             "--asm" => asm_file = true,
+            "--explicit" => explicit = true,
             "--d64" => {
                 // --d64           → auto: <output>.d64  (empty PathBuf as sentinel)
                 // --d64 <file>    → explicit path
@@ -122,7 +125,10 @@ fn cmd_build(args: &[String]) {
 
     let output_path = output.unwrap_or_else(|| input.with_extension("prg"));
 
-    let opts = CompileOptions { basic_stub };
+    let opts = CompileOptions {
+        basic_stub,
+        explicit,
+    };
     let result = compile_with_path(&source, &opts, Some(&input));
 
     if !result.errors.is_empty() {

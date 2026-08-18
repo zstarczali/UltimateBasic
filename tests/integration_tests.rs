@@ -4,16 +4,16 @@
 use ultimate_basic::compiler::{CompileOptions, compile, compile_with_path};
 
 fn compile_stub(src: &str) -> Vec<u8> {
-    compile(src, &CompileOptions { basic_stub: true }).prg
+    compile(src, &CompileOptions { basic_stub: true, explicit: false }).prg
 }
 
 fn compile_raw(src: &str) -> Vec<u8> {
-    compile(src, &CompileOptions { basic_stub: false }).prg
+    compile(src, &CompileOptions { basic_stub: false, explicit: false }).prg
 }
 
 #[test]
 fn graphics_on_block_compiles() {
-    let res = compile("graphics on block", &CompileOptions { basic_stub: false });
+    let res = compile("graphics on block", &CompileOptions { basic_stub: false, explicit: false });
     assert!(
         res.errors.is_empty(),
         "expected graphics on block to compile without errors, got {:?}",
@@ -26,7 +26,7 @@ fn graphics_on_block_compiles() {
 fn plot4_compiles() {
     let res = compile(
         "graphics on block\nplot4 1, 2",
-        &CompileOptions { basic_stub: false },
+        &CompileOptions { basic_stub: false, explicit: false },
     );
     assert!(
         res.errors.is_empty(),
@@ -39,7 +39,7 @@ fn plot4_compiles() {
 fn circle4_compiles() {
     let res = compile(
         "graphics on block\ngcls\ncircle4 40, 25, 18",
-        &CompileOptions { basic_stub: false },
+        &CompileOptions { basic_stub: false, explicit: false },
     );
     assert!(
         res.errors.is_empty(),
@@ -52,7 +52,7 @@ fn circle4_compiles() {
 fn scroll_x_column_modes_compile() {
     let res = compile(
         "scroll x 7 narrow\nscroll x 0 wide",
-        &CompileOptions { basic_stub: false },
+        &CompileOptions { basic_stub: false, explicit: false },
     );
     assert!(
         res.errors.is_empty(),
@@ -63,7 +63,7 @@ fn scroll_x_column_modes_compile() {
 
 #[test]
 fn scroll_row_left_compiles() {
-    let res = compile("scroll row 12 left", &CompileOptions { basic_stub: false });
+    let res = compile("scroll row 12 left", &CompileOptions { basic_stub: false, explicit: false });
     assert!(
         res.errors.is_empty(),
         "expected scroll row left to compile without errors, got {:?}",
@@ -638,7 +638,7 @@ fn forward_sub_call_compiles() {
 
 #[test]
 fn undefined_sub_reports_error() {
-    let res = compile("call missing", &CompileOptions { basic_stub: false });
+    let res = compile("call missing", &CompileOptions { basic_stub: false, explicit: false });
     assert!(!res.errors.is_empty());
     assert!(res.errors[0].contains("Undefined subroutine"));
 }
@@ -738,7 +738,7 @@ fn line_produces_larger_code_than_plot() {
 fn circle_emits_helper_and_compiles() {
     let res = compile(
         "graphics on\ncircle 160, 100, 32\ngraphics off",
-        &CompileOptions { basic_stub: false },
+        &CompileOptions { basic_stub: false, explicit: false },
     );
     assert!(
         res.errors.is_empty(),
@@ -759,7 +759,7 @@ fn circle_emits_helper_and_compiles() {
 fn circle_produces_larger_code_than_plot() {
     let res = compile(
         "var cx: word = 160\ngraphics on\ncircle cx, 100, 32\ngraphics off",
-        &CompileOptions { basic_stub: false },
+        &CompileOptions { basic_stub: false, explicit: false },
     );
     assert!(
         res.errors.is_empty(),
@@ -1030,7 +1030,7 @@ fn empty_program_compiles() {
 #[test]
 fn demo_game_compiles() {
     let src = "# NEXTBASIC DEMO\ncls\ncolor text 14\ncolor bg 0\nvar n = 1\nwhile n < 6\n  print \"  n = \", n\n  n = n + 1\nend";
-    let res = compile(src, &CompileOptions { basic_stub: true });
+    let res = compile(src, &CompileOptions { basic_stub: true, explicit: false });
     assert!(
         res.errors.is_empty(),
         "Should compile without errors: {:?}",
@@ -1080,7 +1080,7 @@ end
 greet()
 sys $FFD2
 ";
-    let res = compile(src, &CompileOptions { basic_stub: true });
+    let res = compile(src, &CompileOptions { basic_stub: true, explicit: false });
     assert!(
         res.errors.is_empty(),
         "Should compile without errors. Got: {:?}",
@@ -1093,14 +1093,14 @@ sys $FFD2
 fn logical_expression_combinations() {
     // Test nested logical operations
     let src = "var r = not 0 and 1 or 0";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty());
 }
 
 #[test]
 fn chained_comparisons() {
     let src = "var a = 1 == 1\nvar b = 2 != 3\nvar c = 4 < 5\nvar d = 5 > 4\nvar e = 6 <= 6\nvar f = 7 >= 7";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty());
 }
 
@@ -1115,7 +1115,7 @@ loop i = 1 to 2
   end
 end
 ";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty());
 }
 
@@ -1128,14 +1128,14 @@ loop
   end
 end
 ";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty());
 }
 
 #[test]
 fn int_to_str_compiles() {
     let src = "var score = 42\nnumstr score, $0340";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty());
 }
 
@@ -1158,7 +1158,7 @@ fn string_concat_in_print() {
 fn string_var_concat_in_print() {
     // print s1 + s2 — both are string vars, printed sequentially
     let src = "var s1 = \"Hello \"\nvar s2 = \"World\"\nprint s1 + s2";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     // Should use LDA (ptr),Y = $B1 for both string vars
     let count = res.prg[2..].iter().filter(|&&b| b == 0xB1).count();
@@ -1172,7 +1172,7 @@ fn string_var_concat_in_print() {
 fn string_literal_concat_with_var() {
     // print "Name: " + s  (literal + string var)
     let src = "var name = \"Alice\"\nprint \"Name: \" + name";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     // $B1 = LDA (ptr),Y for string var
     assert!(res.prg[2..].contains(&0xB1));
@@ -1197,7 +1197,7 @@ fn number_add_still_works_in_print() {
 fn mixed_num_string_concat() {
     // "Score: " + score  (string literal + numeric var)
     let src = "var score = 42\nprint \"Score: \" + score";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     // 'S' in PETSCII = $53
     assert!(res.prg.contains(&0x53));
@@ -1217,7 +1217,7 @@ fn string_concat_produces_same_as_literal() {
 #[test]
 fn string_concat_triple() {
     let src = "print \"A\" + \"B\" + \"C\"";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty());
     assert!(res.prg.contains(&0x41)); // 'A' in PETSCII
     assert!(res.prg.contains(&0x42)); // 'B'
@@ -1229,7 +1229,7 @@ fn string_concat_triple() {
 #[test]
 fn for_next_compiles() {
     let src = "var i = 0\nfor i = 1 to 5\n  print i\nnext";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     let bytes = &res.prg[2..];
     assert!(bytes.contains(&0xC5)); // CMP zp (for loop exit check)
@@ -1238,7 +1238,7 @@ fn for_next_compiles() {
 #[test]
 fn for_next_with_step_compiles() {
     let src = "var i = 0\nfor i = 0 to 20 step 2\n  print i\nnext i";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
 }
 
@@ -1251,6 +1251,147 @@ fn for_next_generates_same_code_as_loop() {
         a, b,
         "for..next and loop..end should produce identical code"
     );
+}
+
+#[test]
+fn for_next_step_neg2_to_zero_terminates_and_iterates_11_times() {
+    // Regression: `for i = 20 to 0 step -2` used to compile but loop forever
+    // because unsigned CMP treats the wrapped value (0 - 2 = 254) as >= 0.
+    // After the fix, the post-increment BCS-check exits when ADC underflows.
+    // Expected trace: i = 20, 18, 16, ..., 2, 0  → 11 body iterations.
+    let src = "\
+var i: int = 0
+var cnt: int = 0
+for i = 20 to 0 step -2
+  inc cnt
+next i
+poke $C000, cnt
+poke $C001, 42
+";
+    let prg = compile_raw(src);
+    let mut cpu = TestCpu::new(&prg);
+    cpu.run_until_main_rts(100_000);
+    assert_eq!(cpu.mem[0xC000], 11, "loop should have run exactly 11 body iterations");
+    assert_eq!(cpu.mem[0xC001], 42, "sentinel not written → loop failed to terminate");
+}
+
+#[test]
+fn for_next_step_neg1_to_zero_terminates() {
+    // Same underflow risk, tighter: `step -1` down to 0.
+    // Expected trace: i = 5, 4, 3, 2, 1, 0  → 6 iterations.
+    let src = "\
+var i: int = 0
+var cnt: int = 0
+for i = 5 to 0 step -1
+  inc cnt
+next i
+poke $C000, cnt
+";
+    let prg = compile_raw(src);
+    let mut cpu = TestCpu::new(&prg);
+    cpu.run_until_main_rts(100_000);
+    assert_eq!(cpu.mem[0xC000], 6);
+}
+
+#[test]
+fn for_next_negative_step_compiles() {
+    // Counting down with negative step: must compile clean and emit BCS ($B0)
+    // instead of BCC ($90) as the loop-body branch.
+    let res = compile(
+        "var i = 0\nfor i = 20 to 0 step -2\n  print i\nnext i",
+        &CompileOptions { basic_stub: false, explicit: false },
+    );
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    let bytes = &res.prg[2..];
+    assert!(
+        bytes.contains(&0xB0),
+        "count-down for-loop should emit BCS ($B0) for the exit test"
+    );
+}
+
+#[test]
+fn for_next_positive_step_still_uses_bcc() {
+    // Regression: counting up must still use BCC ($90) + BEQ ($F0)
+    let prg = compile_raw("var i = 0\nfor i = 0 to 10 step 2\n  print i\nnext");
+    let bytes = &prg[2..];
+    assert!(bytes.contains(&0x90), "count-up for-loop should emit BCC");
+    assert!(bytes.contains(&0xF0), "count-up for-loop should emit BEQ");
+}
+
+#[test]
+#[should_panic(expected = "for-loop: from (10) > to (1) with default step +1")]
+fn for_loop_from_gt_to_with_default_step_panics() {
+    // `loop i = 10 to 1` (no explicit step -1) is a silent-skip trap.
+    // We now reject it at compile time.
+    let _ = compile_raw("var i = 0\nloop i = 10 to 1\n  print i\nend");
+}
+
+#[test]
+#[should_panic(expected = "for-loop: from (20) > to (0) with default step +1")]
+fn for_next_from_gt_to_with_default_step_panics() {
+    let _ = compile_raw("var i = 0\nfor i = 20 to 0\n  print i\nnext");
+}
+
+// ── explicit CLI flag ──────────────────────────────────────────────────────
+
+fn opts_explicit() -> CompileOptions {
+    CompileOptions {
+        basic_stub: false,
+        explicit: true,
+    }
+}
+
+#[test]
+fn explicit_typed_vars_and_params_compile() {
+    let src = "var i: int = 5\n\
+               var w: word = $1234\n\
+               var s: string = \"HI\"\n\
+               sub greet(name: string, n: int)\n  print name\nend\n\
+               fn double(x: int): int\n  return x + x\nend\n\
+               greet(\"HI\", 2)\n";
+    let res = compile(src, &opts_explicit());
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+}
+
+#[test]
+fn explicit_var_without_type_is_error() {
+    let src = "var x = 5\n";
+    let res = compile(src, &opts_explicit());
+    assert!(
+        res.errors.iter().any(|e| e.contains("'var x' has no type")),
+        "expected explicit-mode error, got: {:?}",
+        res.errors
+    );
+}
+
+#[test]
+fn explicit_sub_param_without_type_is_error() {
+    let src = "sub foo(a)\n  print a\nend\nfoo(1)\n";
+    let res = compile(src, &opts_explicit());
+    assert!(
+        res.errors.iter().any(|e| e.contains("parameter 'a' has no type")),
+        "expected explicit-mode error, got: {:?}",
+        res.errors
+    );
+}
+
+#[test]
+fn explicit_fn_param_without_type_is_error() {
+    let src = "fn f(x): int\n  return x\nend\nprint f(3)\n";
+    let res = compile(src, &opts_explicit());
+    assert!(
+        res.errors.iter().any(|e| e.contains("parameter 'x' has no type")),
+        "expected explicit-mode error, got: {:?}",
+        res.errors
+    );
+}
+
+#[test]
+fn without_explicit_flag_untyped_var_is_allowed() {
+    // Regression: without --explicit, untyped vars must still compile.
+    let src = "var x = 5\nprint x\n";
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
 }
 
 // ── Bitwise operators ───────────────────────────────────────────────────────
@@ -1447,7 +1588,7 @@ fn print_empty_is_just_newline() {
 #[test]
 fn print_var_var_string() {
     let src = "var x = 3\nvar y = 7\nprint x, y, \"END\"";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty());
     // 'E' = $45 in PETSCII
     assert!(res.prg.contains(&0x45), "Should contain PETSCII 'E'");
@@ -1456,7 +1597,7 @@ fn print_var_var_string() {
 #[test]
 fn print_string_var_mixed() {
     let src = "var n = 42\nprint \"N=\", n, \" OK\"";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty());
     let prg = &res.prg;
     // 'N' in PETSCII = $4E
@@ -1474,7 +1615,7 @@ end
 set_border(6)
 set_border(2)
 ";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     // JSR should appear for both calls
     let jsr_count = res.prg[2..].windows(3).filter(|w| w[0] == 0x20).count();
@@ -1489,7 +1630,7 @@ sub add_vals(a, b)
 end
 add_vals(10, 20)
 ";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     let bytes = &res.prg[2..];
     // Args stored to ZP before JSR
@@ -1505,7 +1646,7 @@ fn array_set_constant_index() {
 var scores = array(5)
 scores[0] = 42
 ";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     // STA $C000 absolute
     let has_sta_c000 = res.prg[2..].windows(3).any(|w| w == &[0x8D, 0x00, 0xC0]);
@@ -1519,7 +1660,7 @@ var scores = array(10)
 var idx = 3
 scores[idx] = 99
 ";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     let bytes = &res.prg[2..];
     assert!(
@@ -1535,7 +1676,7 @@ var scores = array(5)
 scores[2] = 7
 var v = scores[2]
 ";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     // LDA $C002 absolute
     let has_lda = res.prg[2..].windows(3).any(|w| w == &[0xAD, 0x02, 0xC0]);
@@ -1549,7 +1690,7 @@ var scores = array(10)
 var i = 5
 var v = scores[i]
 ";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     let bytes = &res.prg[2..];
     assert!(
@@ -1566,7 +1707,7 @@ var b = array(8)
 a[0] = 1
 b[0] = 2
 ";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     // a at $C000, b at $C008
     let has_a = res.prg[2..].windows(3).any(|w| w == &[0x8D, 0x00, 0xC0]);
@@ -1581,7 +1722,7 @@ b[0] = 2
 fn square_brackets_encode_to_petscii() {
     // '[' and ']' must map to $5B/$5D, not the '?' ($3F) unknown-char fallback.
     for src in ["print \"[x]\"", "lowercase\nprint \"[x]\""] {
-        let res = compile(src, &CompileOptions { basic_stub: false });
+        let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
         assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
         let bytes = &res.prg[2..];
         assert!(bytes.contains(&0x5B), "'[' should emit PETSCII $5B ({src:?})");
@@ -1600,7 +1741,7 @@ var tail = array(4)
 grid[0, 0] = 1
 tail[0] = 2
 ";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     // grid at $C000, tail at $C040 (after 64 bytes)
     let has_grid = res.prg[2..].windows(3).any(|w| w == &[0x8D, 0x00, 0xC0]);
@@ -1618,7 +1759,7 @@ var grid = array(8, 8)
 grid[1, 0] = 11
 grid[0, 1] = 22
 ";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     let has_row = res.prg[2..].windows(3).any(|w| w == &[0x8D, 0x08, 0xC0]);
     let has_col = res.prg[2..].windows(3).any(|w| w == &[0x8D, 0x01, 0xC0]);
@@ -1635,7 +1776,7 @@ var c = 3
 grid[r, c] = 44
 var v = grid[r, c]
 ";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     let bytes = &res.prg[2..];
     assert!(bytes.contains(&0x91), "grid[r,c] = .. → STA (ptr),Y");
@@ -1650,7 +1791,7 @@ var grid = array(8, 8)
 grid[10] = 7
 var v = grid[10]
 ";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     // flat index 10 -> $C00A
     let has_sta = res.prg[2..].windows(3).any(|w| w == &[0x8D, 0x0A, 0xC0]);
@@ -1666,7 +1807,7 @@ fn array2d_word_element_stride() {
 var wm = array_word(4, 4)
 wm[1, 2] = $ABCD
 ";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     // lo byte written to $C00C, hi byte to $C00D
     let has_lo = res.prg[2..].windows(3).any(|w| w == &[0x8D, 0x0C, 0xC0]);
@@ -1683,7 +1824,7 @@ const COLS = 5
 var m = array(ROWS, COLS)
 m[2, 4] = 9
 ";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     // flat = 2*5 + 4 = 14 -> $C00E
     let has_sta = res.prg[2..].windows(3).any(|w| w == &[0x8D, 0x0E, 0xC0]);
@@ -1697,7 +1838,7 @@ fn array2d_wrong_dimension_count_errors() {
 var grid = array(8, 8)
 grid[1, 2, 3] = 5
 ";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(
         !res.errors.is_empty(),
         "indexing a 2D array with 3 subscripts should error"
@@ -1722,7 +1863,7 @@ fn word_var_used_in_poke() {
 var addr: word = $D020
 poke addr, 6
 ";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     // Should use STA (zp),Y  = $91
     let bytes = &res.prg[2..];
@@ -1738,7 +1879,7 @@ fn word_var_used_in_peek() {
 var addr: word = $D012
 var v = peek(addr)
 ";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     // Should use LDA (zp),Y  = $B1
     let bytes = &res.prg[2..];
@@ -1753,7 +1894,7 @@ var v = peek(addr)
 #[test]
 fn string_var_inlined() {
     let src = "var msg = \"HELLO\"\nprint msg";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     // String data should appear in binary
     let prg = &res.prg;
@@ -1770,14 +1911,14 @@ fn string_var_inlined() {
 #[test]
 fn string_var_explicit_type() {
     let src = "var s: string = \"TEST\"\nprint s";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
 }
 
 #[test]
 fn string_var_jmp_over_data() {
     let src = "var msg = \"ABC\"";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty());
     // Should emit JMP ($4C) to skip over string data
     let bytes = &res.prg[2..];
@@ -1792,7 +1933,7 @@ fn string_var_jmp_over_data() {
 #[test]
 fn const_substitution_works() {
     let src = "const SIZE = 100\nvar x = SIZE";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty());
     let bytes = &res.prg[2..];
     assert!(bytes.contains(&100u8), "Should use const value 100");
@@ -1801,7 +1942,7 @@ fn const_substitution_works() {
 #[test]
 fn label_goto_forward() {
     let src = "goto skip\nvar x = 1\nlabel skip\nvar y = 2";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty());
     assert!(res.prg.contains(&0x4C));
 }
@@ -1836,7 +1977,7 @@ fn peek_emits_lda_abs() {
 #[test]
 fn rnd_compiles() {
     let src = "var r = rnd()\nvar s = rnd";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty());
     let bytes = &res.prg[2..];
     assert!(bytes.contains(&0x0A));
@@ -1887,14 +2028,14 @@ fn asc_of_string_var() {
 #[test]
 fn abs_compiles() {
     let src = "var a = abs(-5)\nvar b = abs(3)";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty());
 }
 
 #[test]
 fn min_max_compile() {
     let src = "var m1 = min(3, 7)\nvar m2 = max(3, 7)";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty());
 }
 
@@ -1942,7 +2083,7 @@ fn not_correct_opcode() {
 #[test]
 fn undefined_label_reports_error() {
     let src = "goto missing";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(!res.errors.is_empty(), "Should report undefined label");
     assert!(res.errors[0].contains("Undefined label"));
 }
@@ -1964,7 +2105,7 @@ label start:
   end
 print \"X=\", x
 ";
-    let res = compile(src, &CompileOptions { basic_stub: true });
+    let res = compile(src, &CompileOptions { basic_stub: true, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     assert!(res.prg.len() > 100);
 }
@@ -1977,7 +2118,7 @@ var idx = 0
 var c = 1
 poke SCRADDR + idx, c
 ";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     let bytes = &res.prg[2..];
     assert!(
@@ -2031,7 +2172,7 @@ fn chr_str_in_expression() {
 fn chr_str_concat_with_string() {
     // print ">" + chr$(65) → prints '>' then 'A'
     let src = "print \">\" + chr$(65)";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     let bytes = &res.prg[2..];
     assert!(
@@ -2050,14 +2191,14 @@ fn chr_str_concat_with_string() {
 fn strn_print_compiles() {
     // print str$(42) should compile without errors
     let src = "var x = 42\nprint str$(x)";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
 }
 
 #[test]
 fn strn_in_string_concat_compiles() {
     let src = "var s = 7\nprint \"Score: \" + str$(s)";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
 }
 
@@ -2065,7 +2206,7 @@ fn strn_in_string_concat_compiles() {
 fn strn_assign_compiles() {
     // str$(n) used as a string value (assigned through print)
     let src = "var n = 255\nprint str$(n)";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     // Helper subroutine should be present — verify JSR opcode ($20) exists
     let bytes = &res.prg[2..];
@@ -2075,7 +2216,7 @@ fn strn_assign_compiles() {
 #[test]
 fn strn_constant_arg_compiles() {
     let src = "print str$(0)";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
 }
 
@@ -2099,7 +2240,7 @@ fn gcls_emits_fill_loop() {
 #[test]
 fn gcls_compiles_cleanly() {
     let src = "graphics on\ngcls";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
 }
 
@@ -2108,7 +2249,7 @@ fn gcls_compiles_cleanly() {
 #[test]
 fn bye_emits_kernal_cls_and_rts() {
     let src = "bye";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     let bytes = &res.prg;
     // JSR $E544 = 20 44 E5
@@ -2133,7 +2274,7 @@ fn bye_emits_kernal_cls_and_rts() {
 #[test]
 fn exit_is_alias_for_bye() {
     let src = "exit";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     let bytes = &res.prg;
     let has_cls = bytes.windows(3).any(|w| w == [0x20, 0x44, 0xE5]);
@@ -2145,7 +2286,7 @@ fn exit_is_alias_for_bye() {
 #[test]
 fn rem_comment_ignored() {
     let src = "rem this is a comment\nvar x = 42";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty());
     assert!(res.prg.windows(2).any(|w| w == [0xA9, 42u8]));
 }
@@ -2154,7 +2295,7 @@ fn rem_comment_ignored() {
 fn semicolon_as_separator() {
     // ';' is a statement separator, like ':'
     let src = "var x = 1 ; var y = 2";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty());
     assert!(res.prg.windows(2).any(|w| w == [0xA9, 1u8]));
     assert!(res.prg.windows(2).any(|w| w == [0xA9, 2u8]));
@@ -2167,7 +2308,7 @@ fn incbin_embeds_bytes() {
     let path = "test_incbin_tmp.bin";
     std::fs::write(path, &[0x42u8, 0x43, 0x44]).unwrap();
     let src = format!("incbin \"{}\"", path);
-    let res = compile(&src, &CompileOptions { basic_stub: false });
+    let res = compile(&src, &CompileOptions { basic_stub: false, explicit: false });
     std::fs::remove_file(path).ok();
     assert!(res.errors.is_empty());
     assert!(
@@ -2184,7 +2325,7 @@ fn incbin_at_absolute_address_pads_and_embeds_bytes() {
     let source_path = dir.join("main.ub");
     let result = compile_with_path(
         "incbin \"charset.bin\", $2000\n",
-        &CompileOptions { basic_stub: false },
+        &CompileOptions { basic_stub: false, explicit: false },
         Some(&source_path),
     );
     assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
@@ -2225,7 +2366,7 @@ fn load_sid_embeds_music_at_load_addr() {
     std::fs::write(sid_path, &sid_bytes).unwrap();
 
     let src = format!("load sid \"{}\"\n", sid_path);
-    let opts = CompileOptions { basic_stub: false };
+    let opts = CompileOptions { basic_stub: false, explicit: false };
     let res = compile_with_path(&src, &opts, Some(std::path::Path::new(sid_path)));
     std::fs::remove_file(sid_path).ok();
 
@@ -2246,7 +2387,7 @@ fn load_sid_injects_constants() {
 
     // sys sid_init should compile (resolves to JSR $1000)
     let src = format!("load sid \"{}\"\nsys sid_init\n", sid_path);
-    let opts = CompileOptions { basic_stub: false };
+    let opts = CompileOptions { basic_stub: false, explicit: false };
     let res = compile_with_path(&src, &opts, Some(std::path::Path::new(sid_path)));
     std::fs::remove_file(sid_path).ok();
 
@@ -2263,7 +2404,7 @@ fn load_sid_invalid_file_reports_error() {
     let sid_path = "test_load_sid_bad_tmp.bin";
     std::fs::write(sid_path, b"NOT A SID FILE AT ALL").unwrap();
     let src = format!("load sid \"{}\"", sid_path);
-    let opts = CompileOptions { basic_stub: false };
+    let opts = CompileOptions { basic_stub: false, explicit: false };
     let res = compile_with_path(&src, &opts, Some(std::path::Path::new(sid_path)));
     std::fs::remove_file(sid_path).ok();
     assert!(
@@ -2275,7 +2416,7 @@ fn load_sid_invalid_file_reports_error() {
 #[test]
 fn load_sid_missing_file_reports_error() {
     let src = "load sid \"nonexistent_totally_fake.sid\"";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(
         !res.errors.is_empty(),
         "Should report an error for a missing SID file"
@@ -2291,7 +2432,7 @@ fn load_sid_override_addr_places_data_at_specified_address() {
 
     // Override: put music at $2000 instead of $1000
     let src = format!("load sid \"{}\", $2000\n", sid_path);
-    let opts = CompileOptions { basic_stub: false };
+    let opts = CompileOptions { basic_stub: false, explicit: false };
     let res = compile_with_path(&src, &opts, Some(std::path::Path::new(sid_path)));
     std::fs::remove_file(sid_path).ok();
 
@@ -2309,7 +2450,7 @@ fn load_sid_override_addr_places_data_at_specified_address() {
 #[test]
 fn print_at_positions_cursor_then_prints() {
     let src = "print at 10, 5, \"HI\"";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     // Must call KERNAL PLOT: JSR $FFF0 = $20 $F0 $FF
     assert!(
@@ -2336,7 +2477,7 @@ fn print_at_positions_cursor_then_prints() {
 #[test]
 fn print_at_no_args_still_positions() {
     let src = "print at 0, 0";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     assert!(
         res.prg.windows(3).any(|w| w == [0x20, 0xF0, 0xFF]),
@@ -2347,7 +2488,7 @@ fn print_at_no_args_still_positions() {
 #[test]
 fn sid_volume_emits_sta_d418() {
     let src = "sid volume 15";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     // LDA #15 = $A9 $0F; STA $D418 = $8D $18 $D4
     assert!(
@@ -2363,7 +2504,7 @@ fn sid_volume_emits_sta_d418() {
 #[test]
 fn sid_stop_zeros_all_registers() {
     let src = "sid stop";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     // LDX #$18 = $A2 $18; LDA #$00 = $A9 $00; STA $D400,X = $9D $00 $D4; DEX=$CA; BPL=-6=$10 $FA
     assert!(
@@ -2377,7 +2518,7 @@ fn sid_stop_zeros_all_registers() {
 #[test]
 fn waitkey_polls_cia1_matrix() {
     let src = "var k = waitkey()";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     // LDA #$00 = $A9 $00 — select all CIA1 rows
     assert!(
@@ -2404,7 +2545,7 @@ fn waitkey_polls_cia1_matrix() {
 #[test]
 fn irq_exit_emits_jmp_ea81() {
     let src = "irq_exit";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     // irq_exit must emit JMP $EA81 = $4C $81 $EA
     assert!(
@@ -2421,7 +2562,7 @@ fn irq_exit_emits_jmp_ea81() {
 #[test]
 fn sys_with_arg_emits_lda_imm_then_jsr() {
     let src = "sys $FFD2, 7";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     // LDA #7 = $A9 $07
     assert!(
@@ -2438,7 +2579,7 @@ fn sys_with_arg_emits_lda_imm_then_jsr() {
 #[test]
 fn sys_without_arg_emits_only_jsr() {
     let src = "sys $FFD2";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     // JSR $FFD2 = $20 $D2 $FF
     assert!(
@@ -2460,7 +2601,7 @@ fn sys_without_arg_emits_only_jsr() {
 #[test]
 fn data_read_emits_indirect_lda() {
     let src = "var x = 0\nvar y = 0\ndata 10, 20, 30\nread x\nread y";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     assert!(
         res.prg.windows(3).any(|w| w == [10, 20, 30]),
@@ -2473,7 +2614,7 @@ fn data_read_emits_indirect_lda() {
 #[test]
 fn data_bytes_in_output() {
     let src = "var x = 0\ndata 99\nread x";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     assert!(
         res.prg.contains(&99u8),
@@ -2487,7 +2628,7 @@ fn data_bytes_in_output() {
 fn plot_emits_jsr() {
     // plot x, y → stores coords then JSR to helper
     let src = "plot 10, 20";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     let bytes = &res.prg[2..];
     // JSR opcode $20 must be present
@@ -2499,7 +2640,7 @@ fn plot_helper_contains_bitmap_base() {
     // The draw bitmap base now lives in a ZP byte initialised at program start to
     // $20 (high byte of $2000); the plot helper reads it via `ADC db_base` (0x65).
     let src = "plot 0, 0";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     let bytes = &res.prg[2..];
     // Prologue init of the draw base: LDA #$20 ; STA <zp>  (A9 20 85 ..)
@@ -2582,7 +2723,7 @@ fn plot_helper_emitted_once_for_multiple_calls() {
 #[test]
 fn plot_with_vars_compiles() {
     let src = "var px = 10\nvar py = 20\nplot px, py";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
 }
 
@@ -2590,7 +2731,7 @@ fn plot_with_vars_compiles() {
 fn plot_rts_in_helper() {
     // RTS ($60) must appear — end of plot helper
     let src = "plot 5, 10";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty());
     assert!(res.prg.contains(&0x60), "Should contain RTS in plot helper");
 }
@@ -2616,7 +2757,7 @@ fn plot_x_over_255_stores_hi_byte() {
 fn plot_x_319_full_width() {
     // 319 is the rightmost pixel: X_lo=63 ($3F), X_hi=1
     let src = "plot 319, 0";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty());
     let bytes = &res.prg[2..];
     assert!(
@@ -4182,7 +4323,7 @@ fn word_div_word_var() {
     // var a: word = $0064 \n var b: word = 10 \n var r: word = a / b
     let res = compile(
         "var a: word = $0064\nvar b: word = 10\nvar r: word = a / b",
-        &CompileOptions { basic_stub: false },
+        &CompileOptions { basic_stub: false, explicit: false },
     );
     assert!(res.errors.is_empty(), "word / word: {:?}", res.errors);
     let bytes = &res.prg[2..];
@@ -4211,7 +4352,7 @@ fn word_mod_const_emits_division_loop() {
 fn word_mod_word_var() {
     let res = compile(
         "var a: word = $012C\nvar b: word = 7\nvar r: word = a mod b",
-        &CompileOptions { basic_stub: false },
+        &CompileOptions { basic_stub: false, explicit: false },
     );
     assert!(res.errors.is_empty(), "word mod word: {:?}", res.errors);
 }
@@ -4222,7 +4363,7 @@ fn word_mod_word_var() {
 fn word_array_decl_compiles() {
     let res = compile(
         "var tbl = array_word(4)",
-        &CompileOptions { basic_stub: false },
+        &CompileOptions { basic_stub: false, explicit: false },
     );
     assert!(res.errors.is_empty(), "array_word decl: {:?}", res.errors);
 }
@@ -5627,7 +5768,7 @@ fn sprite_frame_var_id_emits_sta_07f8_x() {
 #[test]
 fn sprite_frame_animation_adds_runtime_frame_to_base_pointer() {
     let src = "var frame = 3\nsprite_frame 0, $2000, frame";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     let mut cpu = TestCpu::new(&res.prg);
     cpu.run_until_main_rts(10_000);
@@ -5643,7 +5784,7 @@ fn box_hit_detects_overlapping_and_separated_boxes() {
         "var overlap = box_hit(10, 20, 30, 40, 25, 35, 50, 60)\n",
         "var separate = box_hit(10, 20, 30, 40, 31, 20, 50, 40)"
     );
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     let overlap_zp = res
         .map
@@ -5668,7 +5809,7 @@ fn box_hit_detects_overlapping_and_separated_boxes() {
 #[test]
 fn box_hit_treats_touching_edges_as_collision() {
     let src = "var hit = box_hit(10, 10, 20, 20, 20, 15, 30, 25)";
-    let res = compile(src, &CompileOptions { basic_stub: false });
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     let hit_zp = res.map.variables[0].zp_addr;
     let mut cpu = TestCpu::new(&res.prg);
@@ -5940,7 +6081,7 @@ fn map_load_and_draw_copies_chars_colors_and_sets_multicolor() {
     let source_path = dir.join("main.ub");
     let res = compile_with_path(
         "map load \"level.ubmap\"\nmap draw 0, 0",
-        &CompileOptions { basic_stub: false },
+        &CompileOptions { basic_stub: false, explicit: false },
         Some(&source_path),
     );
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
@@ -5968,7 +6109,7 @@ fn map_tile_set_and_color_are_writable_and_queryable() {
     );
     let res = compile_with_path(
         src,
-        &CompileOptions { basic_stub: false },
+        &CompileOptions { basic_stub: false, explicit: false },
         Some(&source_path),
     );
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
@@ -5995,7 +6136,7 @@ fn map_load_rejects_invalid_ubmp_files() {
     std::fs::write(dir.join("broken.ubmap"), b"not a map").unwrap();
     let res = compile_with_path(
         "map load \"broken.ubmap\"",
-        &CompileOptions { basic_stub: false },
+        &CompileOptions { basic_stub: false, explicit: false },
         Some(&dir.join("main.ub")),
     );
     assert!(res.errors.iter().any(|e| e.contains("neither UBMP")));
@@ -6016,7 +6157,7 @@ fn map_load_accepts_visualassembler_multicolor_binary() {
     std::fs::write(dir.join("level.bin"), file).unwrap();
     let res = compile_with_path(
         "map load \"level.bin\"\nmap draw 0, 0",
-        &CompileOptions { basic_stub: false },
+        &CompileOptions { basic_stub: false, explicit: false },
         Some(&dir.join("main.ub")),
     );
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
@@ -6050,7 +6191,7 @@ fn koala_load_and_show_imports_picture_and_configures_vic() {
     let (dir, bitmap, screen, colors) = write_test_koala();
     let res = compile_with_path(
         "koala load \"picture.kla\"\nkoala show",
-        &CompileOptions { basic_stub: false },
+        &CompileOptions { basic_stub: false, explicit: false },
         Some(&dir.join("main.ub")),
     );
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
@@ -6070,7 +6211,7 @@ fn koala_hide_returns_to_text_mode() {
     let (dir, _, _, _) = write_test_koala();
     let res = compile_with_path(
         "koala load \"picture.kla\"\nkoala show\nkoala hide",
-        &CompileOptions { basic_stub: false },
+        &CompileOptions { basic_stub: false, explicit: false },
         Some(&dir.join("main.ub")),
     );
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
@@ -6088,7 +6229,7 @@ fn koala_load_rejects_invalid_files() {
     std::fs::write(dir.join("broken.kla"), b"not a koala").unwrap();
     let res = compile_with_path(
         "koala load \"broken.kla\"",
-        &CompileOptions { basic_stub: false },
+        &CompileOptions { basic_stub: false, explicit: false },
         Some(&dir.join("main.ub")),
     );
     assert!(res.errors.iter().any(|e| e.contains("expected 10001")));

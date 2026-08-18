@@ -111,6 +111,18 @@ the C64 with no ROM overlay when no cartridge is present.
 
 ## Language Reference
 
+### Compile-time flags
+
+```bash
+ub build foo.ub --explicit    # require :type on every var / sub-param / fn-param
+```
+
+`--explicit` is a CLI flag (not a source-level keyword). When passed to `ub build`,
+the parser refuses `var name = expr` and `sub foo(a, b)` / `fn foo(a, b)` without
+explicit `: int|word|float|string` annotations. Arrays (`array(N)`, `array_word(N)`)
+and `const NAME = value` are unaffected — their type is implicit in the declaration
+form.
+
 ### Variables and Constants
 
 ```basic
@@ -120,7 +132,7 @@ var f: float = 3.5       # Q8.8 fixed-point (hi=integer, lo=fraction)
 var msg = "HELLO"        # string (inferred from literal)
 var s: string = "TEXT"   # string (explicit type)
 var scores = array(10)   # byte array, 10 elements at $C000+
-var times  = array_word(8) # word array, 8 word elements at $C000+
+var moments  = array_word(8) # word array, 8 word elements at $C000+
 const SCRADDR = $0400    # compile-time constant (substituted inline)
 ```
 
@@ -273,6 +285,19 @@ for i = 0 to 20 step 2
   print i
 next i               # variable name after 'next' is optional
 
+for i = 10 to 1 step -1   # counting down: negative constant step is supported
+  print i
+next
+
+for i = 20 to 0 step -2   # terminates correctly at 0 (11 iterations) — no infinite loop
+  print i
+next
+# note: `for i = 10 to 1` (no step) is a compile-time error — use `step -1` explicitly.
+# Direction encoding: positive/default step → BCC/BEQ to body (unsigned var > to → exit).
+# Negative constant step → BCS to body + post-increment BCS loop_top/JMP exit
+# to catch the ADC underflow when var wraps below 0. Non-constant `step` is
+# treated as positive at compile time.
+
 loop i = 1 to 10     # legacy syntax — still works, identical code
   print i
 end
@@ -371,13 +396,13 @@ var v = scores[i]        # variable index → LDA (ptr),Y
 
 print scores[2]          # inline in print
 
-var times = array_word(8)  # allocates 16 bytes (8×2) at $C000+
+var moments = array_word(8)  # allocates 16 bytes (8×2) at $C000+
 
-times[0] = $1234         # constant index → STA $C000 (lo), STA $C001 (hi)
-times[i] = $1234         # variable index → ASL A for stride; (ptr),Y × 2
+moments[0] = $1234         # constant index → STA $C000 (lo), STA $C001 (hi)
+moments[i] = $1234         # variable index → ASL A for stride; (ptr),Y × 2
 
-var t: word = times[0]   # constant index → LDA $C000, LDA $C001
-var t: word = times[i]   # variable index → ASL A; LDA (ptr),Y × 2
+var t: word = moments[0]   # constant index → LDA $C000, LDA $C001
+var t: word = moments[i]   # variable index → ASL A; LDA (ptr),Y × 2
 ```
 
 **Multi-dimensional arrays** — declare with a comma-separated dimension list;
@@ -1344,6 +1369,7 @@ ub build <input.ub> [OPTIONS]
                           without a filename defaults to <output>.d64
   --add <file>          Add an extra file to the .d64 disk image;
                           may be repeated for multiple files
+  --explicit            Require :type on every var / sub-param / fn-param
   -h, --help            Show help
 ```
 

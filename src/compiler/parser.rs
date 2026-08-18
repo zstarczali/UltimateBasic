@@ -90,6 +90,9 @@ pub struct Parser {
     base_dir: Option<std::path::PathBuf>,
     errors: Vec<String>,
     skip_var_check: bool,
+    /// `explicit` directive is active — every var / sub-param / fn-param must
+    /// declare its type. Set by a pre-scan that looks for the `explicit` token.
+    explicit_types: bool,
 }
 
 impl Parser {
@@ -104,6 +107,7 @@ impl Parser {
             base_dir: None,
             errors: vec![],
             skip_var_check: false,
+            explicit_types: false,
         }
     }
 
@@ -118,6 +122,7 @@ impl Parser {
             base_dir: Some(base_dir),
             errors: vec![],
             skip_var_check: false,
+            explicit_types: false,
         }
     }
 
@@ -135,6 +140,7 @@ impl Parser {
             base_dir: None,
             errors: vec![],
             skip_var_check: false,
+            explicit_types: false,
         }
     }
 
@@ -153,11 +159,19 @@ impl Parser {
             base_dir,
             errors: vec![],
             skip_var_check: false,
+            explicit_types: false,
         }
     }
 
     pub fn errors(&self) -> &[String] {
         &self.errors
+    }
+
+    /// Enable `explicit` mode: every `var`, `sub`-param, and `fn`-param
+    /// declaration must carry a `:type` annotation. Enabled by the CLI flag
+    /// `--explicit`, not by any source-level keyword.
+    pub fn set_explicit(&mut self, on: bool) {
+        self.explicit_types = on;
     }
 
     /// Parse a SID file at compile time and build a LoadSid statement.
@@ -477,6 +491,12 @@ impl Parser {
                     } else {
                         None
                     };
+                    if self.explicit_types && ptype.is_none() {
+                        self.errors.push(format!(
+                            "line {}: 'explicit' mode: parameter '{}' has no type — use '{}: int|word|float|string'",
+                            self.line, p, p
+                        ));
+                    }
                     params.push((p, ptype));
                 } else {
                     self.advance();
@@ -972,6 +992,12 @@ impl Parser {
                 }
                 let expr = self.parse_expr();
                 self.expect_newline();
+                if self.explicit_types && vtype.is_none() {
+                    self.errors.push(format!(
+                        "line {}: 'explicit' mode: 'var {}' has no type — use 'var {}: int|word|float|string'",
+                        self.line, name, name
+                    ));
+                }
                 Some(Stmt::VarDecl { name, vtype, expr })
             }
             Token::Ident(name) => {

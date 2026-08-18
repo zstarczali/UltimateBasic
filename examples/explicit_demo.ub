@@ -1,0 +1,68 @@
+### `--explicit` CLI-flag demo
+### Build this file with the flag set:
+###
+###   ub build explicit_demo.ub --explicit
+###
+### With `--explicit`, every `var`, `sub` param and `fn` param must carry a
+### `:type` annotation — the compiler refuses untyped names.
+###
+### Without `--explicit` this file still compiles (annotations are optional).
+###
+### Arrays (`array(N)`, `array_word(N)`) and `const NAME = value` are
+### unaffected — their type is implicit in the declaration form.
+
+const MAX_SCORE = 999
+const SCRADDR   = $0400
+
+var score:  int    = 0
+var frame:  word   = 0
+var ratio:  float  = 1.5
+var title:  string = "PLAYER 1"
+
+var scores    = array(8)        # ok — arrays don't need :type
+var elapsed   = array_word(4)   # ok
+
+sub add_score(pts: int)
+  score = score + pts
+end
+
+sub reset_frame(f: word)
+  frame = f
+end
+
+fn double(n: int): int
+  return n + n
+end
+
+fn cap(v: int, lo: int, hi: int): int
+  if v < lo then return lo end
+  if v > hi then return hi end
+  return v
+end
+
+cls
+print title
+print "score: ", score
+add_score(42)
+print "after +42: ", score
+print "double(21) = ", double(21)
+print "cap(300, 0, 255) = ", cap(300, 0, 255)
+
+# ────────────────────────────────────────────────────────────────
+# The following lines would fail to compile under `explicit`:
+#
+#   var loose = 5              # ERROR: 'var loose' has no type
+#   sub greet(name)            # ERROR: parameter 'name' has no type
+#     print name
+#   end
+#   fn add(a, b)               # ERROR: parameter 'a' has no type
+#     return a + b
+#   end
+#
+# Fix by adding annotations:
+#   var loose: int = 5
+#   sub greet(name: string)  ...
+#   fn add(a: int, b: int): int ...
+# ────────────────────────────────────────────────────────────────
+
+bye

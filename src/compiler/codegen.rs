@@ -9626,6 +9626,26 @@ impl Codegen {
                 body,
             } => {
                 let zp = self.alloc_var(var);
+
+                // Determine direction from compile-time constant step (if any).
+                // Negative i16 constant → counting down; otherwise → counting up.
+                let step_down = match step {
+                    Some(Expr::Number(n)) => *n < 0,
+                    _ => false,
+                };
+
+                // Sanity check: default step (+1) but from>to constant → would loop 0 times silently.
+                if step.is_none() {
+                    if let (Expr::Number(f), Expr::Number(t)) = (from, to) {
+                        if *f > *t {
+                            panic!(
+                                "for-loop: from ({}) > to ({}) with default step +1 loops 0 times — use 'step -1' to count down",
+                                f, t
+                            );
+                        }
+                    }
+                }
+
                 // eval from → var
                 self.eval_expr(from);
                 self.emit(0x85);
@@ -9657,26 +9677,40 @@ impl Codegen {
                 self.continue_patches.push(vec![]);
                 let loop_top = self.current_addr();
 
-                // if var > zp_to → exit  (unsigned: zp_to < var → C=0 after CMP zp_to,var? no)
-                // LDA var; CMP zp_to; BEQ body (equal → run once more); BCS exit (var > to)
+                // Counting UP  (step_down == false): exit when var > to.
+                //   LDA var; CMP zp_to; BCC body; BEQ body; JMP exit
+                // Counting DOWN (step_down == true):  exit when var < to.
+                //   LDA var; CMP zp_to; BCS body; JMP exit   (BCS = var>=to)
                 self.emit(0xA5);
                 self.emit(zp);
                 self.emit(0xC5);
                 self.emit(zp_to); // CMP zp_to
-                self.emit(0x90); // BCC → continue (var < to)
-                let bcc_pos = self.code.len();
-                self.emit(0x00);
-                self.emit(0xF0); // BEQ → continue (var == to)
-                let beq_pos = self.code.len();
-                self.emit(0x00);
-                // var > to → exit
+
+                let (bcc_pos, beq_pos) = if step_down {
+                    // BCS → body (var >= to)
+                    self.emit(0xB0);
+                    let pos = self.code.len();
+                    self.emit(0x00);
+                    (pos, None)
+                } else {
+                    self.emit(0x90); // BCC → body (var < to)
+                    let bcc = self.code.len();
+                    self.emit(0x00);
+                    self.emit(0xF0); // BEQ → body (var == to)
+                    let beq = self.code.len();
+                    self.emit(0x00);
+                    (bcc, Some(beq))
+                };
+                // fall-through → exit
                 self.emit(0x4C);
                 let exit_pos = self.code.len();
                 self.emit16(0x0000);
 
                 let body_start = self.current_addr();
                 self.patch_bxx(bcc_pos, body_start);
-                self.patch_bxx(beq_pos, body_start);
+                if let Some(beq) = beq_pos {
+                    self.patch_bxx(beq, body_start);
+                }
 
                 self.gen_stmts(body);
 
@@ -9704,11 +9738,36 @@ impl Codegen {
                 self.emit(0x85);
                 self.emit(zp);
 
-                self.emit(0x4C);
-                self.emit16(loop_top);
+                // Second exit point: for step_down, if ADC underflowed (C=0)
+                // then `var` wrapped past 0 back up to 254/255-ish. Unsigned
+                // CMP at loop_top would then always take the body branch →
+                // infinite loop (e.g. `for i = 20 to 0 step -2`). Detect the
+                // underflow here and exit instead of re-entering the loop.
+                //
+                // For step_up, ADC C=1 similarly means wrap past 255, but the
+                // top-of-loop `var > to` check catches all normal terminations,
+                // so we leave the plain JMP loop_top in place.
+                let exit_pos2 = if step_down {
+                    // BCS loop_top ; JMP exit
+                    self.emit(0xB0); // BCS
+                    let bcs_pos = self.code.len();
+                    self.emit(0x00);
+                    self.patch_bxx(bcs_pos, loop_top);
+                    self.emit(0x4C); // JMP exit (patched below)
+                    let p = self.code.len();
+                    self.emit16(0x0000);
+                    Some(p)
+                } else {
+                    self.emit(0x4C);
+                    self.emit16(loop_top);
+                    None
+                };
 
                 let loop_end = self.current_addr();
                 self.patch_abs(exit_pos, loop_end);
+                if let Some(p) = exit_pos2 {
+                    self.patch_abs(p, loop_end);
+                }
                 let breaks = self.break_patches.pop().unwrap_or_default();
                 for pos in breaks {
                     self.patch_abs(pos, loop_end);

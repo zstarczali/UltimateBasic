@@ -1,0 +1,29 @@
+### Count-down for-loop — negative demo
+### This file INTENTIONALLY fails to compile.
+### Build it to see the diagnostic the compiler produces when a
+### for-loop with default step +1 would count 0 iterations because
+### `from > to`. The old behavior was to silently skip the body —
+### now it is a compile-time error directing you to `step -1`.
+###
+### Expected panic message from `ub build`:
+###   for-loop: from (10) > to (1) with default step +1 loops 0 times
+###     — use 'step -1' to count down
+
+var i: int = 0
+
+# Wrong: no explicit step. from > to. Compile-time error.
+for i = 10 to 1
+  print i
+next i
+
+# Correct alternatives (uncomment to compile successfully):
+#
+# for i = 10 to 1 step -1     # count down
+#   print i
+# next i
+#
+# for i = 1 to 10             # count up
+#   print i
+# next i
+
+bye

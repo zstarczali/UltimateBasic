@@ -11,6 +11,18 @@ use parser::Parser;
 
 pub struct CompileOptions {
     pub basic_stub: bool,
+    /// If true, all `var`, `sub`-param, and `fn`-param declarations must carry
+    /// a `:type` annotation. Enabled from the CLI via `--explicit`.
+    pub explicit: bool,
+}
+
+impl Default for CompileOptions {
+    fn default() -> Self {
+        Self {
+            basic_stub: true,
+            explicit: false,
+        }
+    }
 }
 
 /// Single variable in zero-page.
@@ -127,6 +139,9 @@ pub fn compile_with_path(
     } else {
         Parser::new(tokens)
     };
+    if opts.explicit {
+        parser.set_explicit(true);
+    }
     let ast = parser.parse();
     let mut errors = lex_errors;
     errors.extend(parser.errors().iter().cloned());

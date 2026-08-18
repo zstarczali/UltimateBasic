@@ -1,10 +1,10 @@
-# Ultimate Basic v1.5.3 — Language Manual
+# Ultimate Basic v1.5.4 — Language Manual
 
 Complete language and CLI reference for Ultimate Basic, a BASIC-like language that
 compiles directly to 6502 machine code for the Commodore 64. Output: `.prg` files
 (VICE or real hardware) and `.d64` disk images.
 
-For a short project overview and build instructions see [README.md](README.md).
+For a short project overview and build instructions see README.md.
 
 © 2026 Zsolt Tarczali
 
@@ -26,7 +26,7 @@ var f: float = 3.5       # Q8.8 fixed-point — hi byte = integer, lo byte = fra
 var msg = "HELLO"        # string variable (pointer to inline PETSCII data)
 var s: string = "TEXT"   # string with explicit type
 var scores = array(10)   # byte array, 10 elements stored at $C000+
-var times  = array_word(8) # word array, 8 word elements stored at $C000+
+var moments  = array_word(8) # word array, 8 word elements stored at $C000+
 const BORDER_ADDR = $D020 # compile-time constant (substituted inline, no ZP slot)
 ```
 
@@ -42,6 +42,90 @@ Keywords and identifiers are **case-insensitive**: `PRINT`, `Print`, and `print`
 | `array_word(N)` | N×2 bytes | word (16-bit) elements; lives at `$C000+`, not in ZP |
 | `array(R, C, …)` | ∏dims bytes | multi-dimensional (row-major); index `arr[r, c]` |
 | `array_word(R, C, …)` | ∏dims×2 bytes | multi-dimensional word array (row-major) |
+
+### Reserved words
+
+The following identifiers are **keywords** — they cannot be used as variable, constant,
+subroutine, function, parameter, or label names. All matching is case-insensitive
+(`END`, `end`, `End` all collide). Using a reserved word as a name usually produces a
+confusing error (a `var` line silently fails to declare, or an expression like
+`for i = 1 to times` folds to `Number(0)`) — so pick a different name.
+
+**Declaration & control flow**
+`var`, `const`, `sub`, `fn`, `return`, `call`, `label`, `goto`, `gosub`,
+`if`, `then`, `else`, `end`, `select`, `case`,
+`for`, `next`, `loop`, `times`, `to`, `step`, `while`, `repeat`, `until`,
+`break`, `continue`, `inc`, `dec`, `bye`, `exit`, `rem`
+
+**Types & type-related**
+`int`, `word`, `float`, `string`, `array`, `array_word`
+
+**Print & I/O**
+`print`, `spc`, `tab`, `at`, `input`, `chr$`, `str$`, `hex`, `bin`,
+`open`, `close`, `load`, `save`, `data`, `read`, `include`, `incbin`
+(also `dec` — listed above as the decrement statement; the same token
+is used for the `dec(n, width)` print format)
+
+**Math & string built-ins**
+`abs`, `min`, `max`, `clamp`, `sgn`, `mod`, `rnd`, `sin`, `cos`,
+`and`, `or`, `xor`, `not`, `bnot`, `shl`, `shr`,
+`len`, `asc`, `val`, `str_to_int`, `numstr`
+
+**Memory & timing**
+`poke`, `peek`, `poke16`, `peek16`, `fill`, `memcopy`, `drawmem`,
+`wait`, `raster`, `delay`, `sys`, `asm`
+
+**Screen & text**
+`cls`, `fast`, `color`, `text`, `border`, `bg`, `screen`, `cursor`,
+`lowercase`, `uppercase`, `display`, `on`, `off`, `scroll`,
+`speed`, `badlines`, `turbo`
+
+**Bitmap & block graphics**
+`graphics`, `gcls`, `flip`, `plot`, `plot4`, `mplot`,
+`line`, `circle`, `circle4`, `rect`, `paint`, `erase`,
+`multi`, `block`
+
+**Sprites**
+`sprite`, `sprdef`, `sprite_frame`, `sprite_x`, `sprite_y`, `sprhit`, `sprbghit`,
+`box_hit`, `chardef`, `charset`, `expand`, `priority`
+
+**Sound & music**
+`sid`, `sound`, `volume`, `music`, `play`, `pause`, `resume`, `stop`
+
+**Input devices**
+`getch`, `inkey`, `waitkey`, `joy`, `mouse_x`, `mouse_x_hi`, `mouse_y`, `mouse_btn`
+
+**Interrupts & vectors**
+`irq`, `irq_exit`, `nmi`, `nmi_exit`, `cia_timer`, `onerr`
+
+**Character maps & images**
+`map`, `map_tile`, `map_color`, `koala`, `show`, `hide`
+
+**REU (RAM expansion)**
+`reu`, `reudet`, `stash`, `fetch`
+
+**Style pitfalls — names that *look* free but are reserved**
+
+These common English words look like innocent identifiers but are already
+grabbed by the lexer. Rename to avoid silent breakage:
+
+| Reserved | Suggested rename |
+|---|---|
+| `end` | `stop_at`, `finish`, `last` |
+| `stop` | `stop_at`, `halt` |
+| `times` | `count`, `n`, `iters` |
+| `screen` | `scraddr`, `screen_addr` |
+| `border`, `bg`, `text` | `border_addr`, `bg_col`, `text_col` |
+| `clamp` | `cap`, `bound` |
+| `line`, `circle`, `rect` | `ln`, `circ`, `box_r` |
+| `data`, `read` | `bytes`, `next_byte` |
+| `load`, `save`, `open`, `close` | `load_file`, ... |
+| `map`, `show`, `hide` | `tilemap`, `reveal`, `conceal` |
+| `play`, `pause`, `resume`, `stop`, `volume` | `play_song`, `vol` |
+| `int`, `float`, `word`, `string` | `n_int`, `speed_f`, `addr`, `msg` |
+
+Symbolic tokens (`+ - * / = == != < > <= >= : , ; ( ) [ ] # $ % @`) are
+naturally not usable in identifiers.
 
 ### Comments
 
@@ -169,6 +253,14 @@ for i = 0 to 20 step 2
   print i
 next i               # variable name after 'next' is optional
 
+for i = 10 to 1 step -1     # counting down — negative constant step is supported
+  print i
+next
+
+for i = 20 to 0 step -2     # terminates correctly at i = 0 (11 iterations)
+  print i
+next i
+
 var i = 0
 loop i = 1 to 10     # legacy loop..end syntax — identical code
   print i
@@ -182,6 +274,23 @@ repeat               # do-while: body runs at least once
   x = x + 1
 until x == 100       # exits when condition is true
 ```
+
+**Direction rules for `for`/`loop`:**
+
+| Case | Behavior |
+|---|---|
+| `for i = 1 to 10` (default `step +1`, `from ≤ to`) | counts up, standard |
+| `for i = 0 to 20 step 2` (positive step, `from ≤ to`) | counts up by 2 |
+| `for i = 10 to 1 step -1` (negative constant step) | counts down; body runs for i = 10, 9, ..., 1 |
+| `for i = 20 to 0 step -2` (down to zero) | terminates at i = 0 by detecting the ADC underflow (C=0) after the decrement; no infinite loop |
+| `for i = 10 to 1` (no step, `from > to`) | **compile-time error**: `for-loop: from (10) > to (1) with default step +1 loops 0 times — use 'step -1' to count down` |
+
+The compiler picks the exit-branch encoding at compile time based on the sign of a constant `step`:
+
+- Positive step (or default `+1`) → exit when `var > to` (unsigned `CMP` + `BCC`/`BEQ` fall-through to `JMP exit`).
+- Negative constant step → exit when `var < to` (unsigned `CMP` + `BCS` to body), **plus** a post-increment `BCS loop_top ; JMP exit` that catches the wrap when `var` underflows below 0. That extra pair of instructions is what keeps `for i = N to 0 step -k` finite.
+
+Non-constant `step` values (e.g. from a variable or expression) are treated as positive at compile time; if you need count-down with a runtime step value, split the loop or use a `while` construct.
 
 ### Labels and goto
 
@@ -273,11 +382,11 @@ scores[i] = 99           # variable index → STA (ptr),Y
 var v = scores[i]        # LDA (ptr),Y
 print scores[2]          # usable inline in print
 
-var times = array_word(8)  # 16 bytes (8×2) at $C000+
+var moments = array_word(8)  # 16 bytes (8×2) at $C000+
 
-times[0] = $1234         # constant index → STA $C000 (lo), STA $C001 (hi)
-times[i] = $5678         # variable index → ASL A for stride; (ptr),Y × 2
-var t: word = times[1]   # LDA $C002, LDA $C003
+moments[0] = $1234         # constant index → STA $C000 (lo), STA $C001 (hi)
+moments[i] = $5678         # variable index → ASL A for stride; (ptr),Y × 2
+var t: word = moments[1]   # LDA $C002, LDA $C003
 ```
 
 **Multi-dimensional arrays** (new in 1.5.3)
@@ -1229,6 +1338,10 @@ The result pointer is stored in a permanent ZP pair allocated at compile time.
 | `examples/reu_bitmap_demo.ub` | REU stash/fetch with bitmap graphics |
 | `examples/sid_music_demo.ub` | SID music player with raster IRQ and keyboard exit |
 | `examples/tenprint.ub` | 5 TENPRINT maze implementations with menu; demos `lowercase` charset mode |
+| `examples/countdown_demo.ub` | Count-down `for..next` with negative step, incl. `for i = 20 to 0 step -2` |
+| `examples/countdown_errors_demo.ub` | Compile-time error for default-step `from > to` |
+| `examples/explicit_demo.ub` | `--explicit` CLI-flag demo with fully typed `var`, `sub`, `fn` |
+| `examples/explicit_errors_demo.ub` | Loose code that builds without `--explicit`, errors with it |
 
 ## CLI reference
 
@@ -1244,8 +1357,52 @@ ub build <input.ub> [OPTIONS]
                           without a filename defaults to <output>.d64
   --add <file>          Add an extra file to the .d64 disk image;
                           may be repeated for multiple files
+  --explicit            Require :type on every var / sub-param / fn-param
   -h, --help            Show help
 ```
+
+### Explicit-type mode
+
+Pass `--explicit` to force every declaration site to carry a `:type` annotation:
+
+```bash
+ub build game.ub --explicit
+```
+
+Without the flag, Ultimate Basic accepts both `var x = 5` (type inferred from the
+initializer or defaulted to `int`) and `var x: int = 5`. With the flag, only the
+annotated form compiles — the loose form becomes a compile-time error.
+
+**What it enforces:**
+
+| Declaration form | Without `--explicit` | With `--explicit` |
+|---|---|---|
+| `var name = expr` (no `:type`) | ok — type inferred | error |
+| `var name: int = expr` (or word/float/string) | ok | ok |
+| `var arr = array(N)` | ok — implicitly `array` | ok — unchanged |
+| `var arr = array_word(N)` | ok — implicitly `array_word` | ok — unchanged |
+| `const NAME = value` | ok | ok — unchanged |
+| `sub foo(a, b)` (untyped params) | ok | error per untyped param |
+| `sub foo(a: int, b: int)` | ok | ok |
+| `fn foo(a): int` (untyped param) | ok | error on the param |
+| `fn foo(a: int): int` | ok | ok |
+
+Constants and array declarations are always accepted — their type is fixed by the
+declaration form, so `:type` would be redundant.
+
+**Example error output:**
+
+```
+$ ub build myprog.ub --explicit
+Compilation errors:
+  line 14: 'explicit' mode: 'var loose' has no type — use 'var loose: int|word|float|string'
+  line 16: 'explicit' mode: parameter 'a' has no type — use 'a: int|word|float|string'
+```
+
+The flag is a build-time switch — nothing in the source needs to change to opt in
+or out. Add it to your Makefile / build script to enforce typed style project-wide,
+or drop it for exploratory scripts. See `examples/explicit_demo.ub` and
+`examples/explicit_errors_demo.ub`.
 
 ### Debug files
 

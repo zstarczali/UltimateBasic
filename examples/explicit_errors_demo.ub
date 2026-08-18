@@ -1,0 +1,26 @@
+### `--explicit` CLI flag — negative demo
+### This file compiles cleanly WITHOUT the flag, but INTENTIONALLY fails to
+### compile with it:
+###
+###   ub build explicit_errors_demo.ub --explicit
+###
+### Expected output:
+###   line 12: 'explicit' mode: 'var loose' has no type — use 'var loose: int|word|float|string'
+###   line 14: 'explicit' mode: 'var also_loose' has no type — use 'var also_loose: ...'
+###   line 14: 'explicit' mode: parameter 'a' has no type — use 'a: int|word|float|string'
+###   line 18: 'explicit' mode: parameter 'x' has no type — use 'x: int|word|float|string'
+
+var loose       = 5           # ERROR under --explicit
+var also_loose  = "HELLO"     # ERROR under --explicit
+
+sub greet(a, b: int)          # ERROR on 'a' under --explicit
+  print a, b
+end
+
+fn add(x, y: int): int         # ERROR on 'x' under --explicit
+  return x + y
+end
+
+greet(1, 2)
+print add(3, 4)
+bye
