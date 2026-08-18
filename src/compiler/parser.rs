@@ -87,6 +87,13 @@ pub struct Parser {
     /// Declared dimensions for multi-dimensional arrays (row-major).
     /// Only populated for arrays declared with 2+ dimensions, e.g. `array(8, 8)`.
     array_dims: std::collections::HashMap<String, Vec<u16>>,
+    /// User-defined struct types: name → field list (in declaration order).
+    /// Each field carries (name, VarType); only Int and Word field types are
+    /// supported. Field byte offsets are computed on demand from this list.
+    types: std::collections::HashMap<String, Vec<(String, VarType)>>,
+    /// Which struct type a declared array holds, if any.
+    /// `var enemies: TEntity = array(3)` inserts `enemies → TEntity`.
+    array_types: std::collections::HashMap<String, String>,
     base_dir: Option<std::path::PathBuf>,
     errors: Vec<String>,
     skip_var_check: bool,
@@ -104,6 +111,8 @@ impl Parser {
             consts: std::collections::HashMap::new(),
             declared_vars: std::collections::HashSet::new(),
             array_dims: std::collections::HashMap::new(),
+            types: std::collections::HashMap::new(),
+            array_types: std::collections::HashMap::new(),
             base_dir: None,
             errors: vec![],
             skip_var_check: false,
@@ -119,6 +128,8 @@ impl Parser {
             consts: std::collections::HashMap::new(),
             declared_vars: std::collections::HashSet::new(),
             array_dims: std::collections::HashMap::new(),
+            types: std::collections::HashMap::new(),
+            array_types: std::collections::HashMap::new(),
             base_dir: Some(base_dir),
             errors: vec![],
             skip_var_check: false,
@@ -137,6 +148,8 @@ impl Parser {
             consts,
             declared_vars: std::collections::HashSet::new(),
             array_dims: std::collections::HashMap::new(),
+            types: std::collections::HashMap::new(),
+            array_types: std::collections::HashMap::new(),
             base_dir: None,
             errors: vec![],
             skip_var_check: false,
@@ -156,6 +169,8 @@ impl Parser {
             consts,
             declared_vars: std::collections::HashSet::new(),
             array_dims: std::collections::HashMap::new(),
+            types: std::collections::HashMap::new(),
+            array_types: std::collections::HashMap::new(),
             base_dir,
             errors: vec![],
             skip_var_check: false,
@@ -577,6 +592,37 @@ impl Parser {
         self.declared_vars.contains(name) || self.consts.contains_key(name)
     }
 
+    /// For `arr[i].field` — resolve field to (offset_in_bytes, field_kind, elem_size).
+    /// Returns None if `arr` is not a struct-typed array or `field` isn't known.
+    /// int → 1 byte, word/float → 2 bytes. elem_size = sum of field widths.
+    fn resolve_struct_field(
+        &self,
+        arr: &str,
+        field: &str,
+    ) -> Option<(u16, super::ast::FieldKind, u16)> {
+        use super::ast::FieldKind;
+        let tname = self.array_types.get(arr)?;
+        let fields = self.types.get(tname)?;
+        let mut offset: u16 = 0;
+        let mut elem_size: u16 = 0;
+        let mut found: Option<(u16, FieldKind)> = None;
+        for (fname, ftype) in fields {
+            let kind = match ftype {
+                VarType::Word => FieldKind::Word,
+                VarType::Float => FieldKind::Float,
+                _ => FieldKind::Int,
+            };
+            let w = kind.width() as u16;
+            if fname == field && found.is_none() {
+                found = Some((offset, kind));
+            }
+            offset = offset.wrapping_add(w);
+            elem_size = elem_size.wrapping_add(w);
+        }
+        let (off, kind) = found?;
+        Some((off, kind, elem_size))
+    }
+
     /// Parse the dimension list of an `array(...)` / `array_word(...)` initializer.
     /// Consumes the surrounding parentheses. Every dimension must fold to a
     /// compile-time constant. Returns `(total_elements_expr, dims)` where
@@ -937,7 +983,7 @@ impl Parser {
                 };
                 let vtype = if self.peek() == &Token::Colon {
                     self.advance();
-                    match self.peek() {
+                    match self.peek().clone() {
                         Token::Int => {
                             self.advance();
                             Some(VarType::Int)
@@ -954,6 +1000,11 @@ impl Parser {
                             self.advance();
                             Some(VarType::Word)
                         }
+                        // `var arr: TName = array(N)` — user-defined struct type
+                        Token::Ident(tn) if self.types.contains_key(&tn) => {
+                            self.advance();
+                            Some(VarType::StructArray(tn))
+                        }
                         _ => None,
                     }
                 } else {
@@ -961,6 +1012,47 @@ impl Parser {
                 };
                 if self.peek() == &Token::Assign {
                     self.advance();
+                }
+                // `var arr: TName = array(N)` — allocate N × sizeof(T) bytes.
+                if let Some(VarType::StructArray(tn)) = &vtype {
+                    if matches!(self.peek(), Token::Array) {
+                        self.advance();
+                        let (count_expr, _dims) = self.parse_array_dims();
+                        // Element size is the sum of field widths (int=1, word/float=2).
+                        let elem_size: u16 = self
+                            .types
+                            .get(tn)
+                            .map(|fs| {
+                                fs.iter()
+                                    .map(|(_, t)| match t {
+                                        VarType::Word | VarType::Float => 2u16,
+                                        _ => 1u16,
+                                    })
+                                    .sum()
+                            })
+                            .unwrap_or(1);
+                        // Total bytes = count * elem_size.
+                        let total_size = match count_expr {
+                            Expr::Number(n) => Expr::Number((n as u16).wrapping_mul(elem_size) as i16),
+                            other => Expr::BinOp(
+                                Box::new(other),
+                                super::ast::BinOp::Mul,
+                                Box::new(Expr::Number(elem_size as i16)),
+                            ),
+                        };
+                        self.array_types.insert(name.clone(), tn.clone());
+                        self.expect_newline();
+                        return Some(Stmt::VarDecl {
+                            name,
+                            vtype: Some(VarType::Array),
+                            expr: total_size,
+                        });
+                    } else {
+                        self.errors.push(format!(
+                            "line {}: struct-typed var '{}' must be initialized with 'array(N)'",
+                            self.line, name
+                        ));
+                    }
                 }
                 // array(N) or array(R, C, ...) initializer
                 if matches!(self.peek(), Token::Array) {
@@ -1010,9 +1102,44 @@ impl Parser {
                     ));
                 }
                 if self.peek() == &LBracket {
-                    // arr[idx] = val   (or arr[i, j, ...] = val)
+                    // arr[idx] = val   (or arr[i, j, ...] = val   or   arr[idx].field = val)
                     self.advance(); // [
                     let indices = self.parse_index_exprs();
+                    // Struct field write: arr[idx].field = val
+                    if self.peek() == &Token::Dot && self.array_types.contains_key(&name) {
+                        self.advance(); // .
+                        let field_name = if let Token::Ident(fn_) = self.advance() {
+                            fn_
+                        } else {
+                            return self.reject_stmt("expected field name after '.'");
+                        };
+                        let (off, kind, elem_size) =
+                            match self.resolve_struct_field(&name, &field_name) {
+                                Some(x) => x,
+                                None => {
+                                    self.errors.push(format!(
+                                        "line {}: unknown field '{}' on struct-array '{}'",
+                                        self.line, field_name, name
+                                    ));
+                                    return None;
+                                }
+                            };
+                        if self.peek() == &Token::Assign {
+                            self.advance();
+                        }
+                        let val = self.parse_expr();
+                        self.expect_newline();
+                        // Struct arrays are declared with only one subscript for now.
+                        let idx = indices.into_iter().next().unwrap_or(Expr::Number(0));
+                        return Some(Stmt::StructSet {
+                            arr: name,
+                            idx,
+                            field_offset: off,
+                            field_kind: kind,
+                            elem_size,
+                            expr: val,
+                        });
+                    }
                     let idx = self.fold_flat_index(&name, indices);
                     if self.peek() == &Token::Assign {
                         self.advance();
@@ -1653,6 +1780,91 @@ impl Parser {
                 }
                 self.expect_newline();
                 Some(Stmt::Const(name, val))
+            }
+            Token::TypeKw => {
+                // Type TName
+                //   var field1: int
+                //   var field2: word
+                //   ...
+                // endType
+                self.advance();
+                let type_name = if let Token::Ident(n) = self.advance() {
+                    n
+                } else {
+                    return self.reject_stmt("expected type name after 'type'");
+                };
+                self.expect_newline();
+                let mut fields: Vec<(String, VarType)> = vec![];
+                loop {
+                    self.skip_newlines();
+                    match self.peek() {
+                        Token::EndType | Token::Eof => break,
+                        Token::Var => {
+                            self.advance();
+                            let fname = if let Token::Ident(n) = self.advance() {
+                                n
+                            } else {
+                                self.errors.push(format!(
+                                    "line {}: type '{}': expected field name after 'var'",
+                                    self.line, type_name
+                                ));
+                                continue;
+                            };
+                            // Required : type
+                            if self.peek() != &Token::Colon {
+                                self.errors.push(format!(
+                                    "line {}: type '{}': field '{}' must have ':int' or ':word' annotation",
+                                    self.line, type_name, fname
+                                ));
+                                self.expect_newline();
+                                continue;
+                            }
+                            self.advance(); // ':'
+                            let ftype = match self.peek() {
+                                Token::Int => {
+                                    self.advance();
+                                    VarType::Int
+                                }
+                                Token::Word => {
+                                    self.advance();
+                                    VarType::Word
+                                }
+                                Token::Float => {
+                                    self.advance();
+                                    VarType::Float
+                                }
+                                other => {
+                                    self.errors.push(format!(
+                                        "line {}: type '{}': field '{}' has unsupported type {:?} — supported: int, word, float",
+                                        self.line, type_name, fname, other
+                                    ));
+                                    self.expect_newline();
+                                    continue;
+                                }
+                            };
+                            // Optional default value — parsed but ignored for MVP.
+                            if self.peek() == &Token::Assign {
+                                self.advance();
+                                let _ = self.parse_expr();
+                            }
+                            self.expect_newline();
+                            fields.push((fname, ftype));
+                        }
+                        _ => {
+                            // Skip stray tokens inside the block.
+                            self.advance();
+                        }
+                    }
+                }
+                if self.peek() == &Token::EndType {
+                    self.advance();
+                    self.expect_newline();
+                }
+                self.types.insert(type_name.clone(), fields.clone());
+                Some(Stmt::TypeDef {
+                    name: type_name,
+                    fields,
+                })
             }
             Token::Label => {
                 self.advance();
@@ -2988,6 +3200,38 @@ impl Parser {
                     }
                     self.advance(); // [
                     let indices = self.parse_index_exprs();
+                    // Struct field read: arr[i].field
+                    if self.peek() == &Token::Dot && self.array_types.contains_key(&n) {
+                        self.advance(); // .
+                        let field_name = if let Token::Ident(fname) = self.advance() {
+                            fname
+                        } else {
+                            self.errors.push(format!(
+                                "line {}: expected field name after '.'",
+                                self.line
+                            ));
+                            return Expr::Number(0);
+                        };
+                        let (off, kind, elem_size) =
+                            match self.resolve_struct_field(&n, &field_name) {
+                                Some(x) => x,
+                                None => {
+                                    self.errors.push(format!(
+                                        "line {}: unknown field '{}' on struct-array '{}'",
+                                        self.line, field_name, n
+                                    ));
+                                    return Expr::Number(0);
+                                }
+                            };
+                        let idx = indices.into_iter().next().unwrap_or(Expr::Number(0));
+                        return Expr::StructGet {
+                            arr: n,
+                            idx: Box::new(idx),
+                            field_offset: off,
+                            field_kind: kind,
+                            elem_size,
+                        };
+                    }
                     let idx = self.fold_flat_index(&n, indices);
                     Expr::ArrayGet(n, Box::new(idx))
                 } else if self.peek() == &Token::LParen {

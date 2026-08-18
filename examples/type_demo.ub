@@ -1,0 +1,102 @@
+### `type ... endtype` struct demo
+###
+### Defines TEntity (int x, int y, int hp), allocates an array of 4 instances
+### on $C000+ heap, writes fields with both constant and variable indices, and
+### reads them back to the screen at PETSCII positions.
+
+type TEntity
+  var x: int
+  var y: int
+  var hp: int
+endtype
+
+const N = 4
+var enemies: TEntity = array(N)
+var i: int = 0
+var k: int = 0
+
+# ── Populate with constant indices ────────────────────────────────────────
+enemies[0].x  = 5
+enemies[0].y  = 10
+enemies[0].hp = 100
+
+enemies[1].x  = 15
+enemies[1].y  = 12
+enemies[1].hp = 80
+
+enemies[2].x  = 25
+enemies[2].y  = 14
+enemies[2].hp = 60
+
+enemies[3].x  = 35
+enemies[3].y  = 16
+enemies[3].hp = 40
+
+# ── Read back with variable indices ───────────────────────────────────────
+cls
+color border 6
+color bg    0
+color text  1
+
+print "  #  x   y   hp"
+print "  -- --  --  --"
+
+for i = 0 to N - 1
+  print "  ", i, "  ", enemies[i].x, "  ", enemies[i].y, "  ", enemies[i].hp
+next i
+
+# ── Modify one element through a variable index ───────────────────────────
+i = 2
+enemies[i].hp = enemies[i].hp + 25
+
+print
+print "after enemies[2].hp += 25:"
+print "  enemies[2].hp = ", enemies[2].hp
+
+# ── Word-typed field: a coordinate pair with room for 16-bit ranges ───────
+type Particle
+  var px: word
+  var vy: int
+endtype
+
+var parts: Particle = array(3)
+parts[0].px = $0140          # 320 — full bitmap width
+parts[0].vy = 1
+parts[1].px = $0100
+parts[1].vy = 2
+parts[2].px = $0080
+parts[2].vy = 3
+
+print
+print "parts[0].vy = ", parts[0].vy
+print "parts[2].vy = ", parts[2].vy
+
+# ── Float-typed field: Q8.8 fixed-point velocity ─────────────────────────
+type TBall
+  var bx: int
+  var by: int
+  var vel: float
+endtype
+
+var balls: TBall = array(3)
+balls[0].bx  = 10
+balls[0].by  = 20
+balls[0].vel = 1.5
+balls[1].bx  = 30
+balls[1].by  = 40
+balls[1].vel = 2.75
+balls[2].bx  = 50
+balls[2].by  = 60
+balls[2].vel = 0.5
+
+print
+print "float fields (q8.8):"
+for k = 0 to 2
+  print "  ball ", k, " vel = ", balls[k].vel
+next k
+
+# Read float field into a float variable
+var fv: float = balls[1].vel
+print "fv = balls[1].vel = ", fv
+
+bye

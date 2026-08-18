@@ -52,7 +52,8 @@ confusing error (a `var` line silently fails to declare, or an expression like
 `for i = 1 to times` folds to `Number(0)`) — so pick a different name.
 
 **Declaration & control flow**
-`var`, `const`, `sub`, `fn`, `return`, `call`, `label`, `goto`, `gosub`,
+`var`, `const`, `sub`, `fn`, `type`, `endtype`, `return`, `call`,
+`label`, `goto`, `gosub`,
 `if`, `then`, `else`, `end`, `select`, `case`,
 `for`, `next`, `loop`, `times`, `to`, `step`, `while`, `repeat`, `until`,
 `break`, `continue`, `inc`, `dec`, `bye`, `exit`, `rem`
@@ -418,6 +419,64 @@ computation and an indexed `(ptr),Y` access. A single subscript into a
 multi-dimensional array is still allowed and treated as a flat/linear index
 (`grid[10]`). Dimensions must be compile-time constants (literals or `const`s),
 and the array must be declared before it is indexed.
+
+**Struct types (`type ... endtype`, new in 1.5.4)**
+
+Define a fixed layout of named fields with `type`, then allocate an array of
+instances the same way as a regular array. Field access uses `arr[idx].field`
+and works for both constant and variable indices.
+
+```basic
+type TEntity
+  var x:  int      # 1 byte
+  var y:  int      # 1 byte
+  var hp: word     # 2 bytes  → element size = 4
+endtype
+
+const N = 8
+var enemies: TEntity = array(N)   # allocates N × 4 = 32 bytes at $C000
+
+enemies[0].x  = 5
+enemies[0].y  = 10
+enemies[0].hp = $0100
+var v = enemies[0].hp             # read back — LDA $C002 / LDA $C003
+
+var i: int = 2
+enemies[i].x = 42                 # variable index → idx * elem_size + offset
+
+# Float field (Q8.8 fixed-point)
+type TBall
+  var bx:  int     # 1 byte
+  var by:  int     # 1 byte
+  var vel: float   # 2 bytes Q8.8  → element size = 4
+endtype
+
+var balls: TBall = array(3)
+balls[0].vel = 1.5                # stores Q8.8: hi=1, lo=128
+var f: float = balls[0].vel       # read float field into float variable
+print balls[0].vel                # prints "1.50"
+```
+
+Rules and constraints:
+
+- Field types: `int` (1 byte), `word` (2 bytes LE), `float` (2 bytes Q8.8).
+  `string` and nested `type` fields are not yet supported.
+- Element size = sum of field widths (declaration order, no padding).
+- Storage lives at `$C000+` alongside regular arrays, and shows up in the memory
+  map as an ordinary array of the total byte size.
+- Constant index → `LDA/STA absolute` at compile time.
+- Variable index → shift-and-add multiply for `idx * elem_size`, then indexed
+  `(ptr),Y` access. Element sizes that are powers of two (1, 2, 4, 8, 16) use
+  bare `ASL A` chains; other sizes emit a short shift-add sequence via two
+  scratch zero-page bytes.
+- Sub / fn parameters of a struct type are not yet supported — pass the array
+  and an index instead, e.g. `sub move(idx: int) ... enemies[idx].x = ...`.
+- Default field values (`var fire: int = 2` inside the type) are parsed for
+  compatibility with the proposal but not yet initialized at allocation time.
+- Only one subscript is allowed on a struct-typed array; multi-dimensional
+  struct arrays are not supported (use a computed flat index).
+
+See `examples/type_demo.ub`.
 
 ### 16-bit (word) variables
 

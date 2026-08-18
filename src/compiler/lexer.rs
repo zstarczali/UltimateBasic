@@ -9,6 +9,9 @@ pub enum Token {
     Var,
     Sub,
     Fn,
+    TypeKw,   // `type` — begin a struct-type definition block
+    EndType,  // `endtype` — close a struct-type definition block
+    Dot,      // `.` — struct field selector (arr[i].field)
     End,
     If,
     Then,
@@ -384,6 +387,13 @@ impl Lexer {
                     self.advance();
                     tokens.push(Token::Colon);
                 }
+                Some('.') => {
+                    // `.` is only produced as its own token here when it does not
+                    // start a numeric fractional part; `read_number` handles the
+                    // `<digits>.<digits>` case for FixedLit literals.
+                    self.advance();
+                    tokens.push(Token::Dot);
+                }
                 Some(c) => {
                     self.advance();
                     self.errors
@@ -481,6 +491,8 @@ impl Lexer {
             "var" => Token::Var,
             "sub" => Token::Sub,
             "fn" => Token::Fn,
+            "type" => Token::TypeKw,
+            "endtype" => Token::EndType,
             "end" => Token::End,
             "if" => Token::If,
             "then" => Token::Then,

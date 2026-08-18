@@ -154,6 +154,15 @@ impl TestCpu {
                 self.a <<= 1;
                 self.set_zn(self.a);
             }
+            0x06 => {
+                // ASL zp
+                let zp = self.fetch_byte();
+                let v = self.mem[zp as usize];
+                self.carry = v & 0x80 != 0;
+                let r = v << 1;
+                self.mem[zp as usize] = r;
+                self.set_zn(r);
+            }
             0x4A => {
                 self.carry = self.a & 1 != 0;
                 self.a >>= 1;
@@ -1330,6 +1339,249 @@ fn for_loop_from_gt_to_with_default_step_panics() {
 #[should_panic(expected = "for-loop: from (20) > to (0) with default step +1")]
 fn for_next_from_gt_to_with_default_step_panics() {
     let _ = compile_raw("var i = 0\nfor i = 20 to 0\n  print i\nnext");
+}
+
+// ── Type structs (array-of-struct) ─────────────────────────────────────────
+
+#[test]
+fn struct_type_def_and_array_alloc() {
+    // `type X ... endtype` plus `var arr: X = array(N)` allocates N × sizeof(X)
+    // bytes at $C000+. int=1 byte, word=2 bytes → element size = 3.
+    let src = "\
+type TEntity
+  var x: int
+  var y: int
+  var hp: word
+endtype
+var e: TEntity = array(4)
+";
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    // Look up the allocated array in the memory map.
+    let arr = res
+        .map
+        .arrays
+        .iter()
+        .find(|a| a.name == "e")
+        .expect("array 'e' should be allocated");
+    assert_eq!(arr.size, 4 * (1 + 1 + 2), "elem_size should be sum of field widths");
+    assert_eq!(arr.base_addr, 0xC000);
+}
+
+#[test]
+fn struct_field_const_index_int() {
+    // `arr[K].field = V` where K is constant folds to an absolute store; the
+    // subsequent `arr[K].field` read likewise folds to LDA absolute.
+    let src = "\
+type TEntity
+  var x: int
+  var y: int
+  var hp: int
+endtype
+var e: TEntity = array(3)
+e[0].x  = 11
+e[0].y  = 22
+e[0].hp = 33
+e[1].x  = 44
+e[2].hp = 55
+poke $D000, e[0].x
+poke $D001, e[0].y
+poke $D002, e[0].hp
+poke $D003, e[1].x
+poke $D004, e[2].hp
+";
+    let prg = compile_raw(src);
+    let mut cpu = TestCpu::new(&prg);
+    cpu.run_until_main_rts(200_000);
+    // element 0: bytes at C000/1/2
+    assert_eq!(cpu.mem[0xC000], 11);
+    assert_eq!(cpu.mem[0xC001], 22);
+    assert_eq!(cpu.mem[0xC002], 33);
+    // element 1: bytes at C003/4/5
+    assert_eq!(cpu.mem[0xC003], 44);
+    // element 2: bytes at C006/7/8
+    assert_eq!(cpu.mem[0xC008], 55);
+    // reads land in the poke targets
+    assert_eq!(cpu.mem[0xD000], 11);
+    assert_eq!(cpu.mem[0xD001], 22);
+    assert_eq!(cpu.mem[0xD002], 33);
+    assert_eq!(cpu.mem[0xD003], 44);
+    assert_eq!(cpu.mem[0xD004], 55);
+}
+
+#[test]
+fn struct_field_variable_index_int() {
+    // Variable index: emits idx * elem_size + field_offset via shift-add MUL
+    // plus (ptr),Y indexed access.
+    let src = "\
+type TEntity
+  var x: int
+  var y: int
+  var hp: int
+endtype
+var e: TEntity = array(4)
+var i: int = 0
+loop 4
+  e[i].x  = i + 10
+  e[i].hp = i + 100
+  inc i
+end
+poke $D000, e[0].x
+poke $D001, e[3].x
+poke $D002, e[2].hp
+poke $D003, e[1].hp
+";
+    let prg = compile_raw(src);
+    let mut cpu = TestCpu::new(&prg);
+    cpu.run_until_main_rts(400_000);
+    assert_eq!(cpu.mem[0xC000], 10);
+    // element 3 x is at C000 + 3*3 = C009
+    assert_eq!(cpu.mem[0xC009], 13);
+    // hp of element 2 is at C000 + 2*3 + 2 = C008
+    assert_eq!(cpu.mem[0xC008], 102);
+    assert_eq!(cpu.mem[0xD000], 10);
+    assert_eq!(cpu.mem[0xD001], 13);
+    assert_eq!(cpu.mem[0xD002], 102);
+    assert_eq!(cpu.mem[0xD003], 101);
+}
+
+#[test]
+fn struct_field_word_write_lo_and_hi() {
+    // Word field: 2-byte store; hi byte lands at addr+1.
+    let src = "\
+type Pt
+  var x: word
+  var y: int
+endtype
+var p: Pt = array(2)
+p[0].x = $ABCD
+p[0].y = 7
+p[1].x = $1234
+p[1].y = 8
+var i: int = 1
+p[i].x = $BEEF
+";
+    let prg = compile_raw(src);
+    let mut cpu = TestCpu::new(&prg);
+    cpu.run_until_main_rts(200_000);
+    // elem 0: word x at C000/C001 (little-endian), int y at C002
+    assert_eq!(cpu.mem[0xC000], 0xCD);
+    assert_eq!(cpu.mem[0xC001], 0xAB);
+    assert_eq!(cpu.mem[0xC002], 7);
+    // elem 1: word x at C003/C004 (overwritten from $1234 to $BEEF via variable idx)
+    assert_eq!(cpu.mem[0xC003], 0xEF);
+    assert_eq!(cpu.mem[0xC004], 0xBE);
+    assert_eq!(cpu.mem[0xC005], 8);
+}
+
+#[test]
+fn struct_unknown_field_is_error() {
+    let src = "\
+type T
+  var x: int
+endtype
+var a: T = array(2)
+a[0].nope = 5
+";
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
+    assert!(
+        res.errors.iter().any(|e| e.contains("unknown field 'nope'")),
+        "expected unknown-field error, got: {:?}",
+        res.errors
+    );
+}
+
+#[test]
+fn struct_field_float_const_index() {
+    let src = "\
+type TObj
+  var x: int
+  var vel: float
+endtype
+var objs: TObj = array(2)
+objs[0].x = 5
+objs[0].vel = 3.5
+objs[1].x = 10
+objs[1].vel = 1.25
+";
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
+    assert!(res.errors.is_empty(), "errors: {:?}", res.errors);
+    let mut cpu = TestCpu::new(&res.prg);
+    cpu.run_until_main_rts(200_000);
+    // elem 0: int x(1 byte) + float vel(2 bytes) = 3 bytes per element
+    // elem 0 at $C000: x=5, vel lo=$80 hi=$03 (3.5 in Q8.8)
+    assert_eq!(cpu.mem[0xC000], 5);
+    assert_eq!(cpu.mem[0xC001], 0x80); // vel lo (frac = 0.5 * 256 = 128)
+    assert_eq!(cpu.mem[0xC002], 0x03); // vel hi (integer = 3)
+    // elem 1 at $C003: x=10, vel lo=$40 hi=$01 (1.25 in Q8.8 → 0x0140)
+    assert_eq!(cpu.mem[0xC003], 10);
+    assert_eq!(cpu.mem[0xC004], 0x40); // vel lo (frac = 0.25 * 256 = 64)
+    assert_eq!(cpu.mem[0xC005], 0x01); // vel hi (integer = 1)
+}
+
+#[test]
+fn struct_field_float_variable_index() {
+    let src = "\
+type TObj
+  var x: int
+  var vel: float
+endtype
+var objs: TObj = array(4)
+var i: int = 2
+objs[i].x = 42
+objs[i].vel = 2.75
+";
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
+    assert!(res.errors.is_empty(), "errors: {:?}", res.errors);
+    let mut cpu = TestCpu::new(&res.prg);
+    cpu.run_until_main_rts(200_000);
+    // elem 2 at $C000 + 2*3 = $C006: x=42, vel lo/hi → 2.75 = 0x02C0
+    assert_eq!(cpu.mem[0xC006], 42);
+    assert_eq!(cpu.mem[0xC007], 0xC0); // vel lo (frac = 0.75 * 256 = 192)
+    assert_eq!(cpu.mem[0xC008], 0x02); // vel hi (integer = 2)
+}
+
+#[test]
+fn struct_field_float_read_into_word() {
+    // Read a float field into a float var via gen_word_assign.
+    let src = "\
+type TObj
+  var vel: float
+endtype
+var objs: TObj = array(2)
+objs[0].vel = 5.5
+var f: float = objs[0].vel
+";
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
+    assert!(res.errors.is_empty(), "errors: {:?}", res.errors);
+    let mut cpu = TestCpu::new(&res.prg);
+    cpu.run_until_main_rts(200_000);
+    // objs[0].vel = 5.5 → Q8.8 = 0x0580 → lo=$80 hi=$05
+    assert_eq!(cpu.mem[0xC000], 0x80); // vel lo
+    assert_eq!(cpu.mem[0xC001], 0x05); // vel hi
+    // var f should hold the same 16-bit value in its ZP pair
+    // f is the first permanent var → zp $02/$03
+    assert_eq!(cpu.mem[0x02], 0x80);
+    assert_eq!(cpu.mem[0x03], 0x05);
+}
+
+#[test]
+fn struct_float_elem_size_includes_float_width() {
+    // Verify that a struct with float fields computes the correct element size (not 1).
+    let src = "\
+type TTest
+  var a: int
+  var b: float
+  var c: int
+endtype
+var arr: TTest = array(2)
+arr[1].a = 99
+";
+    let prg = compile_raw(src);
+    let mut cpu = TestCpu::new(&prg);
+    cpu.run_until_main_rts(200_000);
+    // elem_size = 1 + 2 + 1 = 4. elem 1 starts at $C000 + 4 = $C004.
+    assert_eq!(cpu.mem[0xC004], 99);
 }
 
 // ── explicit CLI flag ──────────────────────────────────────────────────────
