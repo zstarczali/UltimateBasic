@@ -1,5 +1,7 @@
 # Ultimate Basic
 
+<img src="assets/ultimate-basic-banner.png" alt="Ultimate Basic C64 banner" width="50%">
+
 Current version: **1.5.2**
 
 A modern BASIC-like language that compiles directly to 6502 machine code for the

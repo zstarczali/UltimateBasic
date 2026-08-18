@@ -1,4 +1,4 @@
-# Ultimate Basic — Language Manual
+# Ultimate Basic v1.5.2 — Language Manual
 
 Complete language and CLI reference for Ultimate Basic, a BASIC-like language that
 compiles directly to 6502 machine code for the Commodore 64. Output: `.prg` files
