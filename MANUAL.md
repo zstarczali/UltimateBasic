@@ -40,6 +40,8 @@ Keywords and identifiers are **case-insensitive**: `PRINT`, `Print`, and `print`
 | `string` | pointer | ZP pair → null-terminated PETSCII in code segment |
 | `array(N)` | N bytes | byte elements; lives at `$C000+`, not in ZP |
 | `array_word(N)` | N×2 bytes | word (16-bit) elements; lives at `$C000+`, not in ZP |
+| `array(R, C, …)` | ∏dims bytes | multi-dimensional (row-major); index `arr[r, c]` |
+| `array_word(R, C, …)` | ∏dims×2 bytes | multi-dimensional word array (row-major) |
 
 ### Comments
 
@@ -277,6 +279,36 @@ times[0] = $1234         # constant index → STA $C000 (lo), STA $C001 (hi)
 times[i] = $5678         # variable index → ASL A for stride; (ptr),Y × 2
 var t: word = times[1]   # LDA $C002, LDA $C003
 ```
+
+**Multi-dimensional arrays**
+
+Arrays may be declared with more than one dimension. They are stored
+**row-major** and indexed with a comma-separated subscript list. The total
+size is the product of all dimensions.
+
+```basic
+var grid = array(8, 8)     # 8×8 = 64 bytes at $C000
+grid[1, 0] = 11            # row 1, col 0 → flat index 1*8+0 = 8 → STA $C008
+grid[0, 1] = 22            # row 0, col 1 → flat index 1       → STA $C001
+grid[r, c] = 33            # variable → computes r*8 + c, then STA (ptr),Y
+var v = grid[r, c]         # LDA (ptr),Y
+
+var wm = array_word(4, 4)  # 4×4 word array = 32 bytes
+wm[1, 2] = $ABCD           # element 1*4+2 = 6 → bytes $C00C/$C00D
+
+const ROWS = 3
+const COLS = 5
+var m = array(ROWS, COLS)  # dimensions may be compile-time constants
+```
+
+Row-major layout means the last subscript is contiguous: `grid[r, c]` sits at
+`base + r*COLS + c`. Any number of dimensions is supported (`array(a, b, c)`).
+When every subscript is a constant the address is folded at compile time to a
+single absolute store/load; a variable subscript emits the `row*stride + col`
+computation and an indexed `(ptr),Y` access. A single subscript into a
+multi-dimensional array is still allowed and treated as a flat/linear index
+(`grid[10]`). Dimensions must be compile-time constants (literals or `const`s),
+and the array must be declared before it is indexed.
 
 ### 16-bit (word) variables
 

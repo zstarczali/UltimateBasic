@@ -1575,6 +1575,121 @@ b[0] = 2
     assert!(has_b, "b[0] → STA $C008");
 }
 
+// ── Multi-dimensional arrays ────────────────────────────────────────────────
+
+#[test]
+fn array2d_declares_total_size() {
+    // 8x8 grid -> 64 bytes at $C000, a following array starts at $C040.
+    let src = "
+var grid = array(8, 8)
+var tail = array(4)
+grid[0, 0] = 1
+tail[0] = 2
+";
+    let res = compile(src, &CompileOptions { basic_stub: false });
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    // grid at $C000, tail at $C040 (after 64 bytes)
+    let has_grid = res.prg[2..].windows(3).any(|w| w == &[0x8D, 0x00, 0xC0]);
+    let has_tail = res.prg[2..].windows(3).any(|w| w == &[0x8D, 0x40, 0xC0]);
+    assert!(has_grid, "grid[0,0] → STA $C000");
+    assert!(has_tail, "tail[0] → STA $C040 (grid occupies 64 bytes)");
+}
+
+#[test]
+fn array2d_constant_index_folds_row_major() {
+    // grid[1,0] = row 1, col 0 -> flat index 1*8+0 = 8 -> $C008
+    // grid[0,1] = row 0, col 1 -> flat index 0*8+1 = 1 -> $C001
+    let src = "
+var grid = array(8, 8)
+grid[1, 0] = 11
+grid[0, 1] = 22
+";
+    let res = compile(src, &CompileOptions { basic_stub: false });
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    let has_row = res.prg[2..].windows(3).any(|w| w == &[0x8D, 0x08, 0xC0]);
+    let has_col = res.prg[2..].windows(3).any(|w| w == &[0x8D, 0x01, 0xC0]);
+    assert!(has_row, "grid[1,0] → STA $C008 (row-major stride 8)");
+    assert!(has_col, "grid[0,1] → STA $C001");
+}
+
+#[test]
+fn array2d_variable_index_uses_indirect() {
+    let src = "
+var grid = array(8, 8)
+var r = 2
+var c = 3
+grid[r, c] = 44
+var v = grid[r, c]
+";
+    let res = compile(src, &CompileOptions { basic_stub: false });
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    let bytes = &res.prg[2..];
+    assert!(bytes.contains(&0x91), "grid[r,c] = .. → STA (ptr),Y");
+    assert!(bytes.contains(&0xB1), "v = grid[r,c] → LDA (ptr),Y");
+}
+
+#[test]
+fn array2d_linear_access_still_allowed() {
+    // A single index into a 2D array is treated as a flat/linear index.
+    let src = "
+var grid = array(8, 8)
+grid[10] = 7
+var v = grid[10]
+";
+    let res = compile(src, &CompileOptions { basic_stub: false });
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    // flat index 10 -> $C00A
+    let has_sta = res.prg[2..].windows(3).any(|w| w == &[0x8D, 0x0A, 0xC0]);
+    let has_lda = res.prg[2..].windows(3).any(|w| w == &[0xAD, 0x0A, 0xC0]);
+    assert!(has_sta, "grid[10] = 7 → STA $C00A");
+    assert!(has_lda, "v = grid[10] → LDA $C00A");
+}
+
+#[test]
+fn array2d_word_element_stride() {
+    // 4x4 word array: element [1,2] = flat elem 1*4+2 = 6 -> byte offset 12 -> $C00C
+    let src = "
+var wm = array_word(4, 4)
+wm[1, 2] = $ABCD
+";
+    let res = compile(src, &CompileOptions { basic_stub: false });
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    // lo byte written to $C00C, hi byte to $C00D
+    let has_lo = res.prg[2..].windows(3).any(|w| w == &[0x8D, 0x0C, 0xC0]);
+    let has_hi = res.prg[2..].windows(3).any(|w| w == &[0x8D, 0x0D, 0xC0]);
+    assert!(has_lo, "wm[1,2] lo → STA $C00C (element 6 × 2 bytes)");
+    assert!(has_hi, "wm[1,2] hi → STA $C00D");
+}
+
+#[test]
+fn array2d_dims_from_constants() {
+    let src = "
+const ROWS = 3
+const COLS = 5
+var m = array(ROWS, COLS)
+m[2, 4] = 9
+";
+    let res = compile(src, &CompileOptions { basic_stub: false });
+    assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+    // flat = 2*5 + 4 = 14 -> $C00E
+    let has_sta = res.prg[2..].windows(3).any(|w| w == &[0x8D, 0x0E, 0xC0]);
+    assert!(has_sta, "m[2,4] → STA $C00E (dims from consts)");
+}
+
+#[test]
+fn array2d_wrong_dimension_count_errors() {
+    // grid declared 2D but indexed with 3 subscripts → compile error.
+    let src = "
+var grid = array(8, 8)
+grid[1, 2, 3] = 5
+";
+    let res = compile(src, &CompileOptions { basic_stub: false });
+    assert!(
+        !res.errors.is_empty(),
+        "indexing a 2D array with 3 subscripts should error"
+    );
+}
+
 // ── 16-bit (word) variables ─────────────────────────────────────────────────
 
 #[test]

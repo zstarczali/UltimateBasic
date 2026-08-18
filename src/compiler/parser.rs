@@ -84,6 +84,9 @@ pub struct Parser {
     line: usize,
     consts: std::collections::HashMap<String, i16>,
     declared_vars: std::collections::HashSet<String>,
+    /// Declared dimensions for multi-dimensional arrays (row-major).
+    /// Only populated for arrays declared with 2+ dimensions, e.g. `array(8, 8)`.
+    array_dims: std::collections::HashMap<String, Vec<u16>>,
     base_dir: Option<std::path::PathBuf>,
     errors: Vec<String>,
     skip_var_check: bool,
@@ -97,6 +100,7 @@ impl Parser {
             line: 1,
             consts: std::collections::HashMap::new(),
             declared_vars: std::collections::HashSet::new(),
+            array_dims: std::collections::HashMap::new(),
             base_dir: None,
             errors: vec![],
             skip_var_check: false,
@@ -110,6 +114,7 @@ impl Parser {
             line: 1,
             consts: std::collections::HashMap::new(),
             declared_vars: std::collections::HashSet::new(),
+            array_dims: std::collections::HashMap::new(),
             base_dir: Some(base_dir),
             errors: vec![],
             skip_var_check: false,
@@ -126,6 +131,7 @@ impl Parser {
             line: 1,
             consts,
             declared_vars: std::collections::HashSet::new(),
+            array_dims: std::collections::HashMap::new(),
             base_dir: None,
             errors: vec![],
             skip_var_check: false,
@@ -143,6 +149,7 @@ impl Parser {
             line: 1,
             consts,
             declared_vars: std::collections::HashSet::new(),
+            array_dims: std::collections::HashMap::new(),
             base_dir,
             errors: vec![],
             skip_var_check: false,
@@ -550,6 +557,109 @@ impl Parser {
         self.declared_vars.contains(name) || self.consts.contains_key(name)
     }
 
+    /// Parse the dimension list of an `array(...)` / `array_word(...)` initializer.
+    /// Consumes the surrounding parentheses. Every dimension must fold to a
+    /// compile-time constant. Returns `(total_elements_expr, dims)` where
+    /// `total_elements_expr` is the product of all dimensions (element count),
+    /// suitable as the `VarDecl` size expression, and `dims` are the individual
+    /// dimension sizes (row-major order) for later index folding.
+    fn parse_array_dims(&mut self) -> (Expr, Vec<u16>) {
+        if self.peek() == &Token::LParen {
+            self.advance();
+        }
+        let mut dims: Vec<u16> = Vec::new();
+        loop {
+            let dim_expr = fold_const_expr(self.parse_expr());
+            match dim_expr {
+                Expr::Number(n) => dims.push(n as u16),
+                _ => {
+                    self.errors.push(format!(
+                        "line {}: array dimension must be a compile-time constant",
+                        self.line
+                    ));
+                    dims.push(0);
+                }
+            }
+            if self.peek() == &Token::Comma {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        if self.peek() == &Token::RParen {
+            self.advance();
+        }
+        let total: u16 = dims.iter().copied().fold(1u16, |a, b| a.wrapping_mul(b));
+        (Expr::Number(total as i16), dims)
+    }
+
+    /// Parse a (possibly multi-dimensional) index list after the opening `[`
+    /// has already been consumed. Reads comma-separated expressions until `]`.
+    fn parse_index_exprs(&mut self) -> Vec<Expr> {
+        let mut idxs = vec![self.parse_expr()];
+        while self.peek() == &Token::Comma {
+            self.advance();
+            idxs.push(self.parse_expr());
+        }
+        if self.peek() == &RBracket {
+            self.advance();
+        }
+        idxs
+    }
+
+    /// Collapse a multi-dimensional index list into a single flat (row-major)
+    /// index expression using the array's declared dimensions.
+    ///
+    /// For dims `[d0, d1, ..., dn-1]` and indices `[i0, i1, ..., in-1]`:
+    ///   flat = i0*(d1*...*dn-1) + i1*(d2*...*dn-1) + ... + i(n-1)
+    ///
+    /// A single index is returned unchanged (linear access always allowed).
+    /// The result is constant-folded, so all-constant indices collapse to a
+    /// single `Expr::Number`, preserving codegen's fast direct-address path.
+    fn fold_flat_index(&mut self, name: &str, indices: Vec<Expr>) -> Expr {
+        if indices.len() <= 1 {
+            return indices.into_iter().next().unwrap_or(Expr::Number(0));
+        }
+        let dims = match self.array_dims.get(name) {
+            Some(d) if d.len() == indices.len() => d.clone(),
+            other => {
+                self.errors.push(format!(
+                    "line {}: array '{}' indexed with {} dimensions but declared with {}",
+                    self.line,
+                    name,
+                    indices.len(),
+                    other.map(|d| d.len()).unwrap_or(1)
+                ));
+                return indices.into_iter().next().unwrap();
+            }
+        };
+        // strides[k] = product of dims after k (dims[k+1..])
+        let n = dims.len();
+        let mut strides = vec![1u16; n];
+        for k in (0..n).rev() {
+            if k + 1 < n {
+                strides[k] = strides[k + 1].wrapping_mul(dims[k + 1]);
+            }
+        }
+        let mut acc: Option<Expr> = None;
+        for (idx, stride) in indices.into_iter().zip(strides.into_iter()) {
+            let term = if stride == 1 {
+                idx
+            } else {
+                Expr::BinOp(
+                    Box::new(idx),
+                    BinOp::Mul,
+                    Box::new(Expr::Number(stride as i16)),
+                )
+            };
+            acc = Some(match acc {
+                None => term,
+                Some(a) => Expr::BinOp(Box::new(a), BinOp::Add, Box::new(term)),
+            });
+        }
+        fold_const_expr(acc.unwrap())
+    }
+
     pub fn parse(&mut self) -> Vec<Stmt> {
         // Pre-scan: collect all var declarations (including from included files)
         self.pre_scan_var_decls();
@@ -578,9 +688,11 @@ impl Parser {
                             let decl_vars = self.declared_vars.clone();
                             let mut sub = Parser::new_with_consts_and_base(toks, consts, sub_base);
                             sub.declared_vars = decl_vars;
+                            sub.array_dims = self.array_dims.clone();
                             let sub_stmts = sub.parse();
                             self.consts.extend(sub.consts.into_iter());
                             self.declared_vars.extend(sub.declared_vars);
+                            self.array_dims.extend(sub.array_dims);
                             self.errors.extend(sub.errors);
                             stmts.extend(sub_stmts);
                         }
@@ -830,15 +942,12 @@ impl Parser {
                 if self.peek() == &Token::Assign {
                     self.advance();
                 }
-                // array(N) initializer
+                // array(N) or array(R, C, ...) initializer
                 if matches!(self.peek(), Token::Array) {
                     self.advance(); // consume 'array'
-                    if self.peek() == &Token::LParen {
-                        self.advance();
-                    }
-                    let size = self.parse_expr();
-                    if self.peek() == &Token::RParen {
-                        self.advance();
+                    let (size, dims) = self.parse_array_dims();
+                    if dims.len() > 1 {
+                        self.array_dims.insert(name.clone(), dims);
                     }
                     self.expect_newline();
                     return Some(Stmt::VarDecl {
@@ -847,15 +956,12 @@ impl Parser {
                         expr: size,
                     });
                 }
-                // array_word(N) initializer — word (16-bit) element array
+                // array_word(N) or array_word(R, C, ...) — word (16-bit) element array
                 if matches!(self.peek(), Token::ArrayWord) {
                     self.advance(); // consume 'array_word'
-                    if self.peek() == &Token::LParen {
-                        self.advance();
-                    }
-                    let size = self.parse_expr();
-                    if self.peek() == &Token::RParen {
-                        self.advance();
+                    let (size, dims) = self.parse_array_dims();
+                    if dims.len() > 1 {
+                        self.array_dims.insert(name.clone(), dims);
                     }
                     self.expect_newline();
                     return Some(Stmt::VarDecl {
@@ -878,12 +984,10 @@ impl Parser {
                     ));
                 }
                 if self.peek() == &LBracket {
-                    // arr[idx] = val
+                    // arr[idx] = val   (or arr[i, j, ...] = val)
                     self.advance(); // [
-                    let idx = self.parse_expr();
-                    if self.peek() == &RBracket {
-                        self.advance();
-                    } // ]
+                    let indices = self.parse_index_exprs();
+                    let idx = self.fold_flat_index(&name, indices);
                     if self.peek() == &Token::Assign {
                         self.advance();
                     } // =
@@ -2857,10 +2961,8 @@ impl Parser {
                         ));
                     }
                     self.advance(); // [
-                    let idx = self.parse_expr();
-                    if self.peek() == &RBracket {
-                        self.advance();
-                    } // ]
+                    let indices = self.parse_index_exprs();
+                    let idx = self.fold_flat_index(&n, indices);
                     Expr::ArrayGet(n, Box::new(idx))
                 } else if self.peek() == &Token::LParen {
                     // fn_call(args) expression — n is a function name, not a variable
