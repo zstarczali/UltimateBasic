@@ -1,4 +1,4 @@
-use super::ast::{BinOp, ColorTarget, Expr, ReuOp, Stmt, VarType};
+use super::ast::{BinOp, ColorTarget, Expr, FieldKind, ReuOp, Stmt, VarType};
 use super::{ArrayEntry, MemoryMap, SubEntry, VarEntry};
 use std::collections::HashMap;
 
@@ -1604,10 +1604,10 @@ impl Codegen {
                 arr,
                 idx,
                 field_offset,
-                field_width,
+                field_kind,
                 elem_size,
             } => {
-                self.gen_struct_get(arr, idx, *field_offset, *field_width, *elem_size);
+                self.gen_struct_get(arr, idx, *field_offset, *field_kind, *elem_size);
             }
             Expr::Number(n) => {
                 self.emit(0xA9);
@@ -8166,6 +8166,28 @@ impl Codegen {
                     self.print_decimal(zp);
                 }
             }
+            // StructGet with float field → print as Q8.8 fixed-point
+            Expr::StructGet {
+                field_kind: FieldKind::Float,
+                ..
+            } => {
+                let arg = arg.clone();
+                let tmp = self.tmp_zp;
+                self.tmp_zp += 2;
+                self.gen_word_assign(tmp, &arg);
+                self.print_fixed(tmp);
+            }
+            // StructGet with word field → print as 16-bit decimal
+            Expr::StructGet {
+                field_kind: FieldKind::Word,
+                ..
+            } => {
+                let arg = arg.clone();
+                let tmp = self.tmp_zp;
+                self.tmp_zp += 2;
+                self.gen_word_assign(tmp, &arg);
+                self.print_decimal_word(tmp);
+            }
             // String-side `+`: print left part then right part (no separator)
             Expr::BinOp(l, BinOp::Add, r) if self.is_string_expr(l) || self.is_string_expr(r) => {
                 let (l, r) = (l.clone(), r.clone());
@@ -9302,6 +9324,43 @@ impl Codegen {
                 }
                 return true;
             }
+            // ── struct_get word/float field → 16-bit load ──────────────────────
+            Expr::StructGet {
+                arr,
+                idx,
+                field_offset,
+                field_kind,
+                elem_size,
+            } if field_kind.width() == 2 => {
+                let base = self.arrays.get(arr).copied().unwrap_or(0xC000);
+                if let Expr::Number(n) = idx.as_ref() {
+                    let addr = base
+                        .wrapping_add((*n as u16).wrapping_mul(*elem_size))
+                        .wrapping_add(*field_offset);
+                    self.emit(0xAD);
+                    self.emit16(addr); // LDA abs (lo)
+                    self.emit(0x85);
+                    self.emit(dst_zp);
+                    self.emit(0xAD);
+                    self.emit16(addr.wrapping_add(1)); // LDA abs+1 (hi)
+                    self.emit(0x85);
+                    self.emit(dst_zp + 1);
+                } else {
+                    let ptr = self.tmp_zp;
+                    self.tmp_zp += 2;
+                    self.emit_struct_ptr(arr, idx, *field_offset, *elem_size, ptr);
+                    self.emit(0xB1);
+                    self.emit(ptr); // LDA (ptr),Y → lo
+                    self.emit(0x85);
+                    self.emit(dst_zp);
+                    self.emit(0xC8); // INY
+                    self.emit(0xB1);
+                    self.emit(ptr); // LDA (ptr),Y → hi
+                    self.emit(0x85);
+                    self.emit(dst_zp + 1);
+                }
+                return true;
+            }
             _ => false,
         }
     }
@@ -9328,11 +9387,11 @@ impl Codegen {
                 arr,
                 idx,
                 field_offset,
-                field_width,
+                field_kind,
                 elem_size,
                 expr,
             } => {
-                self.gen_struct_set(arr, idx, *field_offset, *field_width, *elem_size, expr);
+                self.gen_struct_set(arr, idx, *field_offset, *field_kind, *elem_size, expr);
             }
             Stmt::VarDecl { name, vtype, expr } => {
                 // Infer type from expr when not annotated
@@ -14220,7 +14279,7 @@ impl Codegen {
         arr: &str,
         idx: &Expr,
         field_offset: u16,
-        field_width: u8,
+        field_kind: FieldKind,
         elem_size: u16,
     ) {
         // Constant-index fast path: emit a bare LDA absolute — no pointer needed.
@@ -14229,16 +14288,14 @@ impl Codegen {
             let addr = base
                 .wrapping_add((*n as u16).wrapping_mul(elem_size))
                 .wrapping_add(field_offset);
-            // For int field: result in A.
-            // For word field: caller (gen_word_assign) may re-issue for hi byte;
-            // here we conservatively load only the lo byte into A, matching the
-            // rest of eval_expr's 8-bit-in-A convention.
-            let _ = field_width;
+            // Load only the lo byte into A, matching eval_expr's 8-bit-in-A convention.
+            // For word/float fields, gen_word_assign handles the full 16-bit read separately.
+            let _ = field_kind;
             self.emit(0xAD);
             self.emit16(addr); // LDA addr
             return;
         }
-        let _ = field_width;
+        let _ = field_kind;
         let ptr = self.tmp_zp;
         self.tmp_zp += 2;
         self.emit_struct_ptr(arr, idx, field_offset, elem_size, ptr);
@@ -14252,10 +14309,11 @@ impl Codegen {
         arr: &str,
         idx: &Expr,
         field_offset: u16,
-        field_width: u8,
+        field_kind: FieldKind,
         elem_size: u16,
         val_expr: &Expr,
     ) {
+        let field_width = field_kind.width();
         let base = self.arrays.get(arr).copied().unwrap_or(0xC000);
         // Constant-index fast path.
         if let Expr::Number(n) = idx {

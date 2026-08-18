@@ -1491,6 +1491,99 @@ a[0].nope = 5
     );
 }
 
+#[test]
+fn struct_field_float_const_index() {
+    let src = "\
+type TObj
+  var x: int
+  var vel: float
+endtype
+var objs: TObj = array(2)
+objs[0].x = 5
+objs[0].vel = 3.5
+objs[1].x = 10
+objs[1].vel = 1.25
+";
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
+    assert!(res.errors.is_empty(), "errors: {:?}", res.errors);
+    let mut cpu = TestCpu::new(&res.prg);
+    cpu.run_until_main_rts(200_000);
+    // elem 0: int x(1 byte) + float vel(2 bytes) = 3 bytes per element
+    // elem 0 at $C000: x=5, vel lo=$80 hi=$03 (3.5 in Q8.8)
+    assert_eq!(cpu.mem[0xC000], 5);
+    assert_eq!(cpu.mem[0xC001], 0x80); // vel lo (frac = 0.5 * 256 = 128)
+    assert_eq!(cpu.mem[0xC002], 0x03); // vel hi (integer = 3)
+    // elem 1 at $C003: x=10, vel lo=$40 hi=$01 (1.25 in Q8.8 → 0x0140)
+    assert_eq!(cpu.mem[0xC003], 10);
+    assert_eq!(cpu.mem[0xC004], 0x40); // vel lo (frac = 0.25 * 256 = 64)
+    assert_eq!(cpu.mem[0xC005], 0x01); // vel hi (integer = 1)
+}
+
+#[test]
+fn struct_field_float_variable_index() {
+    let src = "\
+type TObj
+  var x: int
+  var vel: float
+endtype
+var objs: TObj = array(4)
+var i: int = 2
+objs[i].x = 42
+objs[i].vel = 2.75
+";
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
+    assert!(res.errors.is_empty(), "errors: {:?}", res.errors);
+    let mut cpu = TestCpu::new(&res.prg);
+    cpu.run_until_main_rts(200_000);
+    // elem 2 at $C000 + 2*3 = $C006: x=42, vel lo/hi → 2.75 = 0x02C0
+    assert_eq!(cpu.mem[0xC006], 42);
+    assert_eq!(cpu.mem[0xC007], 0xC0); // vel lo (frac = 0.75 * 256 = 192)
+    assert_eq!(cpu.mem[0xC008], 0x02); // vel hi (integer = 2)
+}
+
+#[test]
+fn struct_field_float_read_into_word() {
+    // Read a float field into a float var via gen_word_assign.
+    let src = "\
+type TObj
+  var vel: float
+endtype
+var objs: TObj = array(2)
+objs[0].vel = 5.5
+var f: float = objs[0].vel
+";
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
+    assert!(res.errors.is_empty(), "errors: {:?}", res.errors);
+    let mut cpu = TestCpu::new(&res.prg);
+    cpu.run_until_main_rts(200_000);
+    // objs[0].vel = 5.5 → Q8.8 = 0x0580 → lo=$80 hi=$05
+    assert_eq!(cpu.mem[0xC000], 0x80); // vel lo
+    assert_eq!(cpu.mem[0xC001], 0x05); // vel hi
+    // var f should hold the same 16-bit value in its ZP pair
+    // f is the first permanent var → zp $02/$03
+    assert_eq!(cpu.mem[0x02], 0x80);
+    assert_eq!(cpu.mem[0x03], 0x05);
+}
+
+#[test]
+fn struct_float_elem_size_includes_float_width() {
+    // Verify that a struct with float fields computes the correct element size (not 1).
+    let src = "\
+type TTest
+  var a: int
+  var b: float
+  var c: int
+endtype
+var arr: TTest = array(2)
+arr[1].a = 99
+";
+    let prg = compile_raw(src);
+    let mut cpu = TestCpu::new(&prg);
+    cpu.run_until_main_rts(200_000);
+    // elem_size = 1 + 2 + 1 = 4. elem 1 starts at $C000 + 4 = $C004.
+    assert_eq!(cpu.mem[0xC004], 99);
+}
+
 // ── explicit CLI flag ──────────────────────────────────────────────────────
 
 fn opts_explicit() -> CompileOptions {

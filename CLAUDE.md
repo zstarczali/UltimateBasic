@@ -451,17 +451,21 @@ enemies[0].y = 10
 enemies[i].hp = enemies[i].hp + 1  # variable idx → shift-add mul + (ptr),Y
 ```
 
-Field types are `int` (1 byte) or `word` (2 bytes) for now. Element size is
-the sum of field widths (declaration order, no padding). The parser records
-the type table and per-array element type; `arr[i].field` is resolved into
-`Stmt::StructSet` / `Expr::StructGet` nodes carrying `(field_offset,
-field_width, elem_size)`, and codegen emits either an absolute LDA/STA
-(constant index) or a `(ptr),Y` sequence prefixed by a shift-and-add
+Field types are `int` (1 byte), `word` (2 bytes LE), or `float` (2 bytes Q8.8).
+Element size is the sum of field widths (declaration order, no padding). The
+parser records the type table and per-array element type; `arr[i].field` is
+resolved into `Stmt::StructSet` / `Expr::StructGet` nodes carrying
+`(field_offset, field_kind, elem_size)`, and codegen emits either an absolute
+LDA/STA (constant index) or a `(ptr),Y` sequence prefixed by a shift-and-add
 multiplier for `idx * elem_size` (variable index).
+
+Float fields store Q8.8 fixed-point values (hi byte = integer part, lo byte =
+fraction × 256). Reading a float field into a `float` variable works via
+`gen_word_assign`; printing a float field uses `print_fixed`.
 
 Not yet supported: struct-typed sub/fn parameters, default field values
 (`var fire: int = 2` inside the type — parsed but ignored), nested struct
-fields, multi-dimensional struct arrays.
+fields, multi-dimensional struct arrays, string fields.
 
 See `examples/type_demo.ub`.
 

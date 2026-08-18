@@ -443,12 +443,24 @@ var v = enemies[0].hp             # read back — LDA $C002 / LDA $C003
 
 var i: int = 2
 enemies[i].x = 42                 # variable index → idx * elem_size + offset
+
+# Float field (Q8.8 fixed-point)
+type TBall
+  var bx:  int     # 1 byte
+  var by:  int     # 1 byte
+  var vel: float   # 2 bytes Q8.8  → element size = 4
+endtype
+
+var balls: TBall = array(3)
+balls[0].vel = 1.5                # stores Q8.8: hi=1, lo=128
+var f: float = balls[0].vel       # read float field into float variable
+print balls[0].vel                # prints "1.50"
 ```
 
 Rules and constraints:
 
-- Field types are limited to `int` (1 byte) and `word` (2 bytes) for now.
-  `float`, `string`, and nested `type` fields are not yet supported.
+- Field types: `int` (1 byte), `word` (2 bytes LE), `float` (2 bytes Q8.8).
+  `string` and nested `type` fields are not yet supported.
 - Element size = sum of field widths (declaration order, no padding).
 - Storage lives at `$C000+` alongside regular arrays, and shows up in the memory
   map as an ordinary array of the total byte size.

@@ -71,4 +71,32 @@ print
 print "parts[0].vy = ", parts[0].vy
 print "parts[2].vy = ", parts[2].vy
 
+# ── Float-typed field: Q8.8 fixed-point velocity ─────────────────────────
+type TBall
+  var bx: int
+  var by: int
+  var vel: float
+endtype
+
+var balls: TBall = array(3)
+balls[0].bx  = 10
+balls[0].by  = 20
+balls[0].vel = 1.5
+balls[1].bx  = 30
+balls[1].by  = 40
+balls[1].vel = 2.75
+balls[2].bx  = 50
+balls[2].by  = 60
+balls[2].vel = 0.5
+
+print
+print "float fields (q8.8):"
+for k = 0 to 2
+  print "  ball ", k, " vel = ", balls[k].vel
+next k
+
+# Read float field into a float variable
+var fv: float = balls[1].vel
+print "fv = balls[1].vel = ", fv
+
 bye

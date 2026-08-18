@@ -30,12 +30,12 @@ pub enum Expr {
     Sgn(Box<Expr>),
     ArrayGet(String, Box<Expr>), // arr[idx]
     /// `arr[idx].field` — read a struct field inside a struct-array element.
-    /// Offset/width are resolved by the parser from the type table.
+    /// Offset/kind are resolved by the parser from the type table.
     StructGet {
         arr: String,
         idx: Box<Expr>,
         field_offset: u16,
-        field_width: u8, // 1 or 2
+        field_kind: FieldKind,
         elem_size: u16,
     },
     ChrStr(Box<Expr>),           // chr$(n) — character with PETSCII code n
@@ -106,6 +106,24 @@ pub enum VarType {
     StructArray(String),
 }
 
+/// Which kind of scalar field a struct member is. Encodes both its byte width
+/// and how the codegen should interpret it (integer/word/Q8.8 float).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FieldKind {
+    Int,   // 1 byte, integer
+    Word,  // 2 bytes, little-endian unsigned integer
+    Float, // 2 bytes, Q8.8 fixed-point (hi = integer part, lo = frac × 256)
+}
+
+impl FieldKind {
+    pub fn width(self) -> u8 {
+        match self {
+            FieldKind::Int => 1,
+            FieldKind::Word | FieldKind::Float => 2,
+        }
+    }
+}
+
 /// REU (RAM Expansion Unit) transfer type.
 #[derive(Debug, Clone)]
 pub enum ReuOp {
@@ -163,14 +181,14 @@ pub enum Stmt {
         fields: Vec<(String, VarType)>,
     },
     /// `arr[idx].field = expr` — write a struct field inside a struct-array
-    /// element. Offset/width are resolved by the parser from the type table
+    /// element. Offset/kind are resolved by the parser from the type table
     /// so codegen is self-contained.
     StructSet {
         arr: String,
         idx: Expr,
         field_offset: u16,
-        field_width: u8, // 1 or 2
-        elem_size: u16,  // stride between successive elements
+        field_kind: FieldKind,
+        elem_size: u16, // stride between successive elements
         expr: Expr,
     },
     Print {

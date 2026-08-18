@@ -592,28 +592,35 @@ impl Parser {
         self.declared_vars.contains(name) || self.consts.contains_key(name)
     }
 
-    /// For `arr[i].field` — resolve field to (offset_in_bytes, width_bytes, elem_size).
+    /// For `arr[i].field` — resolve field to (offset_in_bytes, field_kind, elem_size).
     /// Returns None if `arr` is not a struct-typed array or `field` isn't known.
-    /// int → width 1, word → width 2. elem_size = sum of field widths.
-    fn resolve_struct_field(&self, arr: &str, field: &str) -> Option<(u16, u8, u16)> {
+    /// int → 1 byte, word/float → 2 bytes. elem_size = sum of field widths.
+    fn resolve_struct_field(
+        &self,
+        arr: &str,
+        field: &str,
+    ) -> Option<(u16, super::ast::FieldKind, u16)> {
+        use super::ast::FieldKind;
         let tname = self.array_types.get(arr)?;
         let fields = self.types.get(tname)?;
         let mut offset: u16 = 0;
         let mut elem_size: u16 = 0;
-        let mut found: Option<(u16, u8)> = None;
+        let mut found: Option<(u16, FieldKind)> = None;
         for (fname, ftype) in fields {
-            let w: u8 = match ftype {
-                VarType::Word => 2,
-                _ => 1,
+            let kind = match ftype {
+                VarType::Word => FieldKind::Word,
+                VarType::Float => FieldKind::Float,
+                _ => FieldKind::Int,
             };
+            let w = kind.width() as u16;
             if fname == field && found.is_none() {
-                found = Some((offset, w));
+                found = Some((offset, kind));
             }
-            offset = offset.wrapping_add(w as u16);
-            elem_size = elem_size.wrapping_add(w as u16);
+            offset = offset.wrapping_add(w);
+            elem_size = elem_size.wrapping_add(w);
         }
-        let (off, w) = found?;
-        Some((off, w, elem_size))
+        let (off, kind) = found?;
+        Some((off, kind, elem_size))
     }
 
     /// Parse the dimension list of an `array(...)` / `array_word(...)` initializer.
@@ -1011,14 +1018,14 @@ impl Parser {
                     if matches!(self.peek(), Token::Array) {
                         self.advance();
                         let (count_expr, _dims) = self.parse_array_dims();
-                        // Element size is the sum of field widths (int=1, word=2).
+                        // Element size is the sum of field widths (int=1, word/float=2).
                         let elem_size: u16 = self
                             .types
                             .get(tn)
                             .map(|fs| {
                                 fs.iter()
                                     .map(|(_, t)| match t {
-                                        VarType::Word => 2u16,
+                                        VarType::Word | VarType::Float => 2u16,
                                         _ => 1u16,
                                     })
                                     .sum()
@@ -1106,7 +1113,7 @@ impl Parser {
                         } else {
                             return self.reject_stmt("expected field name after '.'");
                         };
-                        let (off, width, elem_size) =
+                        let (off, kind, elem_size) =
                             match self.resolve_struct_field(&name, &field_name) {
                                 Some(x) => x,
                                 None => {
@@ -1128,7 +1135,7 @@ impl Parser {
                             arr: name,
                             idx,
                             field_offset: off,
-                            field_width: width,
+                            field_kind: kind,
                             elem_size,
                             expr: val,
                         });
@@ -1822,9 +1829,13 @@ impl Parser {
                                     self.advance();
                                     VarType::Word
                                 }
+                                Token::Float => {
+                                    self.advance();
+                                    VarType::Float
+                                }
                                 other => {
                                     self.errors.push(format!(
-                                        "line {}: type '{}': field '{}' has unsupported type {:?} — only 'int' and 'word' are supported",
+                                        "line {}: type '{}': field '{}' has unsupported type {:?} — supported: int, word, float",
                                         self.line, type_name, fname, other
                                     ));
                                     self.expect_newline();
@@ -3201,7 +3212,7 @@ impl Parser {
                             ));
                             return Expr::Number(0);
                         };
-                        let (off, width, elem_size) =
+                        let (off, kind, elem_size) =
                             match self.resolve_struct_field(&n, &field_name) {
                                 Some(x) => x,
                                 None => {
@@ -3217,7 +3228,7 @@ impl Parser {
                             arr: n,
                             idx: Box::new(idx),
                             field_offset: off,
-                            field_width: width,
+                            field_kind: kind,
                             elem_size,
                         };
                     }
