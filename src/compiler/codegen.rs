@@ -14110,6 +14110,12 @@ fn ascii_to_petscii(c: char, lowercase_mode: bool) -> u8 {
         '>' => 0x3E,
         '?' => 0x3F,
         '@' => 0x40,
+        // Punctuation in the $5B-$5F region. These occupy the same code points
+        // in both the uppercase/graphics and lowercase charsets, so they need
+        // no case-swap in lowercase mode.
+        '[' => 0x5B,
+        ']' => 0x5D,
+        '^' => 0x5E, // ↑ (up-arrow) glyph on the C64
         _ => 0x3F, // '?' for unknown
     }
 }

@@ -2,7 +2,7 @@
 
 <img src="assets/ultimate-basic-banner.png" alt="Ultimate Basic C64 banner" width="50%">
 
-Current version: **1.5.2**
+Current version: **1.5.3**
 
 A modern BASIC-like language that compiles directly to 6502 machine code for the
 **Commodore 64** and **Commodore 64 Ultimate**. It produces `.prg` files that run in
@@ -67,6 +67,28 @@ bytes. Compiler-generated helper routines are included in the same listing.
 The output uses KickAssembler syntax and can be assembled again. Known data regions—such
 as `data`, maps, sprite/character definitions, lookup tables, SID/Koala payloads, and
 `incbin` content—are emitted as `.byte` blocks instead of being mistaken for instructions.
+
+## What's new in 1.5.3
+
+- Added **multi-dimensional arrays**. Declare an array with a comma-separated
+  dimension list and index it the same way; storage is row-major and the total
+  size is the product of the dimensions:
+
+  ```basic
+  var grid = array(8, 8)     # 8×8 = 64 bytes
+  grid[r, c] = 42            # row-major: base + r*8 + c
+  var v = grid[r, c]
+  var wm = array_word(4, 4)  # word (16-bit) elements work too
+  ```
+
+  Any number of dimensions is supported, dimensions may be `const`s, all-constant
+  subscripts fold to a direct address at compile time, and a single subscript into
+  a multi-dimensional array is still allowed as flat/linear access.
+- Fixed PETSCII string encoding of `[`, `]`, and `^`, which previously printed as
+  `?`. They now emit their correct C64 codes (`$5B`, `$5D`, `$5E`) in both the
+  uppercase and lowercase charset modes.
+- Added `examples/array2d_demo.ub` and integration tests for multi-dimensional
+  arrays and the bracket encoding.
 
 ## What's new in 1.5.2
 

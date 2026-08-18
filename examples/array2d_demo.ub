@@ -1,0 +1,53 @@
+# ─────────────────────────────────────────────────────────────
+# array2d_demo.ub — multi-dimensional (2D) arrays
+#
+# Arrays can be declared with more than one dimension. They are
+# stored row-major and indexed with a comma-separated subscript
+# list: grid[row, col]. Constant subscripts fold to a direct
+# address at compile time; variable subscripts compute
+# row*stride + col at runtime.
+# ─────────────────────────────────────────────────────────────
+
+const ROWS = 5
+const COLS = 8
+var ch
+
+lowercase
+color border 14
+
+var grid = array(ROWS, COLS)      # 5 x 8 = 40 bytes
+
+# Fill the grid with a multiplication table: grid[r, c] = r * c
+var r = 0
+var c = 0
+for r = 0 to ROWS - 1
+  for c = 0 to COLS - 1
+    grid[r, c] = r * c
+  next
+next
+
+# Print the table
+cls
+var v = 0
+for r = 0 to ROWS - 1
+  for c = 0 to COLS - 1
+    v = grid[r, c]
+    print dec(v, 4),
+  next
+  print
+next
+
+ch=getch()
+
+# A 3 x 3 word grid works the same way (array_word)
+var wm = array_word(3, 3)
+wm[0, 0] = $1000
+wm[1, 1] = $2000
+wm[2, 2] = $3000
+var w: word = wm[2, 2]
+print
+print "wm[2,2] = ", w
+
+ch=getch()
+
+bye

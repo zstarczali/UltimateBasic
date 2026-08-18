@@ -30,6 +30,7 @@ src/
 examples/
   features.ub          – original feature demo
   new_features.ub      – arrays, word vars, sub params, string vars demo
+  array2d_demo.ub      – multi-dimensional (2D) byte/word arrays, row-major indexing
   bitmap_demo.ub       – 320×200 bitmap, plot, circle, line
   block_demo.ub        – 80×50 block graphics, plot4, circle4, graphics on block
   joystick_demo.ub     – joystick reading, sprite movement
@@ -137,6 +138,8 @@ as that keyword — use non-keyword names like `SCRADDR`, `BORDER_ADDR`.
 | `string` | pointer | ZP pair → null-terminated PETSCII in code segment |
 | `array(N)` | N bytes | byte elements; lives at `$C000+`, not ZP |
 | `array_word(N)` | N×2 bytes | word (16-bit) elements; lives at `$C000+`, not ZP |
+| `array(R, C, …)` | ∏dims bytes | multi-dimensional (row-major); index `arr[r, c]` |
+| `array_word(R, C, …)` | ∏dims×2 bytes | multi-dimensional word array (row-major) |
 
 ### Arithmetic & Bitwise
 
@@ -376,6 +379,35 @@ times[i] = $1234         # variable index → ASL A for stride; (ptr),Y × 2
 var t: word = times[0]   # constant index → LDA $C000, LDA $C001
 var t: word = times[i]   # variable index → ASL A; LDA (ptr),Y × 2
 ```
+
+**Multi-dimensional arrays** — declare with a comma-separated dimension list;
+stored **row-major**, total size = product of dimensions. Index with a
+comma-separated subscript list:
+
+```basic
+var grid = array(8, 8)   # 8×8 = 64 bytes at $C000
+
+grid[1, 0] = 11          # row 1, col 0 → flat 1*8+0 = 8  → STA $C008
+grid[0, 1] = 22          # row 0, col 1 → flat 1          → STA $C001
+grid[r, c] = 33          # variable → r*8 + c, then STA (ptr),Y
+var v = grid[r, c]       # LDA (ptr),Y
+grid[10] = 99            # single subscript = flat/linear index (still allowed)
+
+var wm = array_word(4, 4)  # 4×4 word array = 32 bytes
+wm[1, 2] = $ABCD           # element 1*4+2 = 6 → bytes $C00C/$C00D
+
+const ROWS = 3
+const COLS = 5
+var m = array(ROWS, COLS)  # dimensions may be compile-time constants
+```
+
+Multi-dimensional indexing is resolved entirely in the **parser**: `grid[i, j]`
+folds to a single flat index expression `i*stride + j` (constant-folded when all
+subscripts are constants), so codegen is unchanged. `stride` for dimension `k`
+is the product of the dimensions after it. Dimensions must be compile-time
+constants, and an array must be declared before it is indexed. Indexing with a
+subscript count that is neither 1 nor equal to the declared rank is a
+compile-time error.
 
 ### 16-bit Variables (word)
 
