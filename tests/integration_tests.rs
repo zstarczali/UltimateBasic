@@ -1575,6 +1575,20 @@ b[0] = 2
     assert!(has_b, "b[0] → STA $C008");
 }
 
+// ── PETSCII string encoding ─────────────────────────────────────────────────
+
+#[test]
+fn square_brackets_encode_to_petscii() {
+    // '[' and ']' must map to $5B/$5D, not the '?' ($3F) unknown-char fallback.
+    for src in ["print \"[x]\"", "lowercase\nprint \"[x]\""] {
+        let res = compile(src, &CompileOptions { basic_stub: false });
+        assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
+        let bytes = &res.prg[2..];
+        assert!(bytes.contains(&0x5B), "'[' should emit PETSCII $5B ({src:?})");
+        assert!(bytes.contains(&0x5D), "']' should emit PETSCII $5D ({src:?})");
+    }
+}
+
 // ── Multi-dimensional arrays ────────────────────────────────────────────────
 
 #[test]

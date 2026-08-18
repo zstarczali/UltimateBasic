@@ -10,6 +10,10 @@
 
 const ROWS = 5
 const COLS = 8
+var ch
+
+lowercase
+color border 14
 
 var grid = array(ROWS, COLS)      # 5 x 8 = 40 bytes
 
@@ -22,6 +26,8 @@ for r = 0 to ROWS - 1
   next
 next
 
+# a=getch()
+
 # Print the table
 cls
 var v = 0
@@ -33,6 +39,8 @@ for r = 0 to ROWS - 1
   print
 next
 
+ch=getch()
+
 # A 3 x 3 word grid works the same way (array_word)
 var wm = array_word(3, 3)
 wm[0, 0] = $1000
@@ -41,5 +49,7 @@ wm[2, 2] = $3000
 var w: word = wm[2, 2]
 print
 print "wm[2,2] = ", w
+
+ch=getch()
 
 bye
