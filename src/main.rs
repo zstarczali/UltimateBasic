@@ -1,5 +1,5 @@
 // Ultimate Basic – C64 BASIC compiler (CLI)
-// Compiles .ub files to .prg / .d64
+// Compiles .ub files to .prg / .crt / .d64
 //
 // Usage:
 //   ub build <input.ub> [--output <out.prg>] [--no-stub] [--d64 <disk.d64>]
@@ -10,7 +10,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::process;
 
-use ultimate_basic::compiler::{CompileOptions, MemoryMap, compile_with_path, debug_output};
+use ultimate_basic::compiler::{
+    build_magic_desk_crt, compile_with_path, debug_output, CompileOptions, MemoryMap,
+};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -38,7 +40,7 @@ fn print_help() {
     println!("  ub build <input.ub> [OPTIONS]");
     println!();
     println!("Options:");
-    println!("  -o, --output <file>   Output .prg file (default: <input>.prg)");
+    println!("  -o, --output <file>   Output file (.prg or .crt; default: <input>.prg)");
     println!("  -v, --verbose         Show full ZP layout and code hex dump");
     println!("  --no-stub              Omit BASIC SYS stub (raw machine code at $0801)");
     println!("  --d64 [file]           Also produce a .d64 disk image (default: <output>.d64)");
@@ -124,6 +126,10 @@ fn cmd_build(args: &[String]) {
     });
 
     let output_path = output.unwrap_or_else(|| input.with_extension("prg"));
+    let is_crt_output = output_path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("crt"));
 
     let opts = CompileOptions {
         basic_stub,
@@ -139,16 +145,32 @@ fn cmd_build(args: &[String]) {
         process::exit(1);
     }
 
-    fs::write(&output_path, &result.prg).unwrap_or_else(|e| {
+    let output_bytes = if is_crt_output {
+        let cart_name = output_path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy();
+        build_magic_desk_crt(&result.prg, &cart_name).unwrap_or_else(|e| {
+            eprintln!("Error building {}: {e}", output_path.display());
+            process::exit(1);
+        })
+    } else {
+        result.prg.clone()
+    };
+
+    fs::write(&output_path, &output_bytes).unwrap_or_else(|e| {
         eprintln!("Error writing {}: {e}", output_path.display());
         process::exit(1);
     });
 
+    let output_kind = if is_crt_output { "CRT" } else { "PRG" };
+
     println!(
-        "  {} -> {} ({} bytes, BASIC stub: {})",
+        "  {} -> {} ({} bytes, {}, BASIC stub: {})",
         input.file_name().unwrap_or_default().to_string_lossy(),
         output_path.display(),
-        result.prg.len(),
+        output_bytes.len(),
+        output_kind,
         if basic_stub { "yes" } else { "no" }
     );
 

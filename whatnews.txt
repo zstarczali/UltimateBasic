@@ -1,5 +1,16 @@
-Ultimate Basic v1.5.4 – Release Notes
+Ultimate Basic v1.5.5 – Release Notes
 ======================================
+
+2026-08-26 – Magic Desk CRT export
+--------------------------------------------------
+  - Added `.crt` output support: when the output filename ends in `.crt`, the
+    compiler now writes a Commodore 64 cartridge image instead of a raw PRG.
+  - The cartridge uses the same banked Magic Desk type-19 layout as
+    VisualAssembler: 64-byte header, bank 0 boot loader, and the compiled PRG
+    payload copied into RAM on startup.
+  - Existing `.prg` and `.d64` output paths are unchanged.
+  - Added integration tests covering the CRT header, bank layout, payload copy,
+    and boot stub.
 
 2026-08-18 – Struct types (`type ... endtype`)
 --------------------------------------------------

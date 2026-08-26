@@ -168,3 +168,167 @@ pub fn compile_with_path(
         asm,
     }
 }
+
+const MAGIC_DESK_BANK_SIZE: usize = 0x2000;
+const MAGIC_DESK_BANK_COUNT: usize = 8;
+const MAGIC_DESK_LOADER_SIZE: usize = 0x80;
+const MAGIC_DESK_MAX_PAYLOAD: usize = MAGIC_DESK_BANK_SIZE * MAGIC_DESK_BANK_COUNT - MAGIC_DESK_LOADER_SIZE;
+
+fn build_magic_desk_loader_bank0(
+    load_addr: u16,
+    payload_len: usize,
+    entry_addr: u16,
+    payload: &[u8],
+) -> Result<(Vec<u8>, usize), String> {
+    let mut bank = vec![0u8; MAGIC_DESK_BANK_SIZE];
+    let load_lo = (load_addr & 0xFF) as u8;
+    let load_hi = (load_addr >> 8) as u8;
+    let payload_lo = (payload_len & 0xFF) as u8;
+    let payload_hi = ((payload_len >> 8) & 0xFF) as u8;
+    let entry_lo = (entry_addr & 0xFF) as u8;
+    let entry_hi = (entry_addr >> 8) as u8;
+
+    // Magic Desk boots at $8009 and copies the embedded PRG into C64 RAM.
+    bank[0x00] = 0x09;
+    bank[0x01] = 0x80;
+    bank[0x02] = 0x09;
+    bank[0x03] = 0x80;
+    bank[0x04] = 0xC3;
+    bank[0x05] = 0xC2;
+    bank[0x06] = 0xCD;
+    bank[0x07] = 0x38;
+    bank[0x08] = 0x30;
+
+    let code: &[u8] = &[
+        0x78,                         // SEI
+        0xA2, 0xFF,                   // LDX #$FF
+        0x9A,                         // TXS
+        0xD8,                         // CLD
+        0x20, 0xA3, 0xFD,             // JSR $FDA3 (IOINIT)
+        0x20, 0x50, 0xFD,             // JSR $FD50 (RAMTAS)
+        0x20, 0x15, 0xFD,             // JSR $FD15 (RESTOR)
+        0x20, 0x5B, 0xFF,             // JSR $FF5B (CINT)
+        0xA9, 0x80,                   // LDA #$80 ; src = $8080
+        0x85, 0xFB,                   // STA $FB
+        0xA9, 0x80,                   // LDA #$80
+        0x85, 0xFC,                   // STA $FC
+        0xA9, load_lo, 0x85, 0xFD,    // dst = load addr
+        0xA9, load_hi, 0x85, 0xFE,
+        0xA9, payload_lo, 0x85, 0x02, // remaining = payload length
+        0xA9, payload_hi, 0x85, 0x03,
+        0xA9, 0x00, 0x85, 0x04,       // bank counter = 0
+        0xA5, 0x02, 0x05, 0x03,       // copy loop: rem_lo | rem_hi
+        0xF0, 0x2E,
+        0xA0, 0x00,                   // LDY #$00
+        0xB1, 0xFB,                   // LDA (src),Y
+        0x91, 0xFD,                   // STA (dst),Y
+        0xE6, 0xFB, 0xD0, 0x02,       // INC src_lo / BNE +2
+        0xE6, 0xFC,                   // INC src_hi
+        0xA5, 0xFC, 0xC9, 0xA0,       // src_hi == $A0 ? next bank
+        0xD0, 0x0B,
+        0xE6, 0x04,                   // INC bank
+        0xA5, 0x04,                   // LDA bank
+        0x8D, 0x00, 0xDE,             // STA $DE00
+        0xA9, 0x80, 0x85, 0xFC,       // reset src_hi = $80
+        0xE6, 0xFD, 0xD0, 0x02,       // INC dst_lo / BNE +2
+        0xE6, 0xFE,                   // INC dst_hi
+        0xA5, 0x02, 0xD0, 0x02,       // DEC remaining
+        0xC6, 0x03,
+        0xC6, 0x02,
+        0x4C, 0x36, 0x80,             // JMP copy_loop
+        0xA2, 0x07,                   // copy exit stub to RAM and execute there
+        0xBD, 0x78, 0x80,
+        0x9D, 0x00, 0x01,
+        0xCA,
+        0x10, 0xF7,
+        0x4C, 0x00, 0x01,
+        0xA9, 0x80,                   // unmap cart, then JMP entry
+        0x8D, 0x00, 0xDE,
+        0x4C, entry_lo, entry_hi,
+    ];
+
+    if code.len() != MAGIC_DESK_LOADER_SIZE - 0x09 {
+        return Err(format!(
+            "crt export: Magic Desk loader size mismatch ({} != {})",
+            code.len() + 0x09,
+            MAGIC_DESK_LOADER_SIZE
+        ));
+    }
+
+    bank[0x09..0x09 + code.len()].copy_from_slice(code);
+
+    let first_chunk_len = payload.len().min(MAGIC_DESK_BANK_SIZE - MAGIC_DESK_LOADER_SIZE);
+    bank[MAGIC_DESK_LOADER_SIZE..MAGIC_DESK_LOADER_SIZE + first_chunk_len]
+        .copy_from_slice(&payload[..first_chunk_len]);
+
+    Ok((bank, first_chunk_len))
+}
+
+/// Build a Magic Desk type-19 CRT image from a PRG payload.
+pub fn build_magic_desk_crt(prg: &[u8], cart_name: &str) -> Result<Vec<u8>, String> {
+    if prg.len() < 2 {
+        return Err("crt export: PRG data too short".to_string());
+    }
+
+    let load_addr = u16::from_le_bytes([prg[0], prg[1]]);
+    let payload = &prg[2..];
+    if payload.is_empty() {
+        return Err("crt export: empty PRG payload".to_string());
+    }
+    if payload.len() > MAGIC_DESK_MAX_PAYLOAD {
+        return Err(format!(
+            "crt export: payload too large ({} > {})",
+            payload.len(),
+            MAGIC_DESK_MAX_PAYLOAD
+        ));
+    }
+
+    let mut header = [0u8; 0x40];
+    header[..16].copy_from_slice(b"C64 CARTRIDGE   ");
+    header[0x10..0x14].copy_from_slice(&0x40u32.to_be_bytes());
+    header[0x14..0x16].copy_from_slice(&1u16.to_be_bytes());
+    header[0x16..0x18].copy_from_slice(&19u16.to_be_bytes());
+    header[0x18] = 0x00; // EXROM (active low)
+    header[0x19] = 0x01; // GAME (inactive high)
+
+    let name_bytes = cart_name
+        .to_ascii_uppercase()
+        .bytes()
+        .take(32)
+        .collect::<Vec<_>>();
+    for i in 0..32 {
+        header[0x20 + i] = name_bytes.get(i).copied().unwrap_or(0x20);
+    }
+
+    let (bank0, consumed) = build_magic_desk_loader_bank0(load_addr, payload.len(), load_addr, payload)?;
+    let mut banks = Vec::with_capacity(MAGIC_DESK_BANK_COUNT);
+    banks.push(bank0);
+
+    let mut offset = consumed;
+    for _bank in 1..MAGIC_DESK_BANK_COUNT {
+        let mut bank = vec![0u8; MAGIC_DESK_BANK_SIZE];
+        let remaining = payload.len().saturating_sub(offset);
+        if remaining > 0 {
+            let chunk_len = remaining.min(MAGIC_DESK_BANK_SIZE);
+            bank[..chunk_len].copy_from_slice(&payload[offset..offset + chunk_len]);
+            offset += chunk_len;
+        }
+        banks.push(bank);
+    }
+
+    let chip_packet_len = 0x10 + MAGIC_DESK_BANK_SIZE;
+    let total_len = header.len() + chip_packet_len * MAGIC_DESK_BANK_COUNT;
+    let mut out = Vec::with_capacity(total_len);
+    out.extend_from_slice(&header);
+    for (bank_no, bank) in banks.iter().enumerate() {
+        out.extend_from_slice(b"CHIP");
+        out.extend_from_slice(&0x2010u32.to_be_bytes());
+        out.extend_from_slice(&0u16.to_be_bytes()); // ROM image
+        out.extend_from_slice(&(bank_no as u16).to_be_bytes());
+        out.extend_from_slice(&0x8000u16.to_be_bytes());
+        out.extend_from_slice(&0x2000u16.to_be_bytes());
+        out.extend_from_slice(bank);
+    }
+
+    Ok(out)
+}
