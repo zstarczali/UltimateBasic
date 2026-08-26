@@ -1,7 +1,9 @@
 // Integration tests for Ultimate Basic compiler.
 // Tests compile entire programs and verify PRG output.
 
-use ultimate_basic::compiler::{CompileOptions, compile, compile_with_path};
+use ultimate_basic::compiler::{
+    build_magic_desk_crt, compile, compile_with_path, CompileOptions,
+};
 
 fn compile_stub(src: &str) -> Vec<u8> {
     compile(src, &CompileOptions { basic_stub: true, explicit: false }).prg
@@ -69,6 +71,33 @@ fn scroll_row_left_compiles() {
         "expected scroll row left to compile without errors, got {:?}",
         res.errors
     );
+}
+
+#[test]
+fn crt_export_wraps_prg_as_magic_desk() {
+    let prg = compile_stub("print \"HI\"");
+    let crt = build_magic_desk_crt(&prg, "demo").expect("crt export should succeed");
+
+    assert_eq!(&crt[0..16], b"C64 CARTRIDGE   ");
+    assert_eq!([crt[0x16], crt[0x17]], [0x00, 0x13]);
+    assert_eq!(crt[0x18], 0x00);
+    assert_eq!(crt[0x19], 0x01);
+
+    let bank0_off = 0x40 + 0x10;
+    assert_eq!([crt[bank0_off], crt[bank0_off + 1]], [0x09, 0x80]);
+    assert_eq!([crt[bank0_off + 2], crt[bank0_off + 3]], [0x09, 0x80]);
+    assert_eq!(crt[bank0_off + 0x04], 0xC3);
+    assert_eq!(crt[bank0_off + 0x05], 0xC2);
+    assert_eq!(crt[bank0_off + 0x06], 0xCD);
+    assert_eq!(crt[bank0_off + 0x07], 0x38);
+    assert_eq!(crt[bank0_off + 0x08], 0x30);
+
+    let payload_start = bank0_off + 0x80;
+    assert_eq!(crt[payload_start], prg[2]);
+
+    let exit_stub = bank0_off + 0x7D;
+    assert_eq!(crt[exit_stub], 0x4C);
+    assert_eq!([crt[exit_stub + 1], crt[exit_stub + 2]], [0x01, 0x08]);
 }
 
 struct TestCpu {

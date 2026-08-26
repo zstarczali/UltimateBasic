@@ -4,6 +4,8 @@
 ### on $C000+ heap, writes fields with both constant and variable indices, and
 ### reads them back to the screen at PETSCII positions.
 
+
+
 type TEntity
   var x: int
   var y: int
@@ -14,6 +16,8 @@ const N = 4
 var enemies: TEntity = array(N)
 var i: int = 0
 var k: int = 0
+
+lowercase
 
 # ── Populate with constant indices ────────────────────────────────────────
 enemies[0].x  = 5
@@ -99,4 +103,3 @@ next k
 var fv: float = balls[1].vel
 print "fv = balls[1].vel = ", fv
 
-bye

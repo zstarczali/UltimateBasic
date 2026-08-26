@@ -1,8 +1,8 @@
-# Ultimate Basic v1.5.4 — Language Manual
+# Ultimate Basic v1.5.5 — Language Manual
 
 Complete language and CLI reference for Ultimate Basic, a BASIC-like language that
 compiles directly to 6502 machine code for the Commodore 64. Output: `.prg` files
-(VICE or real hardware) and `.d64` disk images.
+(VICE or real hardware), `.crt` cartridge images, and `.d64` disk images.
 
 For a short project overview and build instructions see README.md.
 
@@ -1407,7 +1407,7 @@ The result pointer is stored in a permanent ZP pair allocated at compile time.
 ```
 ub build <input.ub> [OPTIONS]
 
-  -o, --output <file>   Output .prg file (default: <input>.prg)
+  -o, --output <file>   Output .prg or .crt file (default: <input>.prg)
   -v, --verbose         Show zero-page layout and code hex dump
   --no-stub             Skip the BASIC SYS stub (code loads at $0801)
   --debug               Also produce .sym, .dbg and .vs debugger files
@@ -1419,6 +1419,21 @@ ub build <input.ub> [OPTIONS]
   --explicit            Require :type on every var / sub-param / fn-param
   -h, --help            Show help
 ```
+
+### CRT export
+
+Ultimate Basic can also write a Magic Desk type-19 cartridge image when the output
+filename ends in `.crt`:
+
+```bash
+ub build demo.ub -o demo.crt
+```
+
+The compiler wraps the generated PRG in a banked CRT container using the same
+layout as VisualAssembler's CRT export: a 64-byte cartridge header, an 8×8K
+Magic Desk image, and a boot loader in bank 0 that copies the PRG payload into
+C64 RAM before jumping to the program entry point. The `.prg` and `.d64` paths
+continue to work as before.
 
 ### Explicit-type mode
 

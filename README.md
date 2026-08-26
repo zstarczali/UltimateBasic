@@ -2,7 +2,7 @@
 
 <img src="assets/ultimate-basic-banner.png" alt="Ultimate Basic C64 banner" width="50%">
 
-Current version: **1.5.4**
+Current version: **1.5.5**
 
 A modern BASIC-like language that compiles directly to 6502 machine code for the
 **Commodore 64** and **Commodore 64 Ultimate**. It produces `.prg` files that run in
@@ -12,7 +12,7 @@ Ultimate Basic looks like classic BASIC but compiles ahead of time — no interp
 no line numbers required. It adds typed variables (`int`/`word`/`float`/`string`/arrays),
 subroutines and functions, structured control flow, and direct, high-level access to the
 C64's hardware: bitmap and block graphics, sprites, SID sound and music, raster/CIA/NMI
-interrupts, REU transfers, disk I/O, and inline 6502 assembly.
+interrupts, REU transfers, disk I/O, CRT cartridge export, and inline 6502 assembly.
 
 Sprite support includes hardware collision registers, side-effect-free software AABB
 tests with `box_hit()`, and frame selection from consecutive sprite animation data.
@@ -69,7 +69,21 @@ The output uses KickAssembler syntax and can be assembled again. Known data regi
 as `data`, maps, sprite/character definitions, lookup tables, SID/Koala payloads, and
 `incbin` content—are emitted as `.byte` blocks instead of being mistaken for instructions.
 
-## What's new in 1.5.4
+## What's new in 1.5.5
+
+- Added **Magic Desk CRT export**. Building with an output filename ending in
+  `.crt` now writes a Commodore 64 cartridge image instead of a raw PRG:
+
+  ```bash
+  ub build demo.ub -o demo.crt
+  ```
+
+  The cartridge uses the same banked Magic Desk layout as VisualAssembler's CRT
+  export: an 8×8K type-19 image with a boot loader in bank 0 and the compiled PRG
+  payload copied into RAM on startup. Existing `.prg` and `.d64` output paths are
+  unchanged.
+- Added integration-test coverage for the CRT packer so the cartridge header,
+  bank layout, payload copy, and boot stub stay stable.
 
 - Added **`type ... endtype` structs**. Define a fixed layout of `int` (1 byte) or
   `word` (2 bytes) fields, then allocate an array of instances with the same

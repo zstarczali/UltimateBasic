@@ -1,0 +1,19 @@
+color bg 0
+color border 0
+
+print "HELLO FROM ULTIMATE BASIC"
+
+# Float field (Q8.8 fixed-point)
+type TBall
+  var bx:  int
+  var by:  int
+  var vel: float   # 2 bytes Q8.8  → element size = 4
+endtype
+var balls: TBall = array(3)
+
+balls[0].bx=10
+balls[0].by=14
+balls[0].vel=8.98
+
+
+print balls[0].bx+","+balls[0].by+","+balls[0].vel
