@@ -69,15 +69,34 @@ fn xml_escape(value: &str) -> String {
 
 /// C64Debugger/RetroDebugger KickAssembler debug-dump format.
 ///
-/// UltimateBasic does not yet retain instruction-to-source-line mappings, so
-/// this export provides the code segment and all address labels.
+/// Export generated code ranges together with their original UB source lines.
 pub fn dbg(map: &MemoryMap, source_path: &Path) -> String {
     let start = map.load_addr;
     let end = start.wrapping_add(map.code_size.saturating_sub(1) as u16);
     let source = xml_escape(&source_path.to_string_lossy());
+    let mut spans = map.listing_spans.clone();
+    spans.sort_by_key(|span| span.start);
     let mut out = format!(
-        "<C64debugger version=\"1.0\">\n  <Sources values=\"INDEX,FILE\">\n    0,{source}\n  </Sources>\n  <Segment name=\"UltimateBasic\" values=\"START,END,FILE_IDX,LINE1,COL1,LINE2,COL2\">\n    {start:04x},{end:04x},0,1,1,1,1\n  </Segment>\n  <Labels values=\"SEGMENT,ADDRESS,NAME\">\n"
+        "<C64debugger version=\"1.0\">\n  <Sources values=\"INDEX,FILE\">\n    0,{source}\n  </Sources>\n"
     );
+    if spans.is_empty() {
+        out.push_str(&format!(
+            "  <Segment name=\"UltimateBasic\" values=\"START,END,FILE_IDX,LINE1,COL1,LINE2,COL2\">\n    {start:04x},{end:04x},0,1,1,1,1\n  </Segment>\n"
+        ));
+    } else {
+        out.push_str("  <Segment name=\"UltimateBasic\" values=\"START,END,FILE_IDX,LINE1,COL1,LINE2,COL2\">\n");
+        for span in spans {
+            out.push_str(&format!(
+                "    {:04x},{:04x},0,{},1,{},1\n",
+                start.wrapping_add(span.start as u16),
+                start.wrapping_add(span.end.saturating_sub(1) as u16),
+                span.source_line,
+                span.source_line
+            ));
+        }
+        out.push_str("  </Segment>\n");
+    }
+    out.push_str("  <Labels values=\"SEGMENT,ADDRESS,NAME\">\n");
     for (name, addr) in symbols(map) {
         out.push_str(&format!(
             "    UltimateBasic,{addr:04x},{}\n",

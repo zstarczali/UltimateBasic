@@ -654,6 +654,8 @@ pub struct Codegen {
     koala_show_patches: Vec<usize>,
     koala_layout_error: Option<String>,
     listing_spans: Vec<crate::compiler::ListingSpan>,
+    source_lines: Vec<usize>,
+    source_line_pos: usize,
     listing_symbols: Vec<crate::compiler::ListingSymbol>,
     data_regions: Vec<crate::compiler::DataRegion>,
     addressed_incbins: Vec<(u16, String, Vec<u8>)>,
@@ -762,6 +764,8 @@ impl Codegen {
             koala_show_patches: vec![],
             koala_layout_error: None,
             listing_spans: vec![],
+            source_lines: vec![],
+            source_line_pos: 0,
             listing_symbols: vec![],
             data_regions: vec![],
             addressed_incbins: vec![],
@@ -9366,6 +9370,12 @@ impl Codegen {
     }
 
     fn gen_stmt(&mut self, stmt: &Stmt) {
+        let source_line = self
+            .source_lines
+            .get(self.source_line_pos)
+            .copied()
+            .unwrap_or(1);
+        self.source_line_pos += 1;
         let start = self.code.len();
         self.gen_stmt_inner(stmt);
         let end = self.code.len();
@@ -9374,8 +9384,14 @@ impl Codegen {
                 start,
                 end,
                 source: stmt_listing_name(stmt),
+                source_line,
             });
         }
+    }
+
+    pub fn set_source_lines(&mut self, source_lines: Vec<usize>) {
+        self.source_lines = source_lines;
+        self.source_line_pos = 0;
     }
 
     fn gen_stmt_inner(&mut self, stmt: &Stmt) {
@@ -14507,6 +14523,6 @@ fn ascii_to_petscii(c: char, lowercase_mode: bool) -> u8 {
         '[' => 0x5B,
         ']' => 0x5D,
         '^' => 0x5E, // ↑ (up-arrow) glyph on the C64
-        _ => 0x3F, // '?' for unknown
+        _ => 0x3F,   // '?' for unknown
     }
 }
