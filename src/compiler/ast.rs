@@ -86,6 +86,10 @@ pub enum ColorTarget {
     Text,
     Border,
     Bg,
+    /// `color plot N` — persistent hires bitmap draw color (foreground nibble).
+    /// Stored in a ZP byte; the plot helper stamps it into each touched cell's
+    /// video-matrix high nibble (background nibble preserved).
+    Plot,
 }
 
 /// Variable type annotation.

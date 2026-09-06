@@ -598,6 +598,8 @@ pub struct Codegen {
     array_ptr: u16,               // next free array slot
     rnd_seeded: bool,
     plot_zp: Option<u8>,              // base of 5-byte ZP block for plot helper
+    plot_color_zp: Option<u8>,        // ZP byte: current hires draw color (`color plot N`); 0-15 fg nibble
+    plot_color_ptr_zp: Option<u8>,    // 2 ZP bytes: scratch matrix-cell pointer for the color stamp
     db_base_zp: Option<u8>,           // ZP byte: hi byte of current DRAW bitmap base ($20/$60)
     db_mtx_zp: Option<u8>, // ZP byte: hi byte of current DRAW video matrix base ($04/$44)
     plot_patches: Vec<usize>, // code positions of JSR targets to patch
@@ -708,6 +710,8 @@ impl Codegen {
             array_ptr: 0xC000,
             rnd_seeded: false,
             plot_zp: None,
+            plot_color_zp: None,
+            plot_color_ptr_zp: None,
             db_base_zp: None,
             db_mtx_zp: None,
             plot_patches: vec![],
@@ -809,6 +813,47 @@ impl Codegen {
                 }
                 Stmt::RepeatLoop(body, _) => {
                     if Self::has_plot_stmt(body) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// Recursively check whether the program sets a hires draw color (`color plot N`).
+    /// When present, the plot helper additionally stamps that color into the video
+    /// matrix; when absent the helper stays byte-for-byte identical to before.
+    fn has_color_plot_stmt(stmts: &[Stmt]) -> bool {
+        for stmt in stmts {
+            match stmt {
+                Stmt::Color {
+                    target: ColorTarget::Plot,
+                    ..
+                } => return true,
+                Stmt::SubDef(_, _, body) | Stmt::FnDef(_, _, _, body) => {
+                    if Self::has_color_plot_stmt(body) {
+                        return true;
+                    }
+                }
+                Stmt::If(_, then_b, else_b) => {
+                    if Self::has_color_plot_stmt(then_b) {
+                        return true;
+                    }
+                    if let Some(eb) = else_b {
+                        if Self::has_color_plot_stmt(eb) {
+                            return true;
+                        }
+                    }
+                }
+                Stmt::ForLoop { body, .. } | Stmt::Loop(_, body) | Stmt::WhileLoop(_, body) => {
+                    if Self::has_color_plot_stmt(body) {
+                        return true;
+                    }
+                }
+                Stmt::RepeatLoop(body, _) => {
+                    if Self::has_color_plot_stmt(body) {
                         return true;
                     }
                 }
@@ -1346,6 +1391,17 @@ impl Codegen {
             let zp = self.perm_zp;
             self.perm_zp += 6;
             self.plot_zp = Some(zp);
+        }
+
+        // Reserve ZP for the hires draw color (`color plot N`): 1 byte for the
+        // current color + 2 bytes scratch matrix-cell pointer used by the stamp.
+        // Only when the program actually sets a draw color, so plain plot/line
+        // programs keep the original, faster plot helper untouched.
+        if Self::has_color_plot_stmt(stmts) {
+            let zp = self.perm_zp;
+            self.perm_zp += 3;
+            self.plot_color_zp = Some(zp);
+            self.plot_color_ptr_zp = Some(zp + 1);
         }
 
         // Reserve 2 ZP bytes for the bitmap draw base: +0 = bitmap hi byte ($20/$60),
@@ -5049,6 +5105,101 @@ impl Codegen {
         self.emit(zp + 3); // ORA mask
         self.emit(0x91);
         self.emit(zp + 4); // STA (ptr_lo),Y
+
+        // ── Draw-color stamp (emitted only when `color plot N` is used) ─────
+        // Write the current draw color into this pixel's video-matrix cell:
+        //   matrix_addr = mtx_base + (Y>>3)*40 + (X>>3)
+        // Set the high (foreground) nibble = color, preserve the low (background)
+        // nibble. Runs per plotted pixel; absent entirely in programs that never
+        // set a draw color, so the classic plot helper is unchanged for them.
+        if let (Some(pcz), Some(mp)) = (self.plot_color_zp, self.plot_color_ptr_zp) {
+            // row = Y >> 3  → b (zp+3)
+            self.emit(0xA5);
+            self.emit(zp + 2); // LDA Y
+            self.emit(0x4A);
+            self.emit(0x4A);
+            self.emit(0x4A); // row (0..24)
+            self.emit(0x85);
+            self.emit(zp + 3); // STA b
+            // A = row*5  (row*4 + row, max 120 — fits a byte)
+            self.emit(0x0A); // ASL
+            self.emit(0x0A); // ASL  → row*4
+            self.emit(0x18); // CLC
+            self.emit(0x65);
+            self.emit(zp + 3); // ADC b  → row*5
+            self.emit(0x85);
+            self.emit(zp + 3); // STA t = row*5
+            // mp_hi = t >> 5
+            self.emit(0x4A);
+            self.emit(0x4A);
+            self.emit(0x4A);
+            self.emit(0x4A);
+            self.emit(0x4A);
+            self.emit(0x85);
+            self.emit(mp + 1); // STA mp_hi
+            // mp_lo = (t << 3) & $FF   → mp = row*40 (16-bit)
+            self.emit(0xA5);
+            self.emit(zp + 3); // LDA t
+            self.emit(0x0A);
+            self.emit(0x0A);
+            self.emit(0x0A); // t << 3
+            self.emit(0x85);
+            self.emit(mp); // STA mp_lo
+            // col = (X_lo >> 3) + (X_hi ? 32 : 0)
+            self.emit(0xA5);
+            self.emit(zp); // LDA X_lo
+            self.emit(0x4A);
+            self.emit(0x4A);
+            self.emit(0x4A); // X_lo >> 3  (0..31)
+            self.emit(0xA6);
+            self.emit(zp + 1); // LDX X_hi
+            self.emit(0xF0); // BEQ no_xhi
+            let beq_xhi = self.code.len();
+            self.emit(0x00);
+            self.emit(0x18); // CLC
+            self.emit(0x69);
+            self.emit(0x20); // ADC #32
+            self.patch_bxx(beq_xhi, self.current_addr());
+            // mp_lo += col ; mp_hi += carry
+            self.emit(0x18); // CLC
+            self.emit(0x65);
+            self.emit(mp); // ADC mp_lo
+            self.emit(0x85);
+            self.emit(mp); // STA mp_lo
+            self.emit(0xA5);
+            self.emit(mp + 1); // LDA mp_hi
+            self.emit(0x69);
+            self.emit(0x00); // ADC #0
+            self.emit(0x85);
+            self.emit(mp + 1); // STA mp_hi
+            // mp_hi += video-matrix base hi ($04 default, or the double-buffer base)
+            self.emit_lda_mtx_base(); // LDA mtx_base
+            self.emit(0x18); // CLC
+            self.emit(0x65);
+            self.emit(mp + 1); // ADC mp_hi
+            self.emit(0x85);
+            self.emit(mp + 1); // STA mp_hi
+            // RMW cell: keep background nibble, OR in foreground = color << 4
+            self.emit(0xA0);
+            self.emit(0x00); // LDY #0
+            self.emit(0xB1);
+            self.emit(mp); // LDA (mp),Y
+            self.emit(0x29);
+            self.emit(0x0F); // AND #$0F  (keep bg nibble)
+            self.emit(0x85);
+            self.emit(zp + 3); // STA tmp
+            self.emit(0xA5);
+            self.emit(pcz); // LDA color (0..15)
+            self.emit(0x0A);
+            self.emit(0x0A);
+            self.emit(0x0A);
+            self.emit(0x0A); // << 4  → fg nibble
+            self.emit(0x05);
+            self.emit(zp + 3); // ORA tmp
+            self.emit(0x91);
+            self.emit(mp); // STA (mp),Y
+        }
+
         self.emit(0x60); // RTS
     }
 
@@ -10391,13 +10542,24 @@ impl Codegen {
             Stmt::Color { target, expr } => {
                 let expr = expr.clone();
                 self.eval_expr(&expr);
-                let addr = match target {
-                    ColorTarget::Text => 0x0286,
-                    ColorTarget::Border => VIC_BORDER,
-                    ColorTarget::Bg => VIC_BG,
-                };
-                self.emit(0x8D);
-                self.emit16(addr); // STA addr
+                if let ColorTarget::Plot = target {
+                    // `color plot N` — store the low nibble as the current draw color.
+                    if let Some(pcz) = self.plot_color_zp {
+                        self.emit(0x29);
+                        self.emit(0x0F); // AND #$0F
+                        self.emit(0x85);
+                        self.emit(pcz); // STA plot_color
+                    }
+                } else {
+                    let addr = match target {
+                        ColorTarget::Text => 0x0286,
+                        ColorTarget::Border => VIC_BORDER,
+                        ColorTarget::Bg => VIC_BG,
+                        ColorTarget::Plot => unreachable!(),
+                    };
+                    self.emit(0x8D);
+                    self.emit16(addr); // STA addr
+                }
             }
             Stmt::Cls { fast } => {
                 if *fast {
@@ -13630,6 +13792,15 @@ impl Codegen {
             self.emit(0x04); // LDA #$04
             self.emit(0x85);
             self.emit(mtx); // STA db_mtx
+        }
+
+        // Initialise the hires draw color to white (1) so plots issued before the
+        // first `color plot N` keep the classic white-on-black appearance.
+        if let Some(pcz) = self.plot_color_zp {
+            self.emit(0xA9);
+            self.emit(0x01); // LDA #1 (white)
+            self.emit(0x85);
+            self.emit(pcz); // STA plot_color
         }
 
         // Emit data pointer init (forward-patched later when data block address is known)

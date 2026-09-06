@@ -1683,6 +1683,10 @@ impl Parser {
                         self.advance();
                         ColorTarget::Bg
                     }
+                    Token::Plot => {
+                        self.advance();
+                        ColorTarget::Plot
+                    }
                     _ => ColorTarget::Text,
                 };
                 let expr = self.parse_expr();
