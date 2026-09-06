@@ -2,6 +2,16 @@ use super::ast::{BinOp, ColorTarget, Expr, FieldKind, ReuOp, Stmt, VarType};
 use super::{ArrayEntry, MemoryMap, SubEntry, VarEntry};
 use std::collections::HashMap;
 
+/// Which per-pixel helper a shared draw routine (line/rect/…) should call.
+/// `Hires` stages the full 16-bit X + Y into the plot ZP and JSRs a hires plot
+/// helper; `Multi` stages the 8-bit X + Y into the mplot ZP (color preset in
+/// mplot_zp+2) and JSRs the multicolor mplot helper.
+#[derive(Clone, Copy)]
+enum DrawTarget {
+    Hires(u16),
+    Multi(u16),
+}
+
 const ZP_BASE: u8 = 0x02;
 const TMP_BASE: u8 = 0x50;
 const PLOT4_MASK_ZP: u8 = 0xFB;
@@ -598,8 +608,8 @@ pub struct Codegen {
     array_ptr: u16,               // next free array slot
     rnd_seeded: bool,
     plot_zp: Option<u8>,              // base of 5-byte ZP block for plot helper
-    plot_color_zp: Option<u8>,        // ZP byte: current hires draw color (`color plot N`); 0-15 fg nibble
-    plot_color_ptr_zp: Option<u8>,    // 2 ZP bytes: scratch matrix-cell pointer for the color stamp
+    pen_color_zp: Option<u8>,        // ZP byte: current hires draw color (`color pen N`); 0-15 fg nibble
+    pen_color_ptr_zp: Option<u8>,    // 2 ZP bytes: scratch matrix-cell pointer for the color stamp
     db_base_zp: Option<u8>,           // ZP byte: hi byte of current DRAW bitmap base ($20/$60)
     db_mtx_zp: Option<u8>, // ZP byte: hi byte of current DRAW video matrix base ($04/$44)
     plot_patches: Vec<usize>, // code positions of JSR targets to patch
@@ -640,6 +650,8 @@ pub struct Codegen {
     sid_play_addr: Option<u16>, // play address from last load sid (for music play)
     mplot_zp: Option<u8>, // base of 7-byte ZP block for mplot (multicolor pixel) helper
     mplot_patches: Vec<usize>, // JSR targets to patch to mplot_helper
+    mline_patches: Vec<usize>, // JSR targets to patch to the multicolor drawline helper (mline/mrect)
+    mcircle_patches: Vec<usize>, // JSR targets to patch to the multicolor circle helper (mcircle)
     mouse_zp: Option<u8>, // base of 6-byte ZP block for mouse helper
     mouse_patches: Vec<usize>, // JSR targets to patch to mouse_read_helper
     music_wrap_patches: Vec<(usize, usize)>, // (lo_pos, hi_pos) in music play setup code
@@ -710,8 +722,8 @@ impl Codegen {
             array_ptr: 0xC000,
             rnd_seeded: false,
             plot_zp: None,
-            plot_color_zp: None,
-            plot_color_ptr_zp: None,
+            pen_color_zp: None,
+            pen_color_ptr_zp: None,
             db_base_zp: None,
             db_mtx_zp: None,
             plot_patches: vec![],
@@ -752,6 +764,8 @@ impl Codegen {
             sid_play_addr: None,
             mplot_zp: None,
             mplot_patches: vec![],
+            mline_patches: vec![],
+            mcircle_patches: vec![],
             mouse_zp: None,
             mouse_patches: vec![],
             music_wrap_patches: vec![],
@@ -822,38 +836,38 @@ impl Codegen {
         false
     }
 
-    /// Recursively check whether the program sets a hires draw color (`color plot N`).
+    /// Recursively check whether the program sets a hires draw color (`color pen N`).
     /// When present, the plot helper additionally stamps that color into the video
     /// matrix; when absent the helper stays byte-for-byte identical to before.
-    fn has_color_plot_stmt(stmts: &[Stmt]) -> bool {
+    fn has_color_pen_stmt(stmts: &[Stmt]) -> bool {
         for stmt in stmts {
             match stmt {
                 Stmt::Color {
-                    target: ColorTarget::Plot,
+                    target: ColorTarget::Pen,
                     ..
                 } => return true,
                 Stmt::SubDef(_, _, body) | Stmt::FnDef(_, _, _, body) => {
-                    if Self::has_color_plot_stmt(body) {
+                    if Self::has_color_pen_stmt(body) {
                         return true;
                     }
                 }
                 Stmt::If(_, then_b, else_b) => {
-                    if Self::has_color_plot_stmt(then_b) {
+                    if Self::has_color_pen_stmt(then_b) {
                         return true;
                     }
                     if let Some(eb) = else_b {
-                        if Self::has_color_plot_stmt(eb) {
+                        if Self::has_color_pen_stmt(eb) {
                             return true;
                         }
                     }
                 }
                 Stmt::ForLoop { body, .. } | Stmt::Loop(_, body) | Stmt::WhileLoop(_, body) => {
-                    if Self::has_color_plot_stmt(body) {
+                    if Self::has_color_pen_stmt(body) {
                         return true;
                     }
                 }
                 Stmt::RepeatLoop(body, _) => {
-                    if Self::has_color_plot_stmt(body) {
+                    if Self::has_color_pen_stmt(body) {
                         return true;
                     }
                 }
@@ -968,6 +982,81 @@ impl Codegen {
                 }
                 Stmt::RepeatLoop(body, _) => {
                     if Self::has_mplot_stmt(body) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// Recursively check for multicolor draw commands that go through the shared
+    /// Bresenham helper + mplot (`mline`, `mrect`). Used to reserve the line and
+    /// mplot ZP blocks and to emit the multicolor drawline helper.
+    fn has_mc_draw_stmt(stmts: &[Stmt]) -> bool {
+        for stmt in stmts {
+            match stmt {
+                Stmt::MLine { .. } | Stmt::MRect { .. } | Stmt::MCircle { .. } => return true,
+                Stmt::SubDef(_, _, body) | Stmt::FnDef(_, _, _, body) => {
+                    if Self::has_mc_draw_stmt(body) {
+                        return true;
+                    }
+                }
+                Stmt::If(_, then_b, else_b) => {
+                    if Self::has_mc_draw_stmt(then_b) {
+                        return true;
+                    }
+                    if let Some(eb) = else_b {
+                        if Self::has_mc_draw_stmt(eb) {
+                            return true;
+                        }
+                    }
+                }
+                Stmt::ForLoop { body, .. } | Stmt::Loop(_, body) | Stmt::WhileLoop(_, body) => {
+                    if Self::has_mc_draw_stmt(body) {
+                        return true;
+                    }
+                }
+                Stmt::RepeatLoop(body, _) => {
+                    if Self::has_mc_draw_stmt(body) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// Recursively check for the multicolor circle command (`mcircle`), which needs
+    /// the circle ZP block and the plot ZP staging area in addition to mplot.
+    fn has_mcircle_stmt(stmts: &[Stmt]) -> bool {
+        for stmt in stmts {
+            match stmt {
+                Stmt::MCircle { .. } => return true,
+                Stmt::SubDef(_, _, body) | Stmt::FnDef(_, _, _, body) => {
+                    if Self::has_mcircle_stmt(body) {
+                        return true;
+                    }
+                }
+                Stmt::If(_, then_b, else_b) => {
+                    if Self::has_mcircle_stmt(then_b) {
+                        return true;
+                    }
+                    if let Some(eb) = else_b {
+                        if Self::has_mcircle_stmt(eb) {
+                            return true;
+                        }
+                    }
+                }
+                Stmt::ForLoop { body, .. } | Stmt::Loop(_, body) | Stmt::WhileLoop(_, body) => {
+                    if Self::has_mcircle_stmt(body) {
+                        return true;
+                    }
+                }
+                Stmt::RepeatLoop(body, _) => {
+                    if Self::has_mcircle_stmt(body) {
                         return true;
                     }
                 }
@@ -1386,22 +1475,24 @@ impl Codegen {
     /// Must run before gen_stmt so that reserved slots precede regular vars in ZP.
     fn pre_scan(&mut self, stmts: &[Stmt]) {
         // Reserve 6 ZP bytes for the plot helper (X_lo, X_hi, Y, temp, ptr_lo, ptr_hi).
-        // Also needed when line is used (drawline calls the plot helper).
-        if Self::has_plot_stmt(stmts) || Self::has_line_stmt(stmts) {
+        // Also needed when line is used (drawline calls the plot helper), and when
+        // mcircle is used (the circle helper stages each point through this block
+        // before dispatching to the mplot helper).
+        if Self::has_plot_stmt(stmts) || Self::has_line_stmt(stmts) || Self::has_mcircle_stmt(stmts) {
             let zp = self.perm_zp;
             self.perm_zp += 6;
             self.plot_zp = Some(zp);
         }
 
-        // Reserve ZP for the hires draw color (`color plot N`): 1 byte for the
+        // Reserve ZP for the hires draw color (`color pen N`): 1 byte for the
         // current color + 2 bytes scratch matrix-cell pointer used by the stamp.
         // Only when the program actually sets a draw color, so plain plot/line
         // programs keep the original, faster plot helper untouched.
-        if Self::has_color_plot_stmt(stmts) {
+        if Self::has_color_pen_stmt(stmts) {
             let zp = self.perm_zp;
             self.perm_zp += 3;
-            self.plot_color_zp = Some(zp);
-            self.plot_color_ptr_zp = Some(zp + 1);
+            self.pen_color_zp = Some(zp);
+            self.pen_color_ptr_zp = Some(zp + 1);
         }
 
         // Reserve 2 ZP bytes for the bitmap draw base: +0 = bitmap hi byte ($20/$60),
@@ -1421,8 +1512,8 @@ impl Codegen {
             self.db_mtx_zp = Some(zp + 1);
         }
 
-        // Reserve 24 ZP bytes for the midpoint circle helper.
-        if Self::has_circle_stmt(stmts) {
+        // Reserve 24 ZP bytes for the midpoint circle helper (hires circle + mcircle).
+        if Self::has_circle_stmt(stmts) || Self::has_mcircle_stmt(stmts) {
             let zp = self.perm_zp;
             self.perm_zp += 24;
             self.circle_zp = Some(zp);
@@ -1430,7 +1521,9 @@ impl Codegen {
 
         // Reserve 15 ZP bytes for the Bresenham line helper.
         // Layout: cx_lo,cx_hi,cy, x2_lo,x2_hi,y2, dx_lo,dx_hi,dy, sx,sy, err_lo,err_hi,e2_lo,e2_hi
-        if Self::has_line_stmt(stmts) {
+        // The Bresenham line helper's ZP block is also used by the multicolor
+        // mline/mrect commands, which reuse the same helper.
+        if Self::has_line_stmt(stmts) || Self::has_mc_draw_stmt(stmts) {
             let zp = self.perm_zp;
             self.perm_zp += 15;
             self.line_zp = Some(zp);
@@ -1445,7 +1538,8 @@ impl Codegen {
         }
 
         // Reserve 7 ZP bytes for the mplot helper (x, y, color, scratch_a, ptr_lo, ptr_hi, scratch_b).
-        if Self::has_mplot_stmt(stmts) {
+        // Also needed by mline/mrect, which plot each pixel through the mplot helper.
+        if Self::has_mplot_stmt(stmts) || Self::has_mc_draw_stmt(stmts) {
             let zp = self.perm_zp;
             self.perm_zp += 7;
             self.mplot_zp = Some(zp);
@@ -5106,13 +5200,13 @@ impl Codegen {
         self.emit(0x91);
         self.emit(zp + 4); // STA (ptr_lo),Y
 
-        // ── Draw-color stamp (emitted only when `color plot N` is used) ─────
+        // ── Draw-color stamp (emitted only when `color pen N` is used) ─────
         // Write the current draw color into this pixel's video-matrix cell:
         //   matrix_addr = mtx_base + (Y>>3)*40 + (X>>3)
         // Set the high (foreground) nibble = color, preserve the low (background)
         // nibble. Runs per plotted pixel; absent entirely in programs that never
         // set a draw color, so the classic plot helper is unchanged for them.
-        if let (Some(pcz), Some(mp)) = (self.plot_color_zp, self.plot_color_ptr_zp) {
+        if let (Some(pcz), Some(mp)) = (self.pen_color_zp, self.pen_color_ptr_zp) {
             // row = Y >> 3  → b (zp+3)
             self.emit(0xA5);
             self.emit(zp + 2); // LDA Y
@@ -6917,11 +7011,14 @@ impl Codegen {
     ///         zp+5..6=x, zp+7..8=y, zp+9..10=decision,
     ///         zp+11..12=x0+x, zp+13..14=x0-x, zp+15..16=x0+y, zp+17..18=x0-y,
     ///         zp+19=y0+x, zp+20=y0-x, zp+21=y0+y, zp+22=y0-y, zp+23=scratch
-    fn emit_circle_helper(&mut self, plot_helper_addr: u16) {
+    fn emit_circle_helper(&mut self, target: DrawTarget) {
         let zp = match self.circle_zp {
             Some(z) => z,
             None => return,
         };
+        // The plot ZP block doubles as the per-point staging area (x_lo, x_hi, y)
+        // for both hires and multicolor circles; it is always reserved when any
+        // circle is used.
         let pzp = match self.plot_zp {
             Some(z) => z,
             None => return,
@@ -7372,35 +7469,58 @@ impl Codegen {
             self.code[*patch + 1] = (try_plot_addr >> 8) as u8;
         }
 
+        // Collect every out-of-range branch operand; all are patched to the shared
+        // skip target (after the pixel call) once its address is known.
+        let mut skip_branches: Vec<usize> = Vec::new();
+
         // Y bounds: skip if plot_y >= 200
         self.emit(0xA5);
         self.emit(pzp + 2); // LDA plot_y
         self.emit(0xC9);
         self.emit(200); // CMP #200
         self.emit(0xB0);
-        let bcs_skip = self.code.len();
+        skip_branches.push(self.code.len());
         self.emit(0x00); // BCS skip
 
-        // X bounds: skip if plot_x >= 320
-        // Reference algorithm: CMP X_lo,#$40; LDA X_hi (no carry change); SBC #$01; BCS skip
-        self.emit(0xA5);
-        self.emit(pzp + 0); // LDA X_lo
-        self.emit(0xC9);
-        self.emit(0x40); // CMP #<320  ($40)
-        self.emit(0xA5);
-        self.emit(pzp + 1); // LDA X_hi  (carry preserved)
-        self.emit(0xE9);
-        self.emit(0x01); // SBC #>320  ($01)
-        self.emit(0xB0);
-        let bcs_skip_x = self.code.len();
-        self.emit(0x00); // BCS skip (X >= 320)
+        // X bounds: hires skips if x >= 320 (16-bit), multicolor if x >= 160 (8-bit).
+        match target {
+            DrawTarget::Hires(_) => {
+                // Reference algorithm: CMP X_lo,#$40; LDA X_hi (no carry change); SBC #$01; BCS skip
+                self.emit(0xA5);
+                self.emit(pzp + 0); // LDA X_lo
+                self.emit(0xC9);
+                self.emit(0x40); // CMP #<320  ($40)
+                self.emit(0xA5);
+                self.emit(pzp + 1); // LDA X_hi  (carry preserved)
+                self.emit(0xE9);
+                self.emit(0x01); // SBC #>320  ($01)
+                self.emit(0xB0);
+                skip_branches.push(self.code.len());
+                self.emit(0x00); // BCS skip (X >= 320)
+            }
+            DrawTarget::Multi(_) => {
+                // Multicolor bitmap is 160 wide; x_hi must be 0 and x_lo < 160.
+                self.emit(0xA5);
+                self.emit(pzp + 1); // LDA X_hi
+                self.emit(0xD0);
+                skip_branches.push(self.code.len());
+                self.emit(0x00); // BNE skip (x >= 256)
+                self.emit(0xA5);
+                self.emit(pzp + 0); // LDA X_lo
+                self.emit(0xC9);
+                self.emit(160); // CMP #160
+                self.emit(0xB0);
+                skip_branches.push(self.code.len());
+                self.emit(0x00); // BCS skip (x_lo >= 160)
+            }
+        }
 
-        self.emit(0x20);
-        self.emit16(plot_helper_addr); // JSR plot helper
+        self.emit_pixel_via(target, pzp + 0, pzp + 1, pzp + 2);
 
         let skip_addr = self.current_addr();
-        self.patch_bxx(bcs_skip, skip_addr);
-        self.patch_bxx(bcs_skip_x, skip_addr);
+        for b in skip_branches {
+            self.patch_bxx(b, skip_addr);
+        }
         self.emit(0x60); // RTS
     }
 
@@ -7750,6 +7870,89 @@ impl Codegen {
     }
 
     /// Bresenham line helper. Called via JSR; caller fills line_zp+0..5 (cx_lo,cx_hi,cy,x2_lo,x2_hi,y2).
+    /// Emit "stage current pixel coords, then JSR the pixel helper".
+    /// The coordinates are read from the caller's working-ZP source bytes
+    /// (`sx_lo`, `sx_hi`, `sy`). For a hires target the full 16-bit X (lo+hi)
+    /// and Y are staged into the plot ZP; for a multicolor target only the
+    /// 8-bit X and Y are staged into the mplot ZP (X is 0–159, so the hi byte
+    /// is unused) and the color is assumed already staged in mplot_zp+2.
+    /// Emit one multicolor line segment: evaluate (x1,y1)-(x2,y2) into the line
+    /// helper's ZP block (x hi bytes forced to 0 — multicolor x is 0–159) and JSR
+    /// the multicolor drawline helper. The 2-bit color must already be staged in
+    /// mplot_zp+2 by the caller. Used by both `mline` and `mrect` (four edges).
+    fn emit_mline_segment(&mut self, x1: &Expr, y1: &Expr, x2: &Expr, y2: &Expr) {
+        let lzp = self
+            .line_zp
+            .expect("line_zp not allocated (should have been set in pre_scan)");
+        // x1 → cx_lo, 0 → cx_hi
+        self.eval_expr(x1);
+        self.emit(0x85);
+        self.emit(lzp);
+        self.emit(0xA9);
+        self.emit(0x00);
+        self.emit(0x85);
+        self.emit(lzp + 1);
+        // y1 → cy
+        self.eval_expr(y1);
+        self.emit(0x85);
+        self.emit(lzp + 2);
+        // x2 → x2_lo, 0 → x2_hi
+        self.eval_expr(x2);
+        self.emit(0x85);
+        self.emit(lzp + 3);
+        self.emit(0xA9);
+        self.emit(0x00);
+        self.emit(0x85);
+        self.emit(lzp + 4);
+        // y2 → y2
+        self.eval_expr(y2);
+        self.emit(0x85);
+        self.emit(lzp + 5);
+        // JSR multicolor drawline helper (address patched in the post-code phase)
+        self.emit(0x20);
+        let jsr_pos = self.code.len();
+        self.emit(0x00);
+        self.emit(0x00);
+        self.mline_patches.push(jsr_pos);
+    }
+
+    fn emit_pixel_via(&mut self, target: DrawTarget, sx_lo: u8, sx_hi: u8, sy: u8) {
+        match target {
+            DrawTarget::Hires(addr) => {
+                let pzp = self.plot_zp.expect("plot_zp not allocated for hires draw");
+                self.emit(0xA5);
+                self.emit(sx_lo);
+                self.emit(0x85);
+                self.emit(pzp); // STA X_lo
+                self.emit(0xA5);
+                self.emit(sx_hi);
+                self.emit(0x85);
+                self.emit(pzp + 1); // STA X_hi
+                self.emit(0xA5);
+                self.emit(sy);
+                self.emit(0x85);
+                self.emit(pzp + 2); // STA Y
+                self.emit(0x20);
+                self.emit(addr as u8);
+                self.emit((addr >> 8) as u8); // JSR plot
+            }
+            DrawTarget::Multi(addr) => {
+                let mzp = self.mplot_zp.expect("mplot_zp not allocated for multicolor draw");
+                self.emit(0xA5);
+                self.emit(sx_lo);
+                self.emit(0x85);
+                self.emit(mzp); // STA x
+                self.emit(0xA5);
+                self.emit(sy);
+                self.emit(0x85);
+                self.emit(mzp + 1); // STA y  (color already in mzp+2)
+                self.emit(0x20);
+                self.emit(addr as u8);
+                self.emit((addr >> 8) as u8); // JSR mplot
+            }
+        }
+    }
+
     /// Internally uses line_zp+6..14 and calls the plot helper for each pixel.
     /// Supports full 9-bit x range (0–319) matching the 320-pixel hires bitmap.
     /// ZP layout (15 bytes):
@@ -7759,12 +7962,8 @@ impl Codegen {
     ///   zp+9  = sx      zp+10 = sy
     ///   zp+11 = err_lo  zp+12 = err_hi
     ///   zp+13 = e2_lo   zp+14 = e2_hi
-    fn emit_drawline_helper(&mut self, plot_helper_addr: u16) {
+    fn emit_drawline_helper(&mut self, target: DrawTarget) {
         let zp = match self.line_zp {
-            Some(z) => z,
-            None => return,
-        };
-        let pzp = match self.plot_zp {
             Some(z) => z,
             None => return,
         };
@@ -7897,22 +8096,8 @@ impl Codegen {
 
         // ── Main loop ──────────────────────────────────────────────────────
         let dl_loop = self.current_addr();
-        // Set up plot ZP: X_lo=cx_lo, X_hi=cx_hi, Y=cy
-        self.emit(0xA5);
-        self.emit(zp + 0); // LDA cx_lo
-        self.emit(0x85);
-        self.emit(pzp + 0); // STA X_lo
-        self.emit(0xA5);
-        self.emit(zp + 1); // LDA cx_hi
-        self.emit(0x85);
-        self.emit(pzp + 1); // STA X_hi
-        self.emit(0xA5);
-        self.emit(zp + 2); // LDA cy
-        self.emit(0x85);
-        self.emit(pzp + 2); // STA Y
-        self.emit(0x20);
-        self.emit(plot_helper_addr as u8);
-        self.emit((plot_helper_addr >> 8) as u8); // JSR plot
+        // Plot the current pixel (cx, cy) through the selected helper.
+        self.emit_pixel_via(target, zp + 0, zp + 1, zp + 2);
 
         // Check termination: cx_lo==x2_lo && cx_hi==x2_hi && cy==y2 → done
         // Use BNE-over-JMP to avoid a long forward branch (loop body > 127 bytes)
@@ -10542,9 +10727,9 @@ impl Codegen {
             Stmt::Color { target, expr } => {
                 let expr = expr.clone();
                 self.eval_expr(&expr);
-                if let ColorTarget::Plot = target {
-                    // `color plot N` — store the low nibble as the current draw color.
-                    if let Some(pcz) = self.plot_color_zp {
+                if let ColorTarget::Pen = target {
+                    // `color pen N` — store the low nibble as the current draw color.
+                    if let Some(pcz) = self.pen_color_zp {
                         self.emit(0x29);
                         self.emit(0x0F); // AND #$0F
                         self.emit(0x85);
@@ -10555,7 +10740,7 @@ impl Codegen {
                         ColorTarget::Text => 0x0286,
                         ColorTarget::Border => VIC_BORDER,
                         ColorTarget::Bg => VIC_BG,
-                        ColorTarget::Plot => unreachable!(),
+                        ColorTarget::Pen => unreachable!(),
                     };
                     self.emit(0x8D);
                     self.emit16(addr); // STA addr
@@ -11724,6 +11909,80 @@ impl Codegen {
                 self.emit(0x00);
                 self.emit(0x00);
                 self.mplot_patches.push(jsr_pos);
+            }
+
+            Stmt::MLine {
+                x1,
+                y1,
+                x2,
+                y2,
+                color,
+            } => {
+                let mzp = self
+                    .mplot_zp
+                    .expect("mplot_zp not allocated (should have been set in pre_scan)");
+                let (x1, y1, x2, y2, color) =
+                    (x1.clone(), y1.clone(), x2.clone(), y2.clone(), color.clone());
+                // Stage the 2-bit color into mplot_zp+2 (read by the mplot helper per pixel).
+                self.eval_expr(&color);
+                self.emit(0x29);
+                self.emit(0x03); // AND #$03
+                self.emit(0x85);
+                self.emit(mzp + 2);
+                self.emit_mline_segment(&x1, &y1, &x2, &y2);
+            }
+
+            Stmt::MRect {
+                x1,
+                y1,
+                x2,
+                y2,
+                color,
+            } => {
+                let mzp = self
+                    .mplot_zp
+                    .expect("mplot_zp not allocated (should have been set in pre_scan)");
+                let (x1, y1, x2, y2, color) =
+                    (x1.clone(), y1.clone(), x2.clone(), y2.clone(), color.clone());
+                self.eval_expr(&color);
+                self.emit(0x29);
+                self.emit(0x03); // AND #$03
+                self.emit(0x85);
+                self.emit(mzp + 2);
+                // Four edges: top, bottom, left, right.
+                self.emit_mline_segment(&x1, &y1, &x2, &y1);
+                self.emit_mline_segment(&x1, &y2, &x2, &y2);
+                self.emit_mline_segment(&x1, &y1, &x1, &y2);
+                self.emit_mline_segment(&x2, &y1, &x2, &y2);
+            }
+
+            Stmt::MCircle {
+                x,
+                y,
+                radius,
+                color,
+            } => {
+                let mzp = self
+                    .mplot_zp
+                    .expect("mplot_zp not allocated (should have been set in pre_scan)");
+                if let Some(zp) = self.circle_zp {
+                    let (x, y, radius, color) =
+                        (x.clone(), y.clone(), radius.clone(), color.clone());
+                    // Stage the 2-bit color for the mplot helper.
+                    self.eval_expr(&color);
+                    self.emit(0x29);
+                    self.emit(0x03); // AND #$03
+                    self.emit(0x85);
+                    self.emit(mzp + 2);
+                    // Same ZP layout as the hires circle: cx (word), cy (byte), radius (word).
+                    self.emit_store_expr_u16(&x, zp + 0);
+                    self.emit_store_expr_u8(&y, zp + 2);
+                    self.emit_store_expr_u16(&radius, zp + 3);
+                    self.emit(0x20);
+                    let patch = self.code.len();
+                    self.emit16(0x0000);
+                    self.mcircle_patches.push(patch);
+                }
             }
 
             // ── music play / stop / pause / resume ───────────────────────────────
@@ -13795,8 +14054,8 @@ impl Codegen {
         }
 
         // Initialise the hires draw color to white (1) so plots issued before the
-        // first `color plot N` keep the classic white-on-black appearance.
-        if let Some(pcz) = self.plot_color_zp {
+        // first `color pen N` keep the classic white-on-black appearance.
+        if let Some(pcz) = self.pen_color_zp {
             self.emit(0xA9);
             self.emit(0x01); // LDA #1 (white)
             self.emit(0x85);
@@ -13852,7 +14111,7 @@ impl Codegen {
             if let Some(plot_addr) = plot_helper_addr {
                 let dl_addr = self.current_addr();
                 self.listing_symbol("ub_helper_line");
-                self.emit_drawline_helper(plot_addr);
+                self.emit_drawline_helper(DrawTarget::Hires(plot_addr));
                 for &pos in &self.line_patches.clone() {
                     self.code[pos] = dl_addr as u8;
                     self.code[pos + 1] = (dl_addr >> 8) as u8;
@@ -13865,7 +14124,7 @@ impl Codegen {
             if let Some(plot_addr) = plot_helper_addr {
                 let circle_addr = self.current_addr();
                 self.listing_symbol("ub_helper_circle");
-                self.emit_circle_helper(plot_addr);
+                self.emit_circle_helper(DrawTarget::Hires(plot_addr));
                 for &pos in &self.circle_patches.clone() {
                     self.code[pos] = circle_addr as u8;
                     self.code[pos + 1] = (circle_addr >> 8) as u8;
@@ -13910,7 +14169,7 @@ impl Codegen {
             if let Some(erase_addr) = plot_erase_helper_addr {
                 let dl_addr = self.current_addr();
                 self.listing_symbol("ub_helper_line_erase");
-                self.emit_drawline_helper(erase_addr);
+                self.emit_drawline_helper(DrawTarget::Hires(erase_addr));
                 for &pos in &self.line_erase_patches.clone() {
                     self.code[pos] = dl_addr as u8;
                     self.code[pos + 1] = (dl_addr >> 8) as u8;
@@ -13923,7 +14182,7 @@ impl Codegen {
             if let Some(xor_addr) = plot_xor_helper_addr {
                 let dl_addr = self.current_addr();
                 self.listing_symbol("ub_helper_line_xor");
-                self.emit_drawline_helper(xor_addr);
+                self.emit_drawline_helper(DrawTarget::Hires(xor_addr));
                 for &pos in &self.line_xor_patches.clone() {
                     self.code[pos] = dl_addr as u8;
                     self.code[pos + 1] = (dl_addr >> 8) as u8;
@@ -14068,13 +14327,45 @@ impl Codegen {
         }
 
         // Emit multicolor pixel (mplot) helper and patch all JSR targets
-        if !self.mplot_patches.is_empty() {
+        // The mplot helper is needed for direct `mplot` AND for the multicolor
+        // line/rect commands (which plot each pixel through it).
+        let mut mplot_helper_addr: Option<u16> = None;
+        if !self.mplot_patches.is_empty() || !self.mline_patches.is_empty() {
             let mplot_addr = self.current_addr();
+            mplot_helper_addr = Some(mplot_addr);
             self.listing_symbol("ub_helper_mplot");
             self.emit_mplot_helper();
             for &pos in &self.mplot_patches.clone() {
                 self.code[pos] = mplot_addr as u8;
                 self.code[pos + 1] = (mplot_addr >> 8) as u8;
+            }
+        }
+
+        // Emit the multicolor drawline helper (shared by mline and mrect) — reuses
+        // the Bresenham helper but plots each pixel through the mplot helper.
+        if !self.mline_patches.is_empty() {
+            if let Some(mplot_addr) = mplot_helper_addr {
+                let ml_addr = self.current_addr();
+                self.listing_symbol("ub_helper_mline");
+                self.emit_drawline_helper(DrawTarget::Multi(mplot_addr));
+                for &pos in &self.mline_patches.clone() {
+                    self.code[pos] = ml_addr as u8;
+                    self.code[pos + 1] = (ml_addr >> 8) as u8;
+                }
+            }
+        }
+
+        // Emit the multicolor circle helper (mcircle) — reuses the midpoint circle
+        // helper but plots each point through the mplot helper.
+        if !self.mcircle_patches.is_empty() {
+            if let Some(mplot_addr) = mplot_helper_addr {
+                let mc_addr = self.current_addr();
+                self.listing_symbol("ub_helper_mcircle");
+                self.emit_circle_helper(DrawTarget::Multi(mplot_addr));
+                for &pos in &self.mcircle_patches.clone() {
+                    self.code[pos] = mc_addr as u8;
+                    self.code[pos + 1] = (mc_addr >> 8) as u8;
+                }
             }
         }
 

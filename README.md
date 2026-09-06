@@ -2,7 +2,7 @@
 
 <img src="assets/ultimate-basic-banner.png" alt="Ultimate Basic C64 banner" width="50%">
 
-Current version: **1.5.5**
+Current version: **1.5.6**
 
 A modern BASIC-like language that compiles directly to 6502 machine code for the
 **Commodore 64** and **Commodore 64 Ultimate**. It produces `.prg` files that run in
@@ -13,6 +13,11 @@ no line numbers required. It adds typed variables (`int`/`word`/`float`/`string`
 subroutines and functions, structured control flow, and direct, high-level access to the
 C64's hardware: bitmap and block graphics, sprites, SID sound and music, raster/CIA/NMI
 interrupts, REU transfers, disk I/O, CRT cartridge export, and inline 6502 assembly.
+
+Hires bitmap drawing (`plot`, `line`, `rect`, `circle`, `paint`) picks its color from
+`color pen c` — a persistent foreground color stamped into each touched cell. Multicolor
+bitmap mode has its own shape commands — `mplot`, `mline`, `mrect`, and `mcircle` — where
+the trailing `color` argument selects the 2-bit color source (0–3).
 
 Sprite support includes hardware collision registers, side-effect-free software AABB
 tests with `box_hit()`, and frame selection from consecutive sprite animation data.
@@ -68,6 +73,29 @@ bytes. Compiler-generated helper routines are included in the same listing.
 The output uses KickAssembler syntax and can be assembled again. Known data regions—such
 as `data`, maps, sprite/character definitions, lookup tables, SID/Koala payloads, and
 `incbin` content—are emitted as `.byte` blocks instead of being mistaken for instructions.
+
+## What's new in 1.5.6
+
+- Added **`color pen` and multicolor shapes**. `color pen c` sets a persistent hires
+  drawing color (0–15) that `plot`, `line`, `rect`, `circle`, and `paint` stamp into the
+  foreground nibble of every cell they touch (the background nibble is preserved; default
+  white). For multicolor bitmap mode, `mline`, `mrect`, and `mcircle` join `mplot`, each
+  taking a trailing 2-bit `color` (0–3) source:
+
+  ```basic
+  graphics on
+  gcls
+  color pen 2
+  circle 160, 100, 40      # red circle
+
+  graphics on multi
+  gcls
+  mcircle 80, 100, 40, 1   # multicolor circle
+  mline 0, 0, 159, 199, 3
+  ```
+
+  The multicolor shapes reuse the same Bresenham/midpoint routines as their hires
+  counterparts, plotting each pixel through `mplot`.
 
 ## What's new in 1.5.5
 

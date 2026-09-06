@@ -73,6 +73,9 @@ pub enum Token {
     Chardef,     // chardef id ... end — inline 8-byte charset definition (VIC char data)
     Charset,     // charset addr — set charset RAM base address (default $3800)
     Mplot,       // mplot x, y, color — multicolor bitmap pixel (2-bit color, 160×200)
+    MLine,       // mline x1, y1, x2, y2, color — multicolor bitmap line
+    MRect,       // mrect x1, y1, x2, y2, color — multicolor bitmap rectangle outline
+    MCircle,     // mcircle x, y, radius, color — multicolor bitmap circle
     Music,       // music play/stop/pause/resume — SID music control via CIA1 timer IRQ
     Play,        // play — sub-keyword for music play [song]
     Stop,        // stop — sub-keyword for music stop
@@ -663,6 +666,9 @@ impl Lexer {
             "chardef" => Token::Chardef,
             "charset" => Token::Charset,
             "mplot" => Token::Mplot,
+            "mline" => Token::MLine,
+            "mrect" => Token::MRect,
+            "mcircle" => Token::MCircle,
             "music" => Token::Music,
             "play" => Token::Play,
             "stop" => Token::Stop,

@@ -1683,9 +1683,11 @@ impl Parser {
                         self.advance();
                         ColorTarget::Bg
                     }
-                    Token::Plot => {
+                    // `color pen N` — set the persistent hires draw color. Matched as
+                    // a plain identifier so `pen` stays usable as a normal name elsewhere.
+                    Token::Ident(name) if name.eq_ignore_ascii_case("pen") => {
                         self.advance();
-                        ColorTarget::Plot
+                        ColorTarget::Pen
                     }
                     _ => ColorTarget::Text,
                 };
@@ -2101,6 +2103,68 @@ impl Parser {
                 let color = self.parse_expr();
                 self.expect_newline();
                 Some(Stmt::Mplot { x, y, color })
+            }
+            Token::MLine => {
+                self.advance();
+                let x1 = self.parse_expr();
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
+                let y1 = self.parse_expr();
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
+                let x2 = self.parse_expr();
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
+                let y2 = self.parse_expr();
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
+                let color = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::MLine { x1, y1, x2, y2, color })
+            }
+            Token::MRect => {
+                self.advance();
+                let x1 = self.parse_expr();
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
+                let y1 = self.parse_expr();
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
+                let x2 = self.parse_expr();
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
+                let y2 = self.parse_expr();
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
+                let color = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::MRect { x1, y1, x2, y2, color })
+            }
+            Token::MCircle => {
+                self.advance();
+                let x = self.parse_expr();
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
+                let y = self.parse_expr();
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
+                let radius = self.parse_expr();
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
+                let color = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::MCircle { x, y, radius, color })
             }
             Token::Music => {
                 self.advance();
