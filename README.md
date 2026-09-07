@@ -36,7 +36,15 @@ mode, and hidden again with `koala load`, `koala show`, and `koala hide`.
 ```bash
 cargo build --release      # binary: target/release/ub
 cargo test                 # unit + integration tests
+cargo install cargo-deb cargo-generate-rpm
+cargo deb                    # Debian/Ubuntu package: target/debian/*.deb
+cargo generate-rpm           # Fedora/RHEL package: target/generate-rpm/*.rpm
 ```
+
+The Debian and RPM commands package the release binary as `/usr/bin/ub` and include
+the README and manual under `/usr/share/doc/ultimate-basic`. The same packages are
+also built automatically by the `linux-packages` GitHub Actions job on pushes to
+`main` and can be downloaded from its workflow artifacts.
 
 ## Usage
 

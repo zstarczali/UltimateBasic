@@ -1,0 +1,57 @@
+name: Build Linux packages
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "src/**"
+      - "build.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "README.md"
+      - "MANUAL.md"
+      - "LICENSE"
+      - ".github/workflows/package-linux.yml"
+
+jobs:
+  linux-packages:
+    name: Linux packages
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binary
+        run: cargo build --release --bin ub
+
+      - name: Install package builders
+        run: cargo install cargo-deb cargo-generate-rpm
+
+      - name: Build Debian package
+        run: cargo deb --no-build
+
+      - name: Build RPM package
+        run: cargo generate-rpm --auto-req disabled
+
+      - name: Upload Debian package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ultimate-basic-linux-deb
+          path: target/debian/*.deb
+          if-no-files-found: error
+
+      - name: Upload RPM package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ultimate-basic-linux-rpm
+          path: target/generate-rpm/*.rpm
+          if-no-files-found: error
