@@ -1,3 +1,21 @@
+Ultimate Basic v1.5.6 – Release Notes
+======================================
+
+2026-09-06 – Hires draw color + multicolor shapes
+--------------------------------------------------
+  - Added `color pen c`: sets a persistent hires drawing color (0-15). The
+    plot/line/rect/circle/paint helpers stamp it into the video-matrix
+    foreground nibble of every cell they touch; the background nibble is
+    preserved. Default is white (1), so programs that never call `color pen`
+    render exactly as before. Emitted only when `color pen` is used, so the
+    plot helper is unchanged for existing programs.
+  - Added multicolor shape commands `mline`, `mrect`, and `mcircle` (joining
+    `mplot`). The trailing `color` argument is the 2-bit source (0-3); the
+    actual colors come from the cell palette (screen / color RAM), exactly as
+    for `mplot`. They reuse the hires Bresenham/midpoint routines via a shared
+    draw-target switch, plotting each pixel through the mplot helper. `mline`
+    and `mrect` require x in 0-159; `mcircle` clips off-screen points.
+
 Ultimate Basic v1.5.5 – Release Notes
 ======================================
 

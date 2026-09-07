@@ -86,6 +86,10 @@ pub enum ColorTarget {
     Text,
     Border,
     Bg,
+    /// `color pen N` — persistent hires bitmap draw color (foreground nibble).
+    /// Stored in a ZP byte; the plot helper stamps it into each touched cell's
+    /// video-matrix high nibble (background nibble preserved).
+    Pen,
 }
 
 /// Variable type annotation.
@@ -501,6 +505,29 @@ pub enum Stmt {
     Mplot {
         x: Expr,
         y: Expr,
+        color: Expr,
+    },
+    /// `mline x1, y1, x2, y2, color` — multicolor bitmap line (Bresenham via mplot).
+    MLine {
+        x1: Expr,
+        y1: Expr,
+        x2: Expr,
+        y2: Expr,
+        color: Expr,
+    },
+    /// `mrect x1, y1, x2, y2, color` — multicolor bitmap rectangle outline (four mlines).
+    MRect {
+        x1: Expr,
+        y1: Expr,
+        x2: Expr,
+        y2: Expr,
+        color: Expr,
+    },
+    /// `mcircle x, y, radius, color` — multicolor bitmap circle (midpoint via mplot).
+    MCircle {
+        x: Expr,
+        y: Expr,
+        radius: Expr,
         color: Expr,
     },
     /// `music play [N]` — initialise SID with song N (default 0) and start CIA1 50 Hz IRQ

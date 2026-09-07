@@ -1,4 +1,4 @@
-# Ultimate Basic v1.5.5 — Language Manual
+# Ultimate Basic v1.5.6 — Language Manual
 
 Complete language and CLI reference for Ultimate Basic, a BASIC-like language that
 compiles directly to 6502 machine code for the Commodore 64. Output: `.prg` files
@@ -83,8 +83,9 @@ is used for the `dec(n, width)` print format)
 
 **Bitmap & block graphics**
 `graphics`, `gcls`, `flip`, `plot`, `plot4`, `mplot`,
+`mline`, `mrect`, `mcircle`,
 `line`, `circle`, `circle4`, `rect`, `paint`, `erase`,
-`multi`, `block`
+`pen`, `multi`, `block`
 
 **Sprites**
 `sprite`, `sprdef`, `sprite_frame`, `sprite_x`, `sprite_y`, `sprhit`, `sprbghit`,
@@ -506,7 +507,14 @@ rect x1, y1, x2, y2      # draw rectangle outline (4 edges); x: 0-319, y: 0-199
 rect erase x1, y1, x2, y2  # clear rectangle outline (AND ~mask)
 rect xor x1, y1, x2, y2    # XOR rectangle outline (EOR mask)
 paint x, y               # 4-connected flood fill from (x, y); fills clear pixels bounded by set ones
-mplot x, y, color        # set multicolor pixel (x: 0-159, y: 0-199, color: 0-3); requires graphics on multi
+
+color pen c              # set the hires drawing color (0-15); see below
+
+# ── Multicolor bitmap (graphics on multi, 160×200) ──
+mplot x, y, color        # set multicolor pixel (x: 0-159, y: 0-199, color: 0-3)
+mline x1, y1, x2, y2, color   # multicolor line
+mrect x1, y1, x2, y2, color   # multicolor rectangle outline
+mcircle x, y, r, color        # multicolor circle
 ```
 
 Both `graphics on` variants blank the display (`LDA $D011 / AND #$EF / STA $D011`) while
@@ -515,6 +523,46 @@ switching VIC registers, then re-enable it in the target mode — prevents mode-
 `x` may be the full `0–319` range. Coordinates above 255 are handled automatically
 (the helper adds the 9th X bit), so `plot`, `line`, `circle` and `rect` all reach the
 right edge of the screen. Use a `word` variable when an X coordinate can exceed 255.
+
+#### Hires drawing color — `color pen`
+
+In hires mode (320×200) color is **per 8×8 cell**, held in the video matrix (high nibble =
+foreground, low nibble = background), not per pixel. `color pen c` sets a persistent
+foreground color (0-15) that `plot`, `line`, `rect`, `circle` and `paint` stamp into the
+cell of every pixel they draw; the cell's background nibble is preserved. It stays in effect
+until the next `color pen`. The default is white (1), so programs that never call `color pen`
+look exactly as before.
+
+```basic
+graphics on
+gcls
+color pen 2              # red
+line 0, 0, 100, 100
+color pen 6              # blue
+circle 160, 100, 40
+display on
+```
+
+#### Multicolor shapes — `mline` / `mrect` / `mcircle`
+
+In multicolor mode (`graphics on multi`, 160×200) each pixel picks one of four color
+sources via a 2-bit value (`%00` background `$D021`, `%01` screen hi nibble, `%10` screen lo
+nibble, `%11` color RAM). `mplot` sets a single such pixel; `mline`, `mrect` and `mcircle`
+draw shapes the same way — the trailing `color` argument is the 2-bit source (0-3), and the
+actual colors come from the cell palette (screen / color RAM) exactly as for `mplot`.
+
+```basic
+graphics on multi
+gcls
+mcircle 80, 100, 40, 1
+mrect 10, 10, 150, 190, 2
+mline 0, 0, 159, 199, 3
+display on
+```
+
+`mline`/`mrect`/`mcircle` reuse the same Bresenham / midpoint routines as their hires
+counterparts, plotting each pixel through `mplot`; off-screen points (x ≥ 160 or y ≥ 200)
+are skipped.
 
 ### Double-buffered bitmap (flicker-free)
 
@@ -580,6 +628,7 @@ cls fast                 # fast fill: screen RAM + color RAM + HOME
 color text 14            # text color register $0286
 color border 6           # $D020
 color bg 0               # $D021
+color pen 2              # hires drawing color (0-15) for plot/line/rect/circle/paint
 
 screen 0, 0, 65          # write char 65 ('A') to screen RAM at col 0, row 0 ($0400)
 screen 10, 5, ch         # col 10, row 5 — col/row can be variables
@@ -1587,6 +1636,9 @@ With `-v` the output additionally shows the internal ZP allocations and a full h
 | `abs()` / `sgn()` / `min()` / `max()` | 8-bit values only; `abs`/`sgn` treat values as signed (bit 7 = negative → `abs` two's-complements, `sgn` returns `$FF`); `min`/`max` are unsigned (0–255) |
 | `plot` | Out-of-range pixels are silently clipped (Y ≥ 200 or X ≥ 320 → no-op) |
 | `mplot` | No bounds checking — x must be 0–159, y must be 0–199 |
+| `mline` / `mrect` | Multicolor; x: 0–159, y: 0–199. Off-screen pixels wrap (no clipping) — keep coordinates in range |
+| `mcircle` | Multicolor; clips off-screen points (x ≥ 160 or y ≥ 200 are skipped) |
+| `color pen` | Hires only; sets the foreground nibble of touched cells (background preserved). Has no effect in block mode (`plot4`/`circle4`) |
 | `rect` | No bounds checking — x: 0–319, y: 0–199; x1≤x2 and y1≤y2 not enforced (degenerate/inverted rects produce undefined output) |
 | `plot4` | No bounds checking — x must be 0–79, y must be 0–49 (block mode) |
 | `circle4` | Clips off-screen block pixels; useful radius is roughly 0–49 in 80×50 block mode |

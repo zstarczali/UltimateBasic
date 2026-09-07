@@ -97,6 +97,7 @@ pub struct Parser {
     base_dir: Option<std::path::PathBuf>,
     errors: Vec<String>,
     skip_var_check: bool,
+    statement_lines: Vec<usize>,
     /// `explicit` directive is active — every var / sub-param / fn-param must
     /// declare its type. Set by a pre-scan that looks for the `explicit` token.
     explicit_types: bool,
@@ -116,6 +117,7 @@ impl Parser {
             base_dir: None,
             errors: vec![],
             skip_var_check: false,
+            statement_lines: vec![],
             explicit_types: false,
         }
     }
@@ -133,6 +135,7 @@ impl Parser {
             base_dir: Some(base_dir),
             errors: vec![],
             skip_var_check: false,
+            statement_lines: vec![],
             explicit_types: false,
         }
     }
@@ -153,6 +156,7 @@ impl Parser {
             base_dir: None,
             errors: vec![],
             skip_var_check: false,
+            statement_lines: vec![],
             explicit_types: false,
         }
     }
@@ -174,6 +178,7 @@ impl Parser {
             base_dir,
             errors: vec![],
             skip_var_check: false,
+            statement_lines: vec![],
             explicit_types: false,
         }
     }
@@ -756,6 +761,7 @@ impl Parser {
                             sub.declared_vars = decl_vars;
                             sub.array_dims = self.array_dims.clone();
                             let sub_stmts = sub.parse();
+                            self.statement_lines.extend(sub.take_statement_lines());
                             self.consts.extend(sub.consts.into_iter());
                             self.declared_vars.extend(sub.declared_vars);
                             self.array_dims.extend(sub.array_dims);
@@ -772,6 +778,10 @@ impl Parser {
             self.skip_newlines();
         }
         stmts
+    }
+
+    pub fn take_statement_lines(&mut self) -> Vec<usize> {
+        std::mem::take(&mut self.statement_lines)
     }
 
     fn parse_addr(&mut self) -> u16 {
@@ -914,6 +924,17 @@ impl Parser {
     }
 
     fn parse_stmt(&mut self) -> Option<Stmt> {
+        let line = self.line;
+        let line_pos = self.statement_lines.len();
+        self.statement_lines.push(line);
+        let stmt = self.parse_stmt_inner();
+        if stmt.is_none() {
+            self.statement_lines.remove(line_pos);
+        }
+        stmt
+    }
+
+    fn parse_stmt_inner(&mut self) -> Option<Stmt> {
         self.skip_newlines();
         match self.peek().clone() {
             Token::Inc => {
@@ -1033,7 +1054,9 @@ impl Parser {
                             .unwrap_or(1);
                         // Total bytes = count * elem_size.
                         let total_size = match count_expr {
-                            Expr::Number(n) => Expr::Number((n as u16).wrapping_mul(elem_size) as i16),
+                            Expr::Number(n) => {
+                                Expr::Number((n as u16).wrapping_mul(elem_size) as i16)
+                            }
                             other => Expr::BinOp(
                                 Box::new(other),
                                 super::ast::BinOp::Mul,
@@ -1660,6 +1683,12 @@ impl Parser {
                         self.advance();
                         ColorTarget::Bg
                     }
+                    // `color pen N` — set the persistent hires draw color. Matched as
+                    // a plain identifier so `pen` stays usable as a normal name elsewhere.
+                    Token::Ident(name) if name.eq_ignore_ascii_case("pen") => {
+                        self.advance();
+                        ColorTarget::Pen
+                    }
                     _ => ColorTarget::Text,
                 };
                 let expr = self.parse_expr();
@@ -2074,6 +2103,68 @@ impl Parser {
                 let color = self.parse_expr();
                 self.expect_newline();
                 Some(Stmt::Mplot { x, y, color })
+            }
+            Token::MLine => {
+                self.advance();
+                let x1 = self.parse_expr();
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
+                let y1 = self.parse_expr();
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
+                let x2 = self.parse_expr();
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
+                let y2 = self.parse_expr();
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
+                let color = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::MLine { x1, y1, x2, y2, color })
+            }
+            Token::MRect => {
+                self.advance();
+                let x1 = self.parse_expr();
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
+                let y1 = self.parse_expr();
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
+                let x2 = self.parse_expr();
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
+                let y2 = self.parse_expr();
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
+                let color = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::MRect { x1, y1, x2, y2, color })
+            }
+            Token::MCircle => {
+                self.advance();
+                let x = self.parse_expr();
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
+                let y = self.parse_expr();
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
+                let radius = self.parse_expr();
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
+                let color = self.parse_expr();
+                self.expect_newline();
+                Some(Stmt::MCircle { x, y, radius, color })
             }
             Token::Music => {
                 self.advance();
@@ -3206,10 +3297,8 @@ impl Parser {
                         let field_name = if let Token::Ident(fname) = self.advance() {
                             fname
                         } else {
-                            self.errors.push(format!(
-                                "line {}: expected field name after '.'",
-                                self.line
-                            ));
+                            self.errors
+                                .push(format!("line {}: expected field name after '.'", self.line));
                             return Expr::Number(0);
                         };
                         let (off, kind, elem_size) =

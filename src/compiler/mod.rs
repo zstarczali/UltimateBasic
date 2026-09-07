@@ -76,6 +76,7 @@ pub struct ListingSpan {
     pub start: usize,
     pub end: usize,
     pub source: String,
+    pub source_line: usize,
 }
 
 #[derive(Clone)]
@@ -143,9 +144,11 @@ pub fn compile_with_path(
         parser.set_explicit(true);
     }
     let ast = parser.parse();
+    let source_lines = parser.take_statement_lines();
     let mut errors = lex_errors;
     errors.extend(parser.errors().iter().cloned());
     let mut cg = Codegen::new(load_addr);
+    cg.set_source_lines(source_lines);
     let raw = cg.compile(&ast);
     errors.extend(cg.errors());
     let map = cg.memory_map();

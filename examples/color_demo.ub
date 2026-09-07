@@ -1,0 +1,14 @@
+graphics on
+
+color bg 0
+color border 0
+
+gcls
+color pen 2              # red
+line 0, 0, 100, 100
+color pen 6              # blue
+circle 160, 100, 40
+display on
+
+label _end
+goto _end
