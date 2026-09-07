@@ -14,3 +14,22 @@ path = "src/main.rs"
 winresource = "0.1"
 
 [dependencies]
+
+[package.metadata.deb]
+copyright = "2026, Zsolt Tarczali"
+license-file = ["LICENSE", "0"]
+extended-description = "Ultimate Basic is a BASIC-like compiler that targets Commodore 64 and Commodore 64 Ultimate systems. It produces PRG, CRT and D64 files from UB source files."
+section = "devel"
+priority = "optional"
+assets = [
+	["target/release/ub", "usr/bin/ub", "755"],
+	["README.md", "usr/share/doc/ultimate-basic/README.md", "644"],
+	["MANUAL.md", "usr/share/doc/ultimate-basic/MANUAL.md", "644"],
+]
+
+[package.metadata.generate-rpm]
+assets = [
+	{ source = "target/release/ub", dest = "/usr/bin/ub", mode = "755" },
+	{ source = "README.md", dest = "/usr/share/doc/ultimate-basic/README.md", mode = "644" },
+	{ source = "MANUAL.md", dest = "/usr/share/doc/ultimate-basic/MANUAL.md", mode = "644" },
+]
