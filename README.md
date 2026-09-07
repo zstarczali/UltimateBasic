@@ -194,18 +194,7 @@ as `data`, maps, sprite/character definitions, lookup tables, SID/Koala payloads
 - Added listing tests and documentation in the README, manual, CLI help, release notes,
   and compiler developer guide.
 
-## A taste
 
-```basic
-graphics on
-gcls
-for i = 0 to 199
-  line 0, i, 319, 199 - i
-next
-display on
-var k = getch()
-graphics off
-bye
 ```
 
 ## Documentation
