@@ -275,6 +275,148 @@ impl Parser {
         })
     }
 
+    /// `tune [at addr]` ... `end` — inline SID tracker tune. Builds the player
+    /// and data at compile time and emits a `LoadSid`, so `sid_init`,
+    /// `sid_play` and `music play|stop|pause|resume` work as for `load sid`.
+    ///
+    /// Lines inside the block:
+    ///   speed N                                   frames per row
+    ///   inst id, ctrl, ad, sr, pw, cutoff, resfilt, modevol
+    ///   order p, p, ...                           pattern order
+    ///   pat p, voice, "C-4 01", "...", ...        up to 32 rows for voice 0-2
+    fn parse_tune_block(&mut self) -> Option<Stmt> {
+        use super::tune::{self, Cell, Instrument, TuneDef, ROWS};
+        let mut base = tune::DEFAULT_ADDR;
+        if self.peek() == &Token::At {
+            self.advance();
+            base = self.parse_addr();
+        }
+        self.expect_newline();
+        let mut def = TuneDef::default();
+        let mut ok = true;
+        loop {
+            self.skip_newlines();
+            match self.peek().clone() {
+                Token::End => {
+                    self.advance();
+                    break;
+                }
+                Token::Eof => {
+                    self.errors.push("tune: missing 'end'".to_string());
+                    ok = false;
+                    break;
+                }
+                _ => {}
+            }
+            let word = match self.advance() {
+                Token::Ident(s) => s.to_lowercase(),
+                Token::Speed => "speed".to_string(),
+                other => {
+                    self.errors.push(format!("tune: unexpected {:?}", other));
+                    ok = false;
+                    while !matches!(self.peek(), Token::Newline | Token::Eof) {
+                        self.advance();
+                    }
+                    continue;
+                }
+            };
+            let mut nums: Vec<u16> = Vec::new();
+            let mut cells: Vec<String> = Vec::new();
+            while !matches!(self.peek(), Token::Newline | Token::Eof) {
+                match self.peek().clone() {
+                    Token::Comma => {
+                        self.advance();
+                    }
+                    Token::StringLit(s) => {
+                        self.advance();
+                        cells.push(s);
+                    }
+                    _ => nums.push(self.parse_addr()),
+                }
+            }
+            match word.as_str() {
+                "speed" => {
+                    if let Some(&n) = nums.first() {
+                        def.speed = n.clamp(1, 255) as u8;
+                    } else {
+                        self.errors.push("tune: 'speed' needs a number".to_string());
+                        ok = false;
+                    }
+                }
+                "inst" => {
+                    if nums.len() != 8 {
+                        self.errors.push("tune: 'inst' needs id, ctrl, ad, sr, pw, cutoff, resfilt, modevol".to_string());
+                        ok = false;
+                    } else {
+                        let id = nums[0] as usize;
+                        if def.insts.len() <= id {
+                            def.insts.resize(id + 1, Instrument::default());
+                        }
+                        def.insts[id] = Instrument {
+                            ctrl: nums[1] as u8,
+                            ad: nums[2] as u8,
+                            sr: nums[3] as u8,
+                            pw: nums[4],
+                            cutoff: nums[5],
+                            res_filt: nums[6] as u8,
+                            mode_vol: nums[7] as u8,
+                        };
+                    }
+                }
+                "order" => def.order.extend(nums.iter().map(|&n| n as u8)),
+                "pat" => {
+                    if nums.len() != 2 || nums[1] > 2 {
+                        self.errors.push("tune: 'pat' needs pattern, voice (0-2), then row strings".to_string());
+                        ok = false;
+                    } else if cells.len() > ROWS {
+                        self.errors.push(format!("tune: a pattern has at most {} rows", ROWS));
+                        ok = false;
+                    } else if nums[0] as usize >= tune::MAX_PATTERNS {
+                        self.errors.push(format!("tune: pattern number must be 0-{}", tune::MAX_PATTERNS - 1));
+                        ok = false;
+                    } else {
+                        let (p, v) = (nums[0] as usize, nums[1] as usize);
+                        if def.patterns.len() <= p {
+                            def.patterns.resize(p + 1, [[Cell::default(); ROWS]; 3]);
+                        }
+                        for (r, text) in cells.iter().enumerate() {
+                            match tune::parse_cell(text) {
+                                Ok(c) => def.patterns[p][v][r] = c,
+                                Err(e) => {
+                                    self.errors.push(format!("tune: pattern {} voice {} row {}: {}", p, v, r, e));
+                                    ok = false;
+                                }
+                            }
+                        }
+                    }
+                }
+                other => {
+                    self.errors.push(format!("tune: unknown line '{}' (use speed, inst, order, pat)", other));
+                    ok = false;
+                }
+            }
+        }
+        if !ok {
+            return None;
+        }
+        match tune::build(&def, base) {
+            Ok(data) => {
+                self.consts.insert("sid_init".to_string(), base as i16);
+                self.consts.insert("sid_play".to_string(), base.wrapping_add(3) as i16);
+                Some(Stmt::LoadSid {
+                    load_addr: base,
+                    init_addr: base,
+                    play_addr: base.wrapping_add(3),
+                    data,
+                })
+            }
+            Err(e) => {
+                self.errors.push(e);
+                None
+            }
+        }
+    }
+
     /// Read and validate the compact UltimateBasic character-map format.
     fn parse_map_file(&mut self, filename: &str) -> Option<Stmt> {
         let path = self
@@ -2989,6 +3131,10 @@ impl Parser {
                 };
                 self.expect_newline();
                 Some(Stmt::Org(addr))
+            }
+            Token::Tune => {
+                self.advance();
+                return self.parse_tune_block();
             }
             Token::Sfx => {
                 self.advance();

@@ -555,7 +555,8 @@ pub(crate) fn assemble_inline(src: &str, base_addr: u16) -> Vec<u8> {
                 let rel = (target as i32 - pc as i32) as i8;
                 (Rel, rel as u8 as u16)
             } else {
-                (Abs, target)
+                // Keep indexed / indirect modes for label operands (`label,X`, `label,Y`, `JMP (label)`).
+                (if matches!(item.mode, Abx | Aby | Ind) { item.mode } else { Abs }, target)
             }
         } else if item.mode == Rel {
             // Numeric branch operand is an absolute target address
@@ -14661,17 +14662,17 @@ impl Codegen {
             }
         }
 
-        // Emit CIA1 music play-wrapper (LDA #$01; STA $DC0D; JSR sid_play; JMP $EA81)
+        // Emit CIA1 music play-wrapper (LDA $DC0D; JSR sid_play; JMP $EA81)
         // Emitted once; all `music play` setup sequences are patched to point here.
         if !self.music_wrap_patches.is_empty() {
             let wrap_addr = self.current_addr();
             self.listing_symbol("ub_helper_music_irq");
             let play_addr = self.sid_play_addr.unwrap_or(0);
-            self.emit(0xA9);
-            self.emit(0x01); // LDA #$01
-            self.emit(0x8D);
+            // ACK timer A by READING $DC0D. (Writing #$01 there clears the interrupt
+            // mask bit and disables the timer IRQ after the first tick.)
+            self.emit(0xAD);
             self.emit(0x0D);
-            self.emit(0xDC); // STA $DC0D — ACK timer A
+            self.emit(0xDC); // LDA $DC0D — ACK timer A
             self.emit(0x20);
             self.emit(play_addr as u8);
             self.emit((play_addr >> 8) as u8); // JSR sid_play

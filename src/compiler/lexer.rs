@@ -57,6 +57,7 @@ pub enum Token {
     Raster,
     Sound,
     Sfx,   // sfx ch, freq, frames [, wave] — non-blocking SID effect
+    Tune,  // tune [at addr] ... end — inline SID tracker tune (player + data)
     Org,   // org addr — continue the sub/fn code at addr (leaves a gap for data)
     Sprite,      // sprite id, x, y [, data_addr] / sprite on/off/color/multi
     SpriteHit,   // sprhit()   — $D01E sprite-sprite collision
@@ -584,6 +585,7 @@ impl Lexer {
             "raster" => Token::Raster,
             "sound" => Token::Sound,
             "sfx" => Token::Sfx,
+            "tune" => Token::Tune,
             "org" => Token::Org,
             "int" => Token::Int,
             "string" => Token::Str,
