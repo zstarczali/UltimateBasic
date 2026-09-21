@@ -392,6 +392,9 @@ pub enum Stmt {
         freq: Expr,
         duration: Expr,
     }, // SID: sound ch, freq(16-bit), frames
+    /// `org addr` — between sub/fn definitions: continue generating code at `addr`. The skipped
+    /// bytes are zero-filled and can hold data (`incbin "x", addr`, charsets, ...).
+    Org(u16),
     /// `sfx ch, freq, frames [, wave]` — fire-and-forget SID note: returns at once and the
     /// envelope decay (chosen from `frames`) fades it out. `frames` and `wave` are constants.
     Sfx {

@@ -534,6 +534,22 @@ and lowercase source chars as `$61−0x20` (→ PETSCII uppercase slot).
 `scroll row R left` shifts one constant screen row left; write the new rightmost character with `screen 39, R, ch`.
 Useful for smooth hardware scrolling: decrement each frame from 7 to 0, then shift screen RAM and reset to 7.
 
+### Code layout: `org`
+
+```basic
+sub a() ... end          # subs/fns are placed one after another from the end of the main body
+org $4000                # the next subs/fns continue at $4000; $xxxx-$3FFF stays zero-filled
+sub b() ... end
+incbin "font.bin", $3800 # data can live in the gap ($3800-$3FFF is a whole VIC charset slot)
+```
+
+`org addr` goes **between sub/fn definitions** (it is ignored in the main body and only acts in
+the second pass). Subroutines never fall through into each other, so the skipped bytes are
+just zero-filled and reserved: an `incbin "f", addr` that lies wholly inside the gap is written
+into it, and `charset on` does not count the gap as code. The zero bytes are part of the `.prg`.
+`org` below the current code end is a compile-time error. Everything generated after the last
+sub (helpers, `data` tables) follows the last sub, i.e. lands above the gap.
+
 ### Custom charset
 
 ```basic
@@ -924,6 +940,8 @@ poke $D020, 6 : color border 6  # colon separates two statements on one line
 
 ```basic
 incbin "sprites.bin"     # embed raw binary bytes at current code position
+incbin "font.prg", $3C00, 2       # at an address, skipping the first 2 bytes (a .prg load address)
+incbin "big.bin", $4000, 16, 256  # skip 16 bytes, then take at most 256
 include "defs.ub"        # inline another .ub source file (lexed+parsed in place)
 ```
 

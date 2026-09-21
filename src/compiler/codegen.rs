@@ -601,6 +601,7 @@ pub struct Codegen {
     charset_base: u16,                          // base address for chardef data (default $3800)
     charset_regions: Vec<(u16, u16)>, // RAM ranges written at run time by chardef / charset on
     generated_code_len: usize, // code bytes before addressed data (incbin ,addr / sid / koala) was appended
+    code_gaps: Vec<(u16, u16)>, // address ranges skipped by `org` (zero-filled, free for data)
     perm_zp: u8,
     tmp_zp: u8,
     break_patches: Vec<Vec<usize>>,
@@ -717,6 +718,7 @@ impl Codegen {
             charset_base: 0x3800,
             charset_regions: vec![],
             generated_code_len: 0,
+            code_gaps: vec![],
             perm_zp: ZP_BASE,
             tmp_zp: TMP_BASE,
             break_patches: vec![],
@@ -12871,6 +12873,8 @@ impl Codegen {
                 self.patch_bxx(beq_leave + 1, self.load_addr + leave_top as u16);
                 self.patch_bxx(bne_next + 1, self.load_addr + outer_top as u16);
             }
+            // `org` is handled by the second pass of compile() (it only means something there)
+            Stmt::Org(_) => {}
             Stmt::Sfx {
                 channel,
                 freq,
@@ -13086,8 +13090,8 @@ impl Codegen {
                 // skip_wait: GATE off — release note
                 let skip_addr = self.current_addr();
                 self.patch_bxx(beq_skip + 1, skip_addr);
-                self.patch_bxx(beq_nz, self.load_addr + wait_nz as u16);
-                self.patch_bxx(bne_z, self.load_addr + wait_z as u16);
+                self.patch_bxx(beq_nz + 1, self.load_addr + wait_nz as u16);
+                self.patch_bxx(bne_z + 1, self.load_addr + wait_z as u16);
                 self.patch_bxx(bne_fc + 1, self.load_addr + wait_nz as u16);
                 // GATE off: sawtooth, no gate = $10
                 self.emit(0xA9);
@@ -14325,7 +14329,7 @@ impl Codegen {
 
         // Pass 1: everything except SubDef
         for stmt in stmts {
-            if !matches!(stmt, Stmt::SubDef(..) | Stmt::FnDef(..)) {
+            if !matches!(stmt, Stmt::SubDef(..) | Stmt::FnDef(..) | Stmt::Org(..)) {
                 self.tmp_zp = TMP_BASE; // reset scratch ZP per statement (same as gen_stmts)
                 self.gen_stmt(stmt);
             }
@@ -14334,7 +14338,21 @@ impl Codegen {
 
         // Pass 2: subroutine definitions (after main, so they aren't executed at startup)
         for stmt in stmts {
-            if matches!(stmt, Stmt::SubDef(..) | Stmt::FnDef(..)) {
+            if let Stmt::Org(target) = stmt {
+                // Continue the subroutine code at `target`; subs never fall through into each
+                // other, so zero-filling the gap is safe.
+                let here = self.current_addr();
+                if *target < here {
+                    self.incbin_errors.push(format!(
+                        "org ${target:04X}: the code has already reached ${here:04X}"
+                    ));
+                } else if *target > here {
+                    while self.current_addr() < *target {
+                        self.emit(0x00);
+                    }
+                    self.code_gaps.push((here, *target));
+                }
+            } else if matches!(stmt, Stmt::SubDef(..) | Stmt::FnDef(..)) {
                 self.tmp_zp = TMP_BASE; // reset scratch ZP per statement
                 self.gen_stmt(stmt);
             }
@@ -14709,6 +14727,19 @@ impl Codegen {
 
         self.addressed_incbins.sort_by_key(|entry| entry.0);
         for (address, path, data) in self.addressed_incbins.clone() {
+            // A block that lies wholly inside an `org` gap is written into the zero-filled
+            // bytes that are already there.
+            let end = address as usize + data.len();
+            if let Some(&(gap_lo, gap_hi)) = self
+                .code_gaps
+                .iter()
+                .find(|&&(lo, hi)| address >= lo && end <= hi as usize)
+            {
+                let _ = (gap_lo, gap_hi);
+                let start = address as usize - self.load_addr as usize;
+                self.code[start..start + data.len()].copy_from_slice(&data);
+                continue;
+            }
             let code_end = self.load_addr as usize + self.code.len();
             if (address as usize) < code_end {
                 self.incbin_errors.push(format!(
@@ -14787,8 +14818,21 @@ impl Codegen {
         // (`charset on` copies/uses a 2 KB set, `chardef` writes 8 bytes).
         let code_start = self.load_addr as u32;
         let code_end = code_start + self.generated_code_len as u32;
+        // the generated code, minus the gaps left by `org`
+        let mut segments: Vec<(u32, u32)> = vec![];
+        let mut seg_start = code_start;
+        let mut gaps = self.code_gaps.clone();
+        gaps.sort();
+        for (glo, ghi) in gaps {
+            segments.push((seg_start, glo as u32));
+            seg_start = ghi as u32;
+        }
+        segments.push((seg_start, code_end));
         for &(lo, hi) in &self.charset_regions {
-            if (lo as u32) < code_end && (hi as u32) > code_start {
+            if segments
+                .iter()
+                .any(|&(s, e)| (lo as u32) < e && (hi as u32) > s && s < e)
+            {
                 errs.push(format!(
                     "the program code (${:04X}-${:04X}) overlaps the charset area ${:04X}-${:04X}; move the charset with `charset $xxxx` (a multiple of $800, above the code, e.g. $3800)",
                     code_start,

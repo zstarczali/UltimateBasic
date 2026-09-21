@@ -983,6 +983,22 @@ Generated code and helpers must finish below `$2000`, because the displayed bitm
 overwrites `$2000-$3F3F`; the compiler reports an error otherwise. Koala import
 cannot currently be combined with `load sid` in the same program.
 
+### Code layout: `org`
+
+```basic
+sub a() ... end          # subs/fns are placed one after another from the end of the main body
+org $4000                # the next subs/fns continue at $4000; $xxxx-$3FFF stays zero-filled
+sub b() ... end
+incbin "font.bin", $3800 # data can live in the gap ($3800-$3FFF is a whole VIC charset slot)
+```
+
+`org addr` goes **between sub/fn definitions** (it is ignored in the main body and only acts in
+the second pass). Subroutines never fall through into each other, so the skipped bytes are
+just zero-filled and reserved: an `incbin "f", addr` that lies wholly inside the gap is written
+into it, and `charset on` does not count the gap as code. The zero bytes are part of the `.prg`.
+`org` below the current code end is a compile-time error. Everything generated after the last
+sub (helpers, `data` tables) follows the last sub, i.e. lands above the gap.
+
 ### Custom charset
 
 ```basic
@@ -1325,6 +1341,8 @@ which branches to the label. Forward references (label defined after `onerr goto
 ```basic
 incbin "sprites.bin"            # embed raw binary bytes at current code position
 incbin "charset.bin", $2000     # embed at an absolute address, padding as needed
+incbin "font.prg", $3C00, 2       # ...skipping the first 2 bytes (e.g. a .prg load address)
+incbin "big.bin", $4000, 16, 256  # ...skip 16 bytes, then take at most 256 bytes
 include "defs.ub"        # inline another .ub source file (lexed+parsed in place)
 ```
 

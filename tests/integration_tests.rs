@@ -6463,7 +6463,11 @@ fn map_load_accepts_visualassembler_multicolor_binary() {
 }
 
 fn write_test_koala() -> (std::path::PathBuf, Vec<u8>, Vec<u8>, Vec<u8>) {
-    let dir = std::env::temp_dir().join(format!("ultimate-basic-koala-{}", std::process::id()));
+    // one directory per call: the koala tests run in parallel and must not overwrite each
+    // other's picture.kla while it is being read
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("ultimate-basic-koala-{}-{}", std::process::id(), n));
     std::fs::create_dir_all(&dir).unwrap();
     let bitmap: Vec<u8> = (0..8000).map(|i| ((i * 17) & 0xff) as u8).collect();
     let screen: Vec<u8> = (0..1000).map(|i| ((i * 3) & 0xff) as u8).collect();
@@ -6710,4 +6714,112 @@ fn incbin_inside_the_charset_area_is_not_reported_as_code_overlap() {
     let payload = &result.prg[2..];
     let offset = 0x3800usize - 0x0801usize;
     assert_eq!(&payload[offset..offset + 4], &[0x18; 4]);
+}
+
+#[test]
+fn org_continues_sub_code_at_a_later_address() {
+    let src = "\
+sub a()
+  poke $0400, 1
+end
+org $2000
+sub b()
+  poke $0401, 2
+end
+call a
+call b
+";
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
+    assert!(res.errors.is_empty(), "errors: {:?}", res.errors);
+    let payload = &res.prg[2..];
+    let off = 0x2000usize - 0x0801usize;
+    assert_eq!(&payload[off..off + 2], &[0xA9, 0x02], "sub b starts at $2000 (LDA #2)");
+    assert!(payload[0x0900 - 0x0801..0x0A00 - 0x0801].iter().all(|&b| b == 0), "gap is zero-filled");
+    let mut cpu = TestCpu::new(&res.prg);
+    cpu.run_until_main_rts(10_000);
+    assert_eq!((cpu.mem[0x0400], cpu.mem[0x0401]), (1, 2), "both subs run");
+}
+
+#[test]
+fn org_backwards_is_an_error() {
+    let res = compile(
+        "sub a()\n  poke $0400, 1\nend\norg $0800\ncall a\n",
+        &CompileOptions { basic_stub: false, explicit: false },
+    );
+    assert!(
+        res.errors.iter().any(|e| e.contains("already reached")),
+        "errors: {:?}",
+        res.errors
+    );
+}
+
+#[test]
+fn incbin_can_live_inside_an_org_gap() {
+    let dir = std::env::temp_dir().join(format!("ultimate-basic-org-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("d.bin"), [1u8, 2, 3, 4]).unwrap();
+    let source_path = dir.join("main.ub");
+    let src = "\
+sub a()
+  poke $0400, 1
+end
+org $2000
+sub b()
+  poke $0401, 2
+end
+incbin \"d.bin\", $1800
+call a
+call b
+";
+    let res = compile_with_path(
+        src,
+        &CompileOptions { basic_stub: false, explicit: false },
+        Some(&source_path),
+    );
+    assert!(res.errors.is_empty(), "errors: {:?}", res.errors);
+    let payload = &res.prg[2..];
+    let at = 0x1800usize - 0x0801usize;
+    assert_eq!(&payload[at..at + 4], &[1, 2, 3, 4]);
+    let sub_b = 0x2000usize - 0x0801usize;
+    assert_eq!(&payload[sub_b..sub_b + 2], &[0xA9, 0x02], "code after the gap is untouched");
+}
+
+#[test]
+fn incbin_can_skip_a_prg_header_and_limit_the_length() {
+    let dir = std::env::temp_dir().join(format!("ultimate-basic-skip-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    // a .prg style file: 2 byte load address, then the payload
+    std::fs::write(dir.join("f.prg"), [0x00u8, 0x20, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE]).unwrap();
+    let source_path = dir.join("main.ub");
+    let opts = CompileOptions { basic_stub: false, explicit: false };
+
+    let skipped = compile_with_path("incbin \"f.prg\", $2000, 2\n", &opts, Some(&source_path));
+    assert!(skipped.errors.is_empty(), "errors: {:?}", skipped.errors);
+    let off = 0x2000usize - 0x0801usize;
+    assert_eq!(&skipped.prg[2 + off..2 + off + 5], &[0xAA, 0xBB, 0xCC, 0xDD, 0xEE]);
+    assert_eq!(skipped.prg.len(), 2 + off + 5, "exactly the payload, header dropped");
+
+    let sliced = compile_with_path("incbin \"f.prg\", $2000, 3, 2\n", &opts, Some(&source_path));
+    assert!(sliced.errors.is_empty(), "errors: {:?}", sliced.errors);
+    assert_eq!(&sliced.prg[2 + off..2 + off + 2], &[0xBB, 0xCC], "skip 3, take 2");
+    assert_eq!(sliced.prg.len(), 2 + off + 2);
+
+    let too_far = compile_with_path("incbin \"f.prg\", $2000, 99\n", &opts, Some(&source_path));
+    assert!(!too_far.errors.is_empty(), "skip beyond the file must be an error");
+}
+
+#[test]
+fn sound_wait_loops_branch_back_to_the_raster_polls() {
+    // `sound` waits `duration` frames with two $D012 polling loops. Their branches once had the
+    // offset written over the opcode (0xF0 -> 0xFC), which crashed the program.
+    let res = compile(
+        "sound 0, $1000, 3\n",
+        &CompileOptions { basic_stub: false, explicit: false },
+    );
+    assert!(res.errors.is_empty(), "errors: {:?}", res.errors);
+    let expect = [0xAD, 0x12, 0xD0, 0xF0, 0xFB, 0xAD, 0x12, 0xD0, 0xD0, 0xFB, 0xC6];
+    assert!(
+        res.prg.windows(expect.len()).any(|w| w[..10] == expect[..10] && w[10] == expect[10]),
+        "expected: LDA $D012; BEQ -5; LDA $D012; BNE -5; DEC"
+    );
 }
