@@ -481,6 +481,10 @@ poke reg, 6              # STA (reg),Y — full 16-bit address
 var v = peek(reg)        # LDA (reg),Y
 ```
 
+16-bit products are exact (fixed in 1.5.7): `score += 300 * level`, `w = w + 100 * l` and
+`w = 100 * l + 900` are evaluated with `eval_expr_word` (16-bit multiplier) when the destination is a
+`word`; an 8-bit multiplier with a constant above 255 used to be truncated to 8 bits.
+
 ### String Variables
 
 ```basic
@@ -655,7 +659,10 @@ sid volume 0             # silence (master volume = 0)
 sid stop                 # zero all 25 SID registers ($D400-$D418) — complete silence
 ```
 
-Syntax: `sound <channel>, <freq>, <duration>`
+Syntax: `sound <channel>, <freq>, <duration>` — **blocking**: the program waits `duration` frames
+(counted on raster line 200 like `delay`; the loop once watched line 0, which `$D012` shows twice per
+frame, so notes were half as long and a wrong branch patch crashed non-zero durations — fixed in 1.5.7).
+Use `sfx` (below) inside a game loop.
 
 | Parameter  | Type   | Notes |
 |---|---|---|
@@ -868,6 +875,7 @@ print f                  # prints as "N.DD" (always 2 fractional digits)
 - `print f` calls `print_fixed(zp)`: prints hi via `print_decimal`, then `.`, then `(lo*100)>>8` as 2-digit zero-padded decimal via Russian Peasant multiply
 - Arithmetic uses the same 16-bit path as `word` vars (`eval_expr_word` / `gen_word_assign`)
 - No float multiplication or division between two float vars (not implemented)
+- `print` of an arithmetic expression involving a float (`print a / 10`) goes through `eval_expr_word` + `print_fixed`, so it prints `N.DD` (it printed the raw Q8.8 integer before 1.5.7). The fraction is truncated, not rounded (`1/10` → `0.09`)
 
 ### Math Functions
 
