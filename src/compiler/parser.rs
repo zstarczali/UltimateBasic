@@ -1955,6 +1955,12 @@ impl Parser {
                 self.expect_newline();
                 Some(Stmt::Chardef { id, bytes })
             }
+            Token::Charset if matches!(self.peek2(), Token::On | Token::Off) => {
+                self.advance();
+                let on = matches!(self.advance(), Token::On);
+                self.expect_newline();
+                Some(Stmt::CharsetSwitch { on })
+            }
             Token::Charset => {
                 self.advance();
                 let addr = match self.parse_expr() {
@@ -2467,6 +2473,27 @@ impl Parser {
                     } else {
                         None
                     };
+                    // optional `, skip [, len]`: drop a header / take only a slice of the file
+                    let mut skip = 0usize;
+                    let mut take: Option<usize> = None;
+                    if address.is_some() && self.peek() == &Token::Comma {
+                        self.advance();
+                        match self.parse_expr() {
+                            Expr::Number(value) if value >= 0 => skip = value as usize,
+                            _ => self
+                                .errors
+                                .push("incbin: skip must be a constant".to_string()),
+                        }
+                        if self.peek() == &Token::Comma {
+                            self.advance();
+                            match self.parse_expr() {
+                                Expr::Number(value) if value >= 0 => take = Some(value as usize),
+                                _ => self
+                                    .errors
+                                    .push("incbin: length must be a constant".to_string()),
+                            }
+                        }
+                    }
                     self.expect_newline();
                     let resolved = self
                         .base_dir
@@ -2474,11 +2501,25 @@ impl Parser {
                         .map(|base| base.join(&path))
                         .unwrap_or_else(|| std::path::PathBuf::from(&path));
                     match std::fs::read(&resolved) {
-                        Ok(data) => Some(Stmt::Incbin {
-                            path,
-                            data,
-                            address,
-                        }),
+                        Ok(mut data) => {
+                            if skip > data.len() {
+                                self.errors.push(format!(
+                                    "incbin '{}': skip {} is beyond the {} byte file",
+                                    path,
+                                    skip,
+                                    data.len()
+                                ));
+                            }
+                            data.drain(..skip.min(data.len()));
+                            if let Some(len) = take {
+                                data.truncate(len);
+                            }
+                            Some(Stmt::Incbin {
+                                path,
+                                data,
+                                address,
+                            })
+                        }
                         Err(error) => {
                             self.errors.push(format!(
                                 "incbin: cannot read '{}': {}",
@@ -2938,6 +2979,40 @@ impl Parser {
                     channel,
                     freq,
                     duration,
+                })
+            }
+            Token::Org => {
+                self.advance();
+                let addr = match self.parse_expr() {
+                    Expr::Number(n) => n as u16,
+                    _ => panic!("org: address must be a constant"),
+                };
+                self.expect_newline();
+                Some(Stmt::Org(addr))
+            }
+            Token::Sfx => {
+                self.advance();
+                let channel = self.parse_expr();
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
+                let freq = self.parse_expr();
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
+                let frames = self.parse_expr();
+                let wave = if self.peek() == &Token::Comma {
+                    self.advance();
+                    Some(self.parse_expr())
+                } else {
+                    None
+                };
+                self.expect_newline();
+                Some(Stmt::Sfx {
+                    channel,
+                    freq,
+                    frames,
+                    wave,
                 })
             }
             Token::Sprite => {

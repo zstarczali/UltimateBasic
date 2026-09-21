@@ -2,7 +2,7 @@
 
 <img src="assets/ultimate-basic-banner.png" alt="Ultimate Basic C64 banner" width="50%">
 
-Current version: **1.5.6**
+Current version: **1.5.7**
 
 A modern BASIC-like language that compiles directly to 6502 machine code for the
 **Commodore 64** and **Commodore 64 Ultimate**. It produces `.prg` files that run in
@@ -81,6 +81,42 @@ bytes. Compiler-generated helper routines are included in the same listing.
 The output uses KickAssembler syntax and can be assembled again. Known data regions—such
 as `data`, maps, sprite/character definitions, lookup tables, SID/Koala payloads, and
 `incbin` content—are emitted as `.byte` blocks instead of being mistaken for instructions.
+
+## What's new in 1.5.7
+
+New language elements:
+
+- **`charset on` / `charset off`** switch the VIC-II to the RAM character set at `charset addr`
+  (and back to the ROM set). Together with `chardef` this is a complete custom-font workflow.
+  A bad base address, or program code that reaches into the set, is a compile-time error.
+- **`org addr`** continues the subroutine code at a later address and leaves the gap free for
+  data, so a big program can live around a charset, sprite data or a font.
+- **`incbin "file", addr, skip [, len]`** skips a `.prg` load address (or any header) and can take
+  just a slice of a file. `incbin ..., addr` may now target an `org` gap.
+- **`sfx channel, freq, frames [, wave]`** is a non-blocking SID note: it returns at once and the
+  envelope fades the note out, so it can be used inside a game loop (`sound` blocks).
+
+  ```basic
+  charset $3800
+  incbin "font.bin", $3800          # data goes into the gap that `org` leaves
+  ...
+  org $4000                         # (between two subs) code continues above the charset
+  charset on                        # the VIC-II now draws from $3800
+  sfx 1, $0500, 8, 128              # a short noise burst; the program keeps running
+  ```
+
+Fixes:
+
+- **`sound`** lasted half as long as requested and crashed for durations other than 0 (a wrong
+  branch patch). Now it waits on raster line 200 like `delay`.
+- **`word` products** (`score += 300 * level`, `w = 100 * l + 900`) are now computed in 16 bits;
+  they were truncated to 8 bits.
+- **`print` of float expressions** (`print a / 10`) prints `N.DD` instead of the raw Q8.8 integer.
+- **Arrays start zeroed** (RAM at power-up holds garbage).
+- **Zero page overflow** is a compile-time error (`out of zero page`), and sequential `for` loops
+  share their limit/step bytes instead of exhausting the permanent area.
+- The manual no longer claims `%` binary literals (the lexer never supported them) and the
+  `charset` example uses the right `$D018` value.
 
 ## What's new in 1.5.6
 

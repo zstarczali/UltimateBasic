@@ -105,7 +105,9 @@ current-line pointer).
 ### Array Storage
 
 Arrays (`var a = array(N)`) are allocated from `$C000` upward — free RAM on
-the C64 with no ROM overlay when no cartridge is present.
+the C64 with no ROM overlay when no cartridge is present. All arrays are **zeroed
+at program entry** (`emit_zero_arrays`, one shared loop over the whole array region),
+because C64 RAM powers up with a garbage pattern.
 
 ---
 
@@ -479,6 +481,10 @@ poke reg, 6              # STA (reg),Y — full 16-bit address
 var v = peek(reg)        # LDA (reg),Y
 ```
 
+16-bit products are exact (fixed in 1.5.7): `score += 300 * level`, `w = w + 100 * l` and
+`w = 100 * l + 900` are evaluated with `eval_expr_word` (16-bit multiplier) when the destination is a
+`word`; an 8-bit multiplier with a constant above 255 used to be truncated to 8 bits.
+
 ### String Variables
 
 ```basic
@@ -531,6 +537,39 @@ and lowercase source chars as `$61−0x20` (→ PETSCII uppercase slot).
 `scroll y n` computes `(n AND 7)` and writes it into bits 0-2 of `$D011` (preserving bits 3-7).
 `scroll row R left` shifts one constant screen row left; write the new rightmost character with `screen 39, R, ch`.
 Useful for smooth hardware scrolling: decrement each frame from 7 to 0, then shift screen RAM and reset to 7.
+
+### Code layout: `org`
+
+```basic
+sub a() ... end          # subs/fns are placed one after another from the end of the main body
+org $4000                # the next subs/fns continue at $4000; $xxxx-$3FFF stays zero-filled
+sub b() ... end
+incbin "font.bin", $3800 # data can live in the gap ($3800-$3FFF is a whole VIC charset slot)
+```
+
+`org addr` goes **between sub/fn definitions** (it is ignored in the main body and only acts in
+the second pass). Subroutines never fall through into each other, so the skipped bytes are
+just zero-filled and reserved: an `incbin "f", addr` that lies wholly inside the gap is written
+into it, and `charset on` does not count the gap as code. The zero bytes are part of the `.prg`.
+`org` below the current code end is a compile-time error. Everything generated after the last
+sub (helpers, `data` tables) follows the last sub, i.e. lands above the gap.
+
+### Custom charset
+
+```basic
+charset $2800            # chardef destination + base for `charset on` (default $3800)
+chardef 1                # 8 bytes copied to charset_base + id*8 at runtime
+  $FF,$81,$BD,$BD,$BD,$BD,$81,$FF
+end
+charset on               # $D018 bits 1-3 := base/$800 (screen bits kept)
+charset off              # back to ROM set ($1000; $1800 after `lowercase`)
+```
+
+`charset addr` is a compile-time directive (no code). `chardef` does not clear the rest of the
+set. `charset on` requires a multiple of `$800` inside VIC bank 0, else a compile-time error;
+it uses the `charset addr` compiled last (keep it in the main body — subs compile after it).
+`%` binary literals are **not** supported by the lexer (use `$xx` / decimal).
+The program code must not overlap the charset: `charset on` claims the 2 KB set and `chardef` its 8 bytes, and a compile-time error is reported if the generated code reaches into them (e.g. a big program with `charset $2800` — use `charset $3800`, above the code).
 
 ### Ultimate 64 — CPU Speed
 
@@ -620,7 +659,10 @@ sid volume 0             # silence (master volume = 0)
 sid stop                 # zero all 25 SID registers ($D400-$D418) — complete silence
 ```
 
-Syntax: `sound <channel>, <freq>, <duration>`
+Syntax: `sound <channel>, <freq>, <duration>` — **blocking**: the program waits `duration` frames
+(counted on raster line 200 like `delay`; the loop once watched line 0, which `$D012` shows twice per
+frame, so notes were half as long and a wrong branch patch crashed non-zero durations — fixed in 1.5.7).
+Use `sfx` (below) inside a game loop.
 
 | Parameter  | Type   | Notes |
 |---|---|---|
@@ -634,6 +676,23 @@ Master volume (`$D418`) is always set to `$0F`.
 
 `sid volume N` writes N directly to `$D418`. Bits 0-3 = volume (0-15), bits 4-7 = filter mode.
 `sid stop` emits a 10-byte zero-fill loop (`LDX #24; LDA #0; STA $D400,X; DEX; BPL`) — faster than 25 individual pokes.
+
+### Non-blocking sound effects (`sfx`)
+
+```basic
+sound 0, $2000, 25            # BLOCKS: the program waits 25 frames here
+sfx 0, $2000, 25              # returns at once; the note fades out by itself
+sfx 1, $0500, 8, 128          # optional wave: 16 triangle, 32 saw (default), 64 pulse, 128 noise
+sfx 0, freq_word, 4, 16       # freq may be a constant, a word var or an 8-bit expression
+```
+
+`sfx <channel>, <freq>, <frames> [, <wave>]` programs one SID voice and returns immediately,
+so it is safe inside a game loop. There is no gate-off timer: the envelope is set to
+attack 0 / sustain 0 / release 0 and the **decay** is chosen at compile time from `frames`
+(1 frame = 20 ms, nearest SID decay time: 6, 24, 48, 72, 114, 168, 204, 240, 300, 750,
+1500, 2400 ms ...), so the note dies away over roughly that time. It re-triggers the voice
+each call (gate off, then on) and sets master volume `$0F`.
+`channel` (0-2), `frames` (1-255) and `wave` must be compile-time constants.
 
 ### Music Playback
 
@@ -816,6 +875,7 @@ print f                  # prints as "N.DD" (always 2 fractional digits)
 - `print f` calls `print_fixed(zp)`: prints hi via `print_decimal`, then `.`, then `(lo*100)>>8` as 2-digit zero-padded decimal via Russian Peasant multiply
 - Arithmetic uses the same 16-bit path as `word` vars (`eval_expr_word` / `gen_word_assign`)
 - No float multiplication or division between two float vars (not implemented)
+- `print` of an arithmetic expression involving a float (`print a / 10`) goes through `eval_expr_word` + `print_fixed`, so it prints `N.DD` (it printed the raw Q8.8 integer before 1.5.7). The fraction is truncated, not rounded (`1/10` → `0.09`)
 
 ### Math Functions
 
@@ -888,6 +948,8 @@ poke $D020, 6 : color border 6  # colon separates two statements on one line
 
 ```basic
 incbin "sprites.bin"     # embed raw binary bytes at current code position
+incbin "font.prg", $3C00, 2       # at an address, skipping the first 2 bytes (a .prg load address)
+incbin "big.bin", $4000, 16, 256  # skip 16 bytes, then take at most 256
 include "defs.ub"        # inline another .ub source file (lexed+parsed in place)
 ```
 
@@ -1438,6 +1500,7 @@ labels. The `.dbg` format does not yet include instruction-to-source-line mappin
 | Feature | Limitation |
 |---|---|
 | Integer arithmetic | 8-bit unsigned (0–255); `word` vars hold 16-bit values |
+| Zero page budget | Permanent ZP is `$02–$4F` (78 bytes): every variable and sub/fn parameter takes 2 bytes, every running `for` loop 2 more (freed when the loop ends, if its body declared no variables). Exceeding it is a compile-time error ("out of zero page"). Reuse variables in big programs |
 | Subroutines | No recursion — ZP parameter slots are statically allocated |
 | String vars | Read-only after init; assignment replaces the pointer, not the data |
 | String concat runtime | `s1 + s2` prints sequentially — no heap allocation or length tracking |

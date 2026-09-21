@@ -1,0 +1,17 @@
+# key_test.ub - shows what the KERNAL reports for the key you hold down.
+# Top-left: matrix code from $CB (64 = no key). A=10  S=13  D=18  W=9  Q=62
+# Border also shows the code (low 4 bits). Press Q to quit.
+
+var k = 0
+
+lowercase
+
+cls
+loop
+  k = peek($CB)
+  print at 0, 0, "code: ", dec(k, 3)
+  poke $D020, k
+  if k == 62 then break end
+end
+poke $D020, 14
+bye

@@ -339,6 +339,16 @@ impl TestCpu {
             }
             0xF0 => self.branch(self.zero),
             0x10 => self.branch(!self.negative),
+            0x26 => {
+                // ROL zp
+                let zp = self.fetch_byte() as usize;
+                let value = self.mem[zp];
+                let carry_in = self.carry as u8;
+                self.carry = value & 0x80 != 0;
+                let result = (value << 1) | carry_in;
+                self.mem[zp] = result;
+                self.set_zn(result);
+            }
             _ => panic!(
                 "unsupported opcode ${:02X} at ${:04X}",
                 opcode,
@@ -6453,7 +6463,11 @@ fn map_load_accepts_visualassembler_multicolor_binary() {
 }
 
 fn write_test_koala() -> (std::path::PathBuf, Vec<u8>, Vec<u8>, Vec<u8>) {
-    let dir = std::env::temp_dir().join(format!("ultimate-basic-koala-{}", std::process::id()));
+    // one directory per call: the koala tests run in parallel and must not overwrite each
+    // other's picture.kla while it is being read
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("ultimate-basic-koala-{}-{}", std::process::id(), n));
     std::fs::create_dir_all(&dir).unwrap();
     let bitmap: Vec<u8> = (0..8000).map(|i| ((i * 17) & 0xff) as u8).collect();
     let screen: Vec<u8> = (0..1000).map(|i| ((i * 3) & 0xff) as u8).collect();
@@ -6514,4 +6528,303 @@ fn koala_load_rejects_invalid_files() {
         Some(&dir.join("main.ub")),
     );
     assert!(res.errors.iter().any(|e| e.contains("expected 10001")));
+}
+
+#[test]
+fn print_float_division_prints_fixed_point() {
+    // `print a/10` with a: float must go through print_fixed ("N.DD"), not print the raw
+    // Q8.8 value as an integer (256/10 = 25).
+    let src = "var a: float = 1\nprint a / 10\n";
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
+    assert!(res.errors.is_empty(), "errors: {:?}", res.errors);
+    let has_dot = res
+        .prg
+        .windows(5)
+        .any(|w| w == [0xA9, 0x2E, 0x20, 0xD2, 0xFF]);
+    assert!(has_dot, "float expression print should emit '.' via CHROUT");
+}
+
+#[test]
+fn charset_on_off_switch_d018() {
+    let build = |src: &str| {
+        let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
+        assert!(res.errors.is_empty(), "errors: {:?}", res.errors);
+        res.prg
+    };
+    let has = |prg: &[u8], bits: u8| {
+        prg.windows(10)
+            .any(|w| w == [0xAD, 0x18, 0xD0, 0x29, 0xF1, 0x09, bits, 0x8D, 0x18, 0xD0])
+    };
+    assert!(has(&build("charset $2800\ncharset on\n"), 0x0A)); // $2800 → 5<<1
+    assert!(has(&build("charset on\n"), 0x0E)); // default $3800 → 7<<1
+    assert!(has(&build("charset off\n"), 0x04)); // ROM $1000
+    assert!(has(&build("lowercase\ncharset off\n"), 0x06)); // ROM $1800
+}
+
+#[test]
+fn charset_on_rejects_unaligned_or_out_of_bank_base() {
+    for src in ["charset $2801\ncharset on\n", "charset $4000\ncharset on\n"] {
+        let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
+        assert!(
+            res.errors.iter().any(|e| e.contains("charset on")),
+            "expected charset error for {src:?}, got {:?}",
+            res.errors
+        );
+    }
+}
+
+#[test]
+fn arrays_are_zeroed_at_startup() {
+    // 300 bytes (1 full page + remainder) and a word array; RAM is pre-dirtied.
+    let src = "var a = array(300)\nvar w = array_word(4)\na[0] = 7\n";
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
+    assert!(res.errors.is_empty(), "errors: {:?}", res.errors);
+    let mut cpu = TestCpu::new(&res.prg);
+    for addr in 0xC000..0xC200 {
+        cpu.mem[addr] = 0xFF;
+    }
+    cpu.run_until_main_rts(500_000);
+    assert_eq!(cpu.mem[0xC000], 7, "explicit store must survive");
+    for addr in 0xC001..0xC000 + 300 + 8 {
+        assert_eq!(cpu.mem[addr], 0, "array byte ${addr:04X} not zeroed");
+    }
+    assert_eq!(cpu.mem[0xC000 + 308], 0xFF, "must not clear past the last array");
+}
+
+#[test]
+fn zero_page_overflow_is_a_compile_error() {
+    // 2 bytes per variable in $02-$4F: 40 variables cannot fit.
+    let src: String = (0..40).map(|i| format!("var v{i} = 0\n")).collect();
+    let res = compile(&src, &CompileOptions { basic_stub: false, explicit: false });
+    assert!(
+        res.errors.iter().any(|e| e.contains("out of zero page")),
+        "expected zero-page overflow error, got {:?}",
+        res.errors
+    );
+}
+
+#[test]
+fn sequential_for_loops_reuse_zero_page_temporaries() {
+    // Every `for` needs 2 permanent ZP bytes (limit + step) while it runs. 60 loops in a
+    // row used to exhaust $02-$4F and silently corrupt the loop limits.
+    let mut src = String::from("var i = 0\nvar n = 0\n");
+    for _ in 0..60 {
+        src.push_str("for i = 0 to 3\n  n += 1\nnext\n");
+    }
+    let res = compile(&src, &CompileOptions { basic_stub: false, explicit: false });
+    assert!(res.errors.is_empty(), "errors: {:?}", res.errors);
+    let mut cpu = TestCpu::new(&res.prg);
+    cpu.run_until_main_rts(2_000_000);
+}
+
+#[test]
+fn word_assign_keeps_16_bit_product() {
+    // `300 * l`, `word += 300 * l` and `word = word + 300 * l` must not truncate to 8 bits.
+    let src = "\
+var a: word = 0
+var b: word = 5
+var c: word = 0
+var l = 3
+a += 300 * l
+b = b + 300 * l
+c = 100 * l + 900
+";
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
+    assert!(res.errors.is_empty(), "errors: {:?}", res.errors);
+    let mut cpu = TestCpu::new(&res.prg);
+    cpu.run_until_main_rts(500_000);
+    // ZP layout: a=$02 b=$04 c=$06 (2 bytes each)
+    let word = |z: usize| cpu.mem[z] as u16 | (cpu.mem[z + 1] as u16) << 8;
+    assert_eq!(word(0x02), 900, "a += 300*l");
+    assert_eq!(word(0x04), 905, "b = b + 300*l");
+    assert_eq!(word(0x06), 1200, "c = 100*l + 900");
+}
+
+#[test]
+fn sfx_is_non_blocking_and_programs_the_voice() {
+    let src = "sfx 0, $3000, 3, 16\nsfx 2, $1000, 25\nvar w: word = $2233\nsfx 1, w, 1, 128\n";
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
+    assert!(res.errors.is_empty(), "errors: {:?}", res.errors);
+    let mut cpu = TestCpu::new(&res.prg);
+    // no raster wait loop: this finishes at once even though $D012 never changes
+    cpu.run_until_main_rts(2_000);
+    assert_eq!(cpu.mem[0xD404], 0x11, "voice 1 triangle + gate");
+    assert_eq!(cpu.mem[0xD405], 0x02, "3 frames (60 ms) -> decay 2 (48 ms)");
+    assert_eq!(cpu.mem[0xD406], 0x00, "sustain 0 / release 0");
+    assert_eq!((cpu.mem[0xD400], cpu.mem[0xD401]), (0x00, 0x30), "freq $3000");
+    // channel 2 (base $D40E): default saw, 25 frames = 500 ms -> decay 8 (300 ms)
+    assert_eq!(cpu.mem[0xD412], 0x21, "voice 3 default = saw + gate");
+    assert_eq!(cpu.mem[0xD413], 0x08, "500 ms -> nearest decay index 8");
+    assert_eq!((cpu.mem[0xD40E], cpu.mem[0xD40F]), (0x00, 0x10), "freq $1000");
+    // channel 1 (base $D407): noise, frequency from a word variable, 1 frame -> decay 1
+    assert_eq!(cpu.mem[0xD40B], 0x81, "voice 2 noise + gate");
+    assert_eq!(cpu.mem[0xD40C], 0x01, "20 ms -> decay 1 (24 ms)");
+    assert_eq!((cpu.mem[0xD407], cpu.mem[0xD408]), (0x33, 0x22), "freq from word var");
+    assert_eq!(cpu.mem[0xD418], 0x0F);
+}
+
+#[test]
+fn sfx_rejects_bad_arguments() {
+    for src in ["sfx 3, 100, 5\n", "sfx 0, 100, 0\n", "sfx 0, 100, 5, 7\n"] {
+        let res = std::panic::catch_unwind(|| {
+            compile(src, &CompileOptions { basic_stub: false, explicit: false })
+        });
+        let failed = match res {
+            Ok(r) => !r.errors.is_empty(),
+            Err(_) => true,
+        };
+        assert!(failed, "{src:?} should be rejected");
+    }
+}
+
+#[test]
+fn charset_overlapping_program_code_is_an_error() {
+    // the code starts at $080D; a charset at $0800 (2 KB) sits right on top of it
+    let res = compile(
+        "charset $0800\ncharset on\n",
+        &CompileOptions { basic_stub: true, explicit: false },
+    );
+    assert!(
+        res.errors.iter().any(|e| e.contains("overlaps the charset")),
+        "expected overlap error, got {:?}",
+        res.errors
+    );
+    // a charset above the code is fine
+    let ok = compile(
+        "charset $3800\nchardef 1\n  $FF\nend\ncharset on\n",
+        &CompileOptions { basic_stub: true, explicit: false },
+    );
+    assert!(ok.errors.is_empty(), "errors: {:?}", ok.errors);
+}
+
+#[test]
+fn incbin_inside_the_charset_area_is_not_reported_as_code_overlap() {
+    // The font is embedded at the very address `charset on` uses; that data must not be
+    // mistaken for generated code by the overlap check.
+    let dir = std::env::temp_dir().join(format!("ultimate-basic-font-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("font.bin"), [0x18u8; 512]).unwrap();
+    let source_path = dir.join("main.ub");
+    let result = compile_with_path(
+        "charset $3800\nincbin \"font.bin\", $3800\ncharset on\n",
+        &CompileOptions { basic_stub: true, explicit: false },
+        Some(&source_path),
+    );
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let payload = &result.prg[2..];
+    let offset = 0x3800usize - 0x0801usize;
+    assert_eq!(&payload[offset..offset + 4], &[0x18; 4]);
+}
+
+#[test]
+fn org_continues_sub_code_at_a_later_address() {
+    let src = "\
+sub a()
+  poke $0400, 1
+end
+org $2000
+sub b()
+  poke $0401, 2
+end
+call a
+call b
+";
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
+    assert!(res.errors.is_empty(), "errors: {:?}", res.errors);
+    let payload = &res.prg[2..];
+    let off = 0x2000usize - 0x0801usize;
+    assert_eq!(&payload[off..off + 2], &[0xA9, 0x02], "sub b starts at $2000 (LDA #2)");
+    assert!(payload[0x0900 - 0x0801..0x0A00 - 0x0801].iter().all(|&b| b == 0), "gap is zero-filled");
+    let mut cpu = TestCpu::new(&res.prg);
+    cpu.run_until_main_rts(10_000);
+    assert_eq!((cpu.mem[0x0400], cpu.mem[0x0401]), (1, 2), "both subs run");
+}
+
+#[test]
+fn org_backwards_is_an_error() {
+    let res = compile(
+        "sub a()\n  poke $0400, 1\nend\norg $0800\ncall a\n",
+        &CompileOptions { basic_stub: false, explicit: false },
+    );
+    assert!(
+        res.errors.iter().any(|e| e.contains("already reached")),
+        "errors: {:?}",
+        res.errors
+    );
+}
+
+#[test]
+fn incbin_can_live_inside_an_org_gap() {
+    let dir = std::env::temp_dir().join(format!("ultimate-basic-org-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("d.bin"), [1u8, 2, 3, 4]).unwrap();
+    let source_path = dir.join("main.ub");
+    let src = "\
+sub a()
+  poke $0400, 1
+end
+org $2000
+sub b()
+  poke $0401, 2
+end
+incbin \"d.bin\", $1800
+call a
+call b
+";
+    let res = compile_with_path(
+        src,
+        &CompileOptions { basic_stub: false, explicit: false },
+        Some(&source_path),
+    );
+    assert!(res.errors.is_empty(), "errors: {:?}", res.errors);
+    let payload = &res.prg[2..];
+    let at = 0x1800usize - 0x0801usize;
+    assert_eq!(&payload[at..at + 4], &[1, 2, 3, 4]);
+    let sub_b = 0x2000usize - 0x0801usize;
+    assert_eq!(&payload[sub_b..sub_b + 2], &[0xA9, 0x02], "code after the gap is untouched");
+}
+
+#[test]
+fn incbin_can_skip_a_prg_header_and_limit_the_length() {
+    let dir = std::env::temp_dir().join(format!("ultimate-basic-skip-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    // a .prg style file: 2 byte load address, then the payload
+    std::fs::write(dir.join("f.prg"), [0x00u8, 0x20, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE]).unwrap();
+    let source_path = dir.join("main.ub");
+    let opts = CompileOptions { basic_stub: false, explicit: false };
+
+    let skipped = compile_with_path("incbin \"f.prg\", $2000, 2\n", &opts, Some(&source_path));
+    assert!(skipped.errors.is_empty(), "errors: {:?}", skipped.errors);
+    let off = 0x2000usize - 0x0801usize;
+    assert_eq!(&skipped.prg[2 + off..2 + off + 5], &[0xAA, 0xBB, 0xCC, 0xDD, 0xEE]);
+    assert_eq!(skipped.prg.len(), 2 + off + 5, "exactly the payload, header dropped");
+
+    let sliced = compile_with_path("incbin \"f.prg\", $2000, 3, 2\n", &opts, Some(&source_path));
+    assert!(sliced.errors.is_empty(), "errors: {:?}", sliced.errors);
+    assert_eq!(&sliced.prg[2 + off..2 + off + 2], &[0xBB, 0xCC], "skip 3, take 2");
+    assert_eq!(sliced.prg.len(), 2 + off + 2);
+
+    let too_far = compile_with_path("incbin \"f.prg\", $2000, 99\n", &opts, Some(&source_path));
+    assert!(!too_far.errors.is_empty(), "skip beyond the file must be an error");
+}
+
+#[test]
+fn sound_wait_loops_branch_back_to_the_raster_polls() {
+    // `sound` waits `duration` frames on the raster line 200 (once per frame; "line 0" would be
+    // seen twice, at lines 0 and 256, and halve every note). The branches once had their offset
+    // written over the opcode, which crashed the program.
+    let res = compile(
+        "sound 0, $1000, 3
+",
+        &CompileOptions { basic_stub: false, explicit: false },
+    );
+    assert!(res.errors.is_empty(), "errors: {:?}", res.errors);
+    // LDA $D012; CMP #200; BNE -7; LDA $D012; CMP #200; BEQ -7; DEC zp
+    let expect = [
+        0xAD, 0x12, 0xD0, 0xC9, 0xC8, 0xD0, 0xF9, 0xAD, 0x12, 0xD0, 0xC9, 0xC8, 0xF0, 0xF9, 0xC6,
+    ];
+    assert!(
+        res.prg.windows(expect.len()).any(|w| w == expect),
+        "expected the two raster-200 polling loops followed by DEC"
+    );
 }

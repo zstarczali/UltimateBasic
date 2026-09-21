@@ -599,6 +599,9 @@ pub struct Codegen {
     goto_patches: Vec<(usize, String, usize)>,
     gosub_patches: Vec<(usize, String, usize)>, // (code_pos, label_name, src_line) for gosub forward refs
     charset_base: u16,                          // base address for chardef data (default $3800)
+    charset_regions: Vec<(u16, u16)>, // RAM ranges written at run time by chardef / charset on
+    generated_code_len: usize, // code bytes before addressed data (incbin ,addr / sid / koala) was appended
+    code_gaps: Vec<(u16, u16)>, // address ranges skipped by `org` (zero-filled, free for data)
     perm_zp: u8,
     tmp_zp: u8,
     break_patches: Vec<Vec<usize>>,
@@ -713,6 +716,9 @@ impl Codegen {
             goto_patches: vec![],
             gosub_patches: vec![],
             charset_base: 0x3800,
+            charset_regions: vec![],
+            generated_code_len: 0,
+            code_gaps: vec![],
             perm_zp: ZP_BASE,
             tmp_zp: TMP_BASE,
             break_patches: vec![],
@@ -4050,6 +4056,69 @@ impl Codegen {
         // after branch instr = load_addr + offset_pos + 1
         let after = self.load_addr as i32 + offset_pos as i32 + 1;
         self.code[offset_pos] = (target as i32 - after) as u8;
+    }
+
+    /// Zero every declared array at program entry. C64 RAM powers up with a garbage
+    /// pattern, so `array(N)` would otherwise start with arbitrary contents.
+    /// Clears `[lowest array base, end of last array)`; uses scratch ZP `$50/$51`.
+    fn emit_zero_arrays(&mut self) {
+        let lo = match self.arrays.values().min() {
+            Some(&lo) => lo,
+            None => return,
+        };
+        let hi = self
+            .arrays
+            .iter()
+            .map(|(n, &b)| b as u32 + *self.array_sizes.get(n).unwrap_or(&0) as u32)
+            .max()
+            .unwrap_or(lo as u32);
+        let len = hi.saturating_sub(lo as u32);
+        if len == 0 {
+            return;
+        }
+        let (pages, rem) = ((len >> 8) as u8, (len & 0xFF) as u8);
+        self.emit(0xA9);
+        self.emit(lo as u8); // LDA #<lo
+        self.emit(0x85);
+        self.emit(0x50); // STA $50
+        self.emit(0xA9);
+        self.emit((lo >> 8) as u8); // LDA #>lo
+        self.emit(0x85);
+        self.emit(0x51); // STA $51
+        self.emit(0xA9);
+        self.emit(0x00); // LDA #0
+        self.emit(0xA8); // TAY
+        if pages > 0 {
+            self.emit(0xA2);
+            self.emit(pages); // LDX #pages
+            let page_loop = self.current_addr();
+            self.emit(0x91);
+            self.emit(0x50); // STA ($50),Y
+            self.emit(0xC8); // INY
+            self.emit(0xD0);
+            let bne_y = self.code.len();
+            self.emit(0x00); // BNE page_loop
+            self.patch_bxx(bne_y, page_loop);
+            self.emit(0xE6);
+            self.emit(0x51); // INC $51
+            self.emit(0xCA); // DEX
+            self.emit(0xD0);
+            let bne_x = self.code.len();
+            self.emit(0x00); // BNE page_loop
+            self.patch_bxx(bne_x, page_loop);
+        }
+        if rem > 0 {
+            let rem_loop = self.current_addr();
+            self.emit(0x91);
+            self.emit(0x50); // STA ($50),Y
+            self.emit(0xC8); // INY
+            self.emit(0xC0);
+            self.emit(rem); // CPY #rem
+            self.emit(0xD0);
+            let bne_r = self.code.len();
+            self.emit(0x00); // BNE rem_loop
+            self.patch_bxx(bne_r, rem_loop);
+        }
     }
 
     fn patch_abs(&mut self, lo_pos: usize, target: u16) {
@@ -8534,6 +8603,17 @@ impl Codegen {
                 self.print_single_arg(&l);
                 self.print_single_arg(&r);
             }
+            // Float-typed arithmetic (e.g. `a / 10` with `a: float`): evaluate as Q8.8
+            // and print as "N.DD" instead of the raw 16-bit value.
+            Expr::BinOp(_, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div, _)
+                if self.is_float_like(arg) =>
+            {
+                let arg = arg.clone();
+                let tmp = self.tmp_zp;
+                self.tmp_zp += 2;
+                self.eval_expr_word(&arg, tmp, tmp + 1);
+                self.print_fixed(tmp);
+            }
             _ => {
                 let arg = arg.clone();
                 if self.can_be_word_result(&arg) {
@@ -8747,6 +8827,28 @@ impl Codegen {
                                     self.emit(dst_zp + 1); // STA hi
                                     return true;
                                 }
+                            }
+                            // word + product: the product must be computed in 16 bits
+                            // (e.g. `score += 300 * level`), then added with full carry
+                            other if matches!(other, Expr::BinOp(_, BinOp::Mul, _)) => {
+                                let other = other.clone();
+                                let tl = self.tmp_zp;
+                                self.tmp_zp += 2;
+                                self.eval_expr_word(&other, tl, tl + 1);
+                                self.emit(0x18); // CLC
+                                self.emit(0xA5);
+                                self.emit(lzp); // LDA lo_l
+                                self.emit(0x65);
+                                self.emit(tl); // ADC prod_lo
+                                self.emit(0x85);
+                                self.emit(dst_zp); // STA lo
+                                self.emit(0xA5);
+                                self.emit(lzp + 1); // LDA hi_l
+                                self.emit(0x65);
+                                self.emit(tl + 1); // ADC prod_hi
+                                self.emit(0x85);
+                                self.emit(dst_zp + 1); // STA hi
+                                return true;
                             }
                             // word + 8-bit expr: add to lo, propagate carry to hi
                             other => {
@@ -9701,6 +9803,18 @@ impl Codegen {
                 }
                 return true;
             }
+            // int * int (or const * int) assigned to a word: keep the full 16-bit product
+            Expr::BinOp(_, BinOp::Mul, _) => {
+                let expr = expr.clone();
+                self.eval_expr_word(&expr, dst_zp, dst_zp + 1);
+                true
+            }
+            // int +/- something that only fits in 16 bits (e.g. `100 * l + 900`)
+            Expr::BinOp(_, BinOp::Add | BinOp::Sub, _) if self.can_be_word_result(expr) => {
+                let expr = expr.clone();
+                self.eval_expr_word(&expr, dst_zp, dst_zp + 1);
+                true
+            }
             _ => false,
         }
     }
@@ -10204,6 +10318,12 @@ impl Codegen {
                 let breaks = self.break_patches.pop().unwrap_or_default();
                 for pos in breaks {
                     self.patch_abs(pos, loop_end);
+                }
+                // The limit/step temps are dead once the loop is done: hand their two
+                // permanent ZP bytes back so sequential loops share them. Only safe when
+                // the body declared no new variables above them.
+                if self.perm_zp == zp_step + 1 {
+                    self.perm_zp = zp_to;
                 }
             }
             Stmt::WhileLoop(cond, body) => {
@@ -11879,6 +11999,34 @@ impl Codegen {
                 // Compile-time directive: set charset base address
                 self.charset_base = *addr;
             }
+            Stmt::CharsetSwitch { on } => {
+                // $D018 bits 1-3 select the character generator (base / $800); bits 4-7
+                // (screen matrix) and bit 0 are preserved.
+                //   charset on  → RAM set at `charset addr`
+                //   charset off → ROM set ($1000 upper/graphics, $1800 after `lowercase`)
+                let bits: u8 = if *on {
+                    let base = self.charset_base;
+                    self.charset_regions.push((base, base.saturating_add(0x800)));
+                    if base % 0x800 != 0 || base >= 0x4000 {
+                        self.incbin_errors.push(format!(
+                            "charset on: base ${base:04X} must be a multiple of $800 inside VIC bank 0 ($0000-$3FFF)"
+                        ));
+                    }
+                    (((base >> 11) & 7) << 1) as u8
+                } else if self.charset_lowercase {
+                    0x06
+                } else {
+                    0x04
+                };
+                self.emit(0xAD);
+                self.emit16(0xD018); // LDA $D018
+                self.emit(0x29);
+                self.emit(0xF1); // AND #$F1
+                self.emit(0x09);
+                self.emit(bits); // ORA #bits
+                self.emit(0x8D);
+                self.emit16(0xD018); // STA $D018
+            }
 
             // ── mplot x, y, color ─────────────────────────────────────────────────
             Stmt::Mplot { x, y, color } => {
@@ -12115,6 +12263,7 @@ impl Codegen {
                 let id = *id;
                 let charset_base = self.charset_base;
                 let dst = charset_base + id as u16 * 8;
+                self.charset_regions.push((dst, dst.saturating_add(8)));
 
                 // JMP past inline data (3 bytes for JMP instruction)
                 self.emit(0x4C);
@@ -12724,6 +12873,106 @@ impl Codegen {
                 self.patch_bxx(beq_leave + 1, self.load_addr + leave_top as u16);
                 self.patch_bxx(bne_next + 1, self.load_addr + outer_top as u16);
             }
+            // `org` is handled by the second pass of compile() (it only means something there)
+            Stmt::Org(_) => {}
+            Stmt::Sfx {
+                channel,
+                freq,
+                frames,
+                wave,
+            } => {
+                let ch = match channel {
+                    Expr::Number(n) if (0..=2).contains(n) => *n as u16,
+                    _ => panic!("sfx: channel must be a constant 0, 1, or 2"),
+                };
+                let frames = match frames {
+                    Expr::Number(n) if (1..=255).contains(n) => *n as u32,
+                    _ => panic!("sfx: frames must be a constant 1-255"),
+                };
+                let wave = match wave {
+                    None => 0x20u8, // sawtooth, like `sound`
+                    Some(Expr::Number(n)) if matches!(*n, 0x10 | 0x20 | 0x40 | 0x80) => *n as u8,
+                    _ => panic!("sfx: wave must be 16 (triangle), 32 (saw), 64 (pulse) or 128 (noise)"),
+                };
+                // SID decay times in ms; sustain 0 makes the note fade out over that time.
+                const DECAY_MS: [u32; 16] = [
+                    6, 24, 48, 72, 114, 168, 204, 240, 300, 750, 1500, 2400, 3000, 9000, 15000,
+                    24000,
+                ];
+                let want_ms = frames * 20; // 1 PAL frame = 20 ms
+                let decay = (0..16usize)
+                    .min_by_key(|&i| (DECAY_MS[i].abs_diff(want_ms), i))
+                    .unwrap_or(0) as u8;
+                let base = 0xD400u16 + ch * 7;
+                let freq = freq.clone();
+                self.emit(0xA9);
+                self.emit(0x0F); // LDA #$0F
+                self.emit(0x8D);
+                self.emit16(0xD418); // master volume
+                self.emit(0xA9);
+                self.emit(decay); // attack 0, decay = chosen
+                self.emit(0x8D);
+                self.emit16(base + 5);
+                self.emit(0xA9);
+                self.emit(0x00); // sustain 0, release 0
+                self.emit(0x8D);
+                self.emit16(base + 6);
+                if wave == 0x40 {
+                    // pulse: 50% duty ($0800)
+                    self.emit(0xA9);
+                    self.emit(0x00);
+                    self.emit(0x8D);
+                    self.emit16(base + 2);
+                    self.emit(0xA9);
+                    self.emit(0x08);
+                    self.emit(0x8D);
+                    self.emit16(base + 3);
+                }
+                match &freq {
+                    Expr::Number(n) => {
+                        let n = *n as u16;
+                        self.emit(0xA9);
+                        self.emit(n as u8);
+                        self.emit(0x8D);
+                        self.emit16(base); // freq lo
+                        self.emit(0xA9);
+                        self.emit((n >> 8) as u8);
+                        self.emit(0x8D);
+                        self.emit16(base + 1); // freq hi
+                    }
+                    Expr::Var(name) if matches!(self.var_types.get(name), Some(VarType::Word)) => {
+                        if let Some(zp) = self.var_addr(name) {
+                            self.emit(0xA5);
+                            self.emit(zp);
+                            self.emit(0x8D);
+                            self.emit16(base);
+                            self.emit(0xA5);
+                            self.emit(zp + 1);
+                            self.emit(0x8D);
+                            self.emit16(base + 1);
+                        }
+                    }
+                    other => {
+                        // 8-bit expression: lo = value, hi = 0
+                        let other = other.clone();
+                        self.eval_expr(&other);
+                        self.emit(0x8D);
+                        self.emit16(base);
+                        self.emit(0xA9);
+                        self.emit(0x00);
+                        self.emit(0x8D);
+                        self.emit16(base + 1);
+                    }
+                }
+                self.emit(0xA9);
+                self.emit(wave); // gate off first, so the envelope restarts
+                self.emit(0x8D);
+                self.emit16(base + 4);
+                self.emit(0xA9);
+                self.emit(wave | 0x01); // gate on
+                self.emit(0x8D);
+                self.emit16(base + 4);
+            }
             Stmt::Sound {
                 channel,
                 freq,
@@ -12808,7 +13057,9 @@ impl Codegen {
                 self.emit(0x11);
                 self.emit(0x8D);
                 self.emit16(base + 4);
-                // Wait `duration` PAL frames (count raster line 0 crossings)
+                // Wait `duration` PAL frames. Count the frame boundary at raster line 200 (like
+                // `delay`): $D012 only holds the low 8 bits, so "line 0" would be seen twice per
+                // frame (lines 0 and 256) and every note would last half as long.
                 let fc = self.tmp_zp;
                 self.tmp_zp += 1;
                 self.eval_expr(&duration);
@@ -12817,33 +13068,37 @@ impl Codegen {
                 self.emit(0x00); // BEQ skip_wait (patched)
                 self.emit(0x85);
                 self.emit(fc); // STA fc
-                // wait_not_zero: wait while $D012 == 0 to avoid false-positive
-                let wait_nz = self.code.len();
+                // wait_a: wait until the beam is on line 200
+                let wait_a = self.code.len();
                 self.emit(0xAD);
                 self.emit(0x12);
                 self.emit(0xD0); // LDA $D012
-                let beq_nz = self.code.len();
-                self.emit(0xF0);
-                self.emit(0x00); // BEQ wait_not_zero (patched)
-                // wait_zero: wait until $D012 == 0 (raster line 0 = new frame)
-                let wait_z = self.code.len();
-                self.emit(0xAD);
-                self.emit(0x12);
-                self.emit(0xD0); // LDA $D012
-                let bne_z = self.code.len();
+                self.emit(0xC9);
+                self.emit(0xC8); // CMP #200
+                let bne_a = self.code.len();
                 self.emit(0xD0);
-                self.emit(0x00); // BNE wait_zero (patched)
+                self.emit(0x00); // BNE wait_a (patched)
+                // wait_b: wait until it has left line 200 again
+                let wait_b = self.code.len();
+                self.emit(0xAD);
+                self.emit(0x12);
+                self.emit(0xD0); // LDA $D012
+                self.emit(0xC9);
+                self.emit(0xC8); // CMP #200
+                let beq_b = self.code.len();
+                self.emit(0xF0);
+                self.emit(0x00); // BEQ wait_b (patched)
                 self.emit(0xC6);
                 self.emit(fc); // DEC fc
                 let bne_fc = self.code.len();
                 self.emit(0xD0);
-                self.emit(0x00); // BNE wait_not_zero (patched)
+                self.emit(0x00); // BNE wait_a (patched)
                 // skip_wait: GATE off — release note
                 let skip_addr = self.current_addr();
                 self.patch_bxx(beq_skip + 1, skip_addr);
-                self.patch_bxx(beq_nz, self.load_addr + wait_nz as u16);
-                self.patch_bxx(bne_z, self.load_addr + wait_z as u16);
-                self.patch_bxx(bne_fc + 1, self.load_addr + wait_nz as u16);
+                self.patch_bxx(bne_a + 1, self.load_addr + wait_a as u16);
+                self.patch_bxx(beq_b + 1, self.load_addr + wait_b as u16);
+                self.patch_bxx(bne_fc + 1, self.load_addr + wait_a as u16);
                 // GATE off: sawtooth, no gate = $10
                 self.emit(0xA9);
                 self.emit(0x10);
@@ -14037,6 +14292,8 @@ impl Codegen {
         // program entry.
         self.emit(0xD8); // CLD
 
+        self.emit_zero_arrays();
+
         // Initialise the bitmap draw base to the default single-buffer layout:
         // bitmap $2000 (hi=$20), video matrix $0400 (hi=$04). `graphics on double`
         // and `flip` overwrite these to redirect drawing to the hidden back buffer.
@@ -14078,7 +14335,7 @@ impl Codegen {
 
         // Pass 1: everything except SubDef
         for stmt in stmts {
-            if !matches!(stmt, Stmt::SubDef(..) | Stmt::FnDef(..)) {
+            if !matches!(stmt, Stmt::SubDef(..) | Stmt::FnDef(..) | Stmt::Org(..)) {
                 self.tmp_zp = TMP_BASE; // reset scratch ZP per statement (same as gen_stmts)
                 self.gen_stmt(stmt);
             }
@@ -14087,7 +14344,21 @@ impl Codegen {
 
         // Pass 2: subroutine definitions (after main, so they aren't executed at startup)
         for stmt in stmts {
-            if matches!(stmt, Stmt::SubDef(..) | Stmt::FnDef(..)) {
+            if let Stmt::Org(target) = stmt {
+                // Continue the subroutine code at `target`; subs never fall through into each
+                // other, so zero-filling the gap is safe.
+                let here = self.current_addr();
+                if *target < here {
+                    self.incbin_errors.push(format!(
+                        "org ${target:04X}: the code has already reached ${here:04X}"
+                    ));
+                } else if *target > here {
+                    while self.current_addr() < *target {
+                        self.emit(0x00);
+                    }
+                    self.code_gaps.push((here, *target));
+                }
+            } else if matches!(stmt, Stmt::SubDef(..) | Stmt::FnDef(..)) {
                 self.tmp_zp = TMP_BASE; // reset scratch ZP per statement
                 self.gen_stmt(stmt);
             }
@@ -14430,6 +14701,7 @@ impl Codegen {
         }
 
         self.patch_forward_refs();
+        self.generated_code_len = self.code.len(); // before koala / incbin / sid data is appended
 
         // Store the original Koala payload at $6000.  The show helper copies
         // it to VIC bank 0 ($2000 bitmap, $0400 screen and $D800 color RAM).
@@ -14461,6 +14733,19 @@ impl Codegen {
 
         self.addressed_incbins.sort_by_key(|entry| entry.0);
         for (address, path, data) in self.addressed_incbins.clone() {
+            // A block that lies wholly inside an `org` gap is written into the zero-filled
+            // bytes that are already there.
+            let end = address as usize + data.len();
+            if let Some(&(gap_lo, gap_hi)) = self
+                .code_gaps
+                .iter()
+                .find(|&&(lo, hi)| address >= lo && end <= hi as usize)
+            {
+                let _ = (gap_lo, gap_hi);
+                let start = address as usize - self.load_addr as usize;
+                self.code[start..start + data.len()].copy_from_slice(&data);
+                continue;
+            }
             let code_end = self.load_addr as usize + self.code.len();
             if (address as usize) < code_end {
                 self.incbin_errors.push(format!(
@@ -14535,6 +14820,43 @@ impl Codegen {
             errs.push(error.clone());
         }
         errs.extend(self.incbin_errors.iter().cloned());
+        // Generated code must not sit where the program later writes the charset
+        // (`charset on` copies/uses a 2 KB set, `chardef` writes 8 bytes).
+        let code_start = self.load_addr as u32;
+        let code_end = code_start + self.generated_code_len as u32;
+        // the generated code, minus the gaps left by `org`
+        let mut segments: Vec<(u32, u32)> = vec![];
+        let mut seg_start = code_start;
+        let mut gaps = self.code_gaps.clone();
+        gaps.sort();
+        for (glo, ghi) in gaps {
+            segments.push((seg_start, glo as u32));
+            seg_start = ghi as u32;
+        }
+        segments.push((seg_start, code_end));
+        for &(lo, hi) in &self.charset_regions {
+            if segments
+                .iter()
+                .any(|&(s, e)| (lo as u32) < e && (hi as u32) > s && s < e)
+            {
+                errs.push(format!(
+                    "the program code (${:04X}-${:04X}) overlaps the charset area ${:04X}-${:04X}; move the charset with `charset $xxxx` (a multiple of $800, above the code, e.g. $3800)",
+                    code_start,
+                    code_end.saturating_sub(1),
+                    lo,
+                    hi.saturating_sub(1)
+                ));
+                break;
+            }
+        }
+        // Permanent zero page is $02-$4F; beyond that it would silently overlap the
+        // per-statement scratch area ($50+) and corrupt variables / for-loop limits.
+        if self.perm_zp > 0x50 {
+            errs.push(format!(
+                "out of zero page: variables, parameters and loop temporaries need up to ${:02X}, but only $02-$4F is available - reduce the number of variables or reuse them",
+                self.perm_zp - 1
+            ));
+        }
         errs
     }
 

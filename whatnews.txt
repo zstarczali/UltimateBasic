@@ -1,3 +1,53 @@
+Ultimate Basic v1.5.7 – Release Notes
+======================================
+
+2026-09-21 – Custom charsets, code layout and non-blocking sound
+------------------------------------------------------------------
+  New language elements
+  - Added `charset on` / `charset off`. `charset addr` (default $3800) used to
+    only set the destination of `chardef`; `charset on` now points the VIC-II
+    at that RAM set (read-modify-write of $D018 bits 1-3, the screen-matrix
+    bits are kept) and `charset off` restores the ROM set ($1000, or $1800
+    after `lowercase`). The base must be a multiple of $800 inside VIC bank 0.
+  - Added a build-time check that generated code does not overlap the charset:
+    `charset on` claims the 2 KB set and every `chardef` its 8 bytes; a
+    program that reaches into them stops with "the program code (...)
+    overlaps the charset area ...". Data in an `org` gap is not counted.
+  - Added `org addr`. Placed between sub/fn definitions it continues the
+    subroutine code at `addr` and zero-fills the gap, which stays free for
+    data (fonts, sprites, tables). Subs never fall through, so this is safe;
+    `org` below the current code end is an error.
+  - Extended `incbin` with `incbin "file", addr, skip [, len]`: skip a header
+    (e.g. a .prg load address) and/or take only a slice. `incbin ..., addr` can
+    now be written into an `org` gap.
+  - Added `sfx channel, freq, frames [, wave]`: a non-blocking SID note. It
+    sets attack 0 / sustain 0 / release 0 and picks the decay from `frames`
+    (1 frame = 20 ms) at compile time, re-triggers the voice and returns at
+    once. `wave` is 16 (triangle), 32 (saw, default), 64 (pulse) or 128
+    (noise). Unlike `sound` it is safe inside a game loop.
+
+  Fixes
+  - `sound` waited on raster line 0, which $D012 (low 8 bits) shows twice per
+    frame (lines 0 and 256), so notes were half as long as requested; two of
+    its branches were also patched over their opcode, crashing the program
+    for any non-zero duration. It now waits on raster line 200 like `delay`.
+  - `word` assignments computed products in 8 bits: `w += 300 * level`,
+    `w = w + 100 * level` and `w = 100 * level + 900` now keep all 16 bits.
+  - `print a / 10` (and other arithmetic on a `float`) printed the raw Q8.8
+    value as an integer; it now prints `N.DD`.
+  - Arrays are zeroed once at program start (RAM contents at power-up are
+    random; `array(N)` previously started with whatever was there).
+  - Running out of permanent zero page ($02-$4F) is now a compile-time
+    error ("out of zero page"). Before, variables and `for` limit/step
+    bytes silently spilled into the scratch area and broke loops. Sequential
+    `for` loops now release their two limit/step bytes when the loop ends
+    (if the body declared no variables), so many loops no longer exhaust it.
+  - Manual corrections: `%` binary literals were documented but never
+    supported by the lexer (use $hex or decimal); the `charset` example used
+    the $D018 value of another address ($1E selects $3800, $1A selects $2800).
+  - Tests: a missing `ROL zp` opcode in the test CPU was added, and the koala
+    tests no longer race on a shared temp file.
+
 Ultimate Basic v1.5.6 – Release Notes
 ======================================
 

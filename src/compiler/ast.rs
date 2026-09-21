@@ -392,6 +392,17 @@ pub enum Stmt {
         freq: Expr,
         duration: Expr,
     }, // SID: sound ch, freq(16-bit), frames
+    /// `org addr` — between sub/fn definitions: continue generating code at `addr`. The skipped
+    /// bytes are zero-filled and can hold data (`incbin "x", addr`, charsets, ...).
+    Org(u16),
+    /// `sfx ch, freq, frames [, wave]` — fire-and-forget SID note: returns at once and the
+    /// envelope decay (chosen from `frames`) fades it out. `frames` and `wave` are constants.
+    Sfx {
+        channel: Expr,
+        freq: Expr,
+        frames: Expr,
+        wave: Option<Expr>,
+    },
     Sprite {
         id: Expr,
         x: Expr,
@@ -501,6 +512,8 @@ pub enum Stmt {
     },
     /// `charset addr` — set charset RAM base address (compile-time directive, default $3800)
     CharsetBase(u16),
+    /// `charset on` / `charset off` — point the VIC-II at the `charset addr` RAM set / back to the ROM set
+    CharsetSwitch { on: bool },
     /// `mplot x, y, color` — set a 2-bit color pixel in multicolor bitmap mode (160×200)
     Mplot {
         x: Expr,

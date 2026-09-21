@@ -1,0 +1,18 @@
+color bg 0
+color border 0
+cls fast
+
+
+var a:float=1
+var b:int
+
+print a/10
+
+label _gameloop
+
+var b=inkey()
+if b>0 then
+  print b
+end
+
+goto _gameloop
