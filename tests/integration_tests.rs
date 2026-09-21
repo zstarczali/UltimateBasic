@@ -6692,3 +6692,22 @@ fn charset_overlapping_program_code_is_an_error() {
     );
     assert!(ok.errors.is_empty(), "errors: {:?}", ok.errors);
 }
+
+#[test]
+fn incbin_inside_the_charset_area_is_not_reported_as_code_overlap() {
+    // The font is embedded at the very address `charset on` uses; that data must not be
+    // mistaken for generated code by the overlap check.
+    let dir = std::env::temp_dir().join(format!("ultimate-basic-font-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("font.bin"), [0x18u8; 512]).unwrap();
+    let source_path = dir.join("main.ub");
+    let result = compile_with_path(
+        "charset $3800\nincbin \"font.bin\", $3800\ncharset on\n",
+        &CompileOptions { basic_stub: true, explicit: false },
+        Some(&source_path),
+    );
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let payload = &result.prg[2..];
+    let offset = 0x3800usize - 0x0801usize;
+    assert_eq!(&payload[offset..offset + 4], &[0x18; 4]);
+}

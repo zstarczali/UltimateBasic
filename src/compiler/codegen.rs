@@ -600,6 +600,7 @@ pub struct Codegen {
     gosub_patches: Vec<(usize, String, usize)>, // (code_pos, label_name, src_line) for gosub forward refs
     charset_base: u16,                          // base address for chardef data (default $3800)
     charset_regions: Vec<(u16, u16)>, // RAM ranges written at run time by chardef / charset on
+    generated_code_len: usize, // code bytes before addressed data (incbin ,addr / sid / koala) was appended
     perm_zp: u8,
     tmp_zp: u8,
     break_patches: Vec<Vec<usize>>,
@@ -715,6 +716,7 @@ impl Codegen {
             gosub_patches: vec![],
             charset_base: 0x3800,
             charset_regions: vec![],
+            generated_code_len: 0,
             perm_zp: ZP_BASE,
             tmp_zp: TMP_BASE,
             break_patches: vec![],
@@ -14675,6 +14677,7 @@ impl Codegen {
         }
 
         self.patch_forward_refs();
+        self.generated_code_len = self.code.len(); // before koala / incbin / sid data is appended
 
         // Store the original Koala payload at $6000.  The show helper copies
         // it to VIC bank 0 ($2000 bitmap, $0400 screen and $D800 color RAM).
@@ -14783,7 +14786,7 @@ impl Codegen {
         // Generated code must not sit where the program later writes the charset
         // (`charset on` copies/uses a 2 KB set, `chardef` writes 8 bytes).
         let code_start = self.load_addr as u32;
-        let code_end = code_start + self.code.len() as u32;
+        let code_end = code_start + self.generated_code_len as u32;
         for &(lo, hi) in &self.charset_regions {
             if (lo as u32) < code_end && (hi as u32) > code_start {
                 errs.push(format!(

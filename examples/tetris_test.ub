@@ -1,11 +1,13 @@
-# tetris_test.ub - a small playable Tetris (screen-RAM blocks, custom charset)
+# TETRIS - by Zsolt Tarczali 2026 - written in Ultimate Basic
+# a small playable Tetris (screen-RAM blocks, custom charset), with a title menu
 #
 #   A / D = left / right   W = rotate   S = soft drop   SPACE = hard drop
 #   C = hold / swap piece  Q = quit
 #
 # - field:  10x20 array, 0 = empty, otherwise the block colour
 # - shapes: 7 pieces (+ the bomb) x 4 rotations x 4 cells; a cell is dy*4+dx inside the piece's box
-# - charset: the ROM set is copied to $3800 (so text still works), char 127 is the block
+# - charset: FONT01 (fonts/font01.bin, 64 uppercase chars) is embedded at $3800; the block, bomb
+#   and explosion frames are chardef'd on top (codes 122-127)
 # - level = 1 + lines/10 (max 10); every level shortens the gravity delay
 # - TWIST: about every 8th piece is a BOMB (one flashing cell). When it lands it blows a 3x3
 #   crater into the field; every destroyed block scores. It can be held, too.
@@ -25,6 +27,8 @@ const BOMB = 122                # the bomb character
 var field = array(20, 10)
 var shapes = array(128)
 var rowf = array(20)            # 1 = this row is complete (being cleared)
+var logo = array(30)            # the TETRIS logo: 6 letters x 5 rows of 4 pixels
+var pal = array(6)              # logo colours
 
 var px = 3
 var py = 0
@@ -55,18 +59,10 @@ var cl = 0
 var full = 0
 var cnt = 0
 var tmpv = 0
+var go = 1                      # 1 = stay in the menu / game loop, 0 = leave the program
 
-# ---- charset: ROM set copied to $3800, 127 = bevelled block, 123-126 = explosion frames ----
+# ---- charset: FONT01 (screen codes 0-63) + 122 = bomb, 123-126 = explosion, 127 = block ----
 sub setup_charset()
-  asm {
-    SEI
-  }
-  poke $01, $33                  # make the character ROM visible at $D000
-  memcopy $D000, $3800, 2048
-  poke $01, $37
-  asm {
-    CLI
-  }
   chardef 127
     $FF          # 11111111
     $81          # 10000001
@@ -496,7 +492,120 @@ sub rotate()
   end
 end
 
+# ---- title screen ----
+# draw the logo; nr shifts the colours so it shimmers
+sub draw_logo()
+  for i = 0 to 5
+    cl = pal[(i + nr) mod 6]
+    for rr = 0 to 4
+      c = logo[i * 5 + rr]
+      cx = 8
+      for cc = 0 to 3
+        if (c and cx) != 0 then
+          screen 5 + i * 5 + cc, 3 + rr, BLK, cl
+        end
+        cx = cx shr 1
+      next
+    next
+  next
+end
+
+# ">" in front of the selected item (ok: 0 = NEW GAME, 1 = QUIT)
+sub draw_cursor()
+  if ok == 0 then
+    print at 14, 14, ">"
+    print at 14, 16, " "
+  else
+    print at 14, 14, " "
+    print at 14, 16, ">"
+  end
+end
+
+# the menu: returns in `ok` (0 = new game, 1 = quit)
+sub title()
+  cls
+  color border 0
+  color bg 0
+  color text 1
+  poke $D020, 0
+  scroll x 0
+  scroll y 3
+  print at 0, 10, "BY ZSOLT TARCZALI 2026 - ULTIMATE BASIC"
+  print at 16, 14, "NEW GAME"
+  print at 16, 16, "QUIT"
+  print at 4, 22, "W S SELECT    RETURN START"
+  if score != 0 then
+    print at 12, 19, "LAST SCORE ", score
+  end
+  ok = 0
+  nr = 0
+  t = 0
+  k = inkey()                    # drop keys left over from the game
+  while k != 0
+    k = inkey()
+  end
+  draw_logo()
+  draw_cursor()
+  while k != 13
+    wait raster 250
+    inc t
+    c = t and 15
+    if c == 0 then               # every 16th frame: shift the logo colours
+      inc nr
+      if nr > 5 then nr = 0 end
+      draw_logo()
+    end
+    k = inkey()
+    if k == 87 then              # W / cursor up
+      ok = 0
+      draw_cursor()
+      sfx_move()
+    end
+    if k == 145 then
+      ok = 0
+      draw_cursor()
+      sfx_move()
+    end
+    if k == 83 then             # S / cursor down
+      ok = 1
+      draw_cursor()
+      sfx_move()
+    end
+    if k == 17 then
+      ok = 1
+      draw_cursor()
+      sfx_move()
+    end
+    if k == 32 then k = 13 end   # SPACE starts too
+  end
+  sfx_level()
+end
+
+# reset everything for a fresh game and draw the playfield
+sub new_game()
+  for rr = 0 to 19
+    for cc = 0 to 9
+      field[rr, cc] = 0
+    next
+  next
+  score = 0
+  lines = 0
+  level = 1
+  limit = 30
+  hpt = 8
+  canh = 1
+  t = 0
+  running = 1
+  cls
+  draw_walls()
+  draw_labels()
+  draw_hud()
+  draw_hold()
+  spawn()
+end
+
 # ---- main ----
+incbin "fonts/font01.bin", $3800   # the font goes straight to the charset RAM at $3800
 data 0, 1, 2, 3, 0, 4, 8, 12, 0, 1, 2, 3, 0, 4, 8, 12   # I
 data 0, 1, 4, 5, 0, 1, 4, 5, 0, 1, 4, 5, 0, 1, 4, 5   # O
 data 1, 4, 5, 6, 0, 4, 5, 8, 0, 1, 2, 5, 1, 4, 5, 9   # T
@@ -505,94 +614,105 @@ data 0, 1, 5, 6, 1, 4, 5, 8, 0, 1, 5, 6, 1, 4, 5, 8   # Z
 data 0, 4, 5, 6, 0, 1, 4, 8, 0, 1, 2, 6, 1, 5, 8, 9   # J
 data 2, 4, 5, 6, 0, 4, 8, 9, 0, 1, 2, 4, 0, 1, 5, 9   # L
 data 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0   # bomb: a single cell
+data 15, 6, 6, 6, 6,  15, 8, 14, 8, 15,  15, 6, 6, 6, 6   # logo T E T   (4 pixels wide, 5 rows)
+data 14, 9, 14, 10, 9,  15, 6, 6, 6, 15,  7, 8, 6, 1, 14  # logo R I S
+data 2, 8, 7, 5, 3, 4            # logo colours
 
-for i = 0 to 127                 # `data` is a flat table; copy it into an array for indexing
+for i = 0 to 127                 # `data` is a flat table; copy it into arrays for indexing
   read c
   shapes[i] = c
+next
+for i = 0 to 29
+  read c
+  logo[i] = c
+next
+for i = 0 to 5
+  read c
+  pal[i] = c
 next
 
 sid stop                         # clear the SID, then full volume
 sid volume 15
 poke $CC, 1                      # hide the KERNAL cursor blink
-cls
-color border 0
-color bg 0
-color text 1
 setup_charset()
-draw_walls()
-draw_labels()
-draw_hud()
-draw_hold()
-spawn()
 
-while running == 1
-  wait raster 250                # update below the playfield -> no tearing
-  draw_piece(BLANK)              # erase old position
-  k = inkey()                    # PETSCII of the next buffered key, 0 = none
-  k = k and 127                  # 'A' = 65 and Shift+'A' = 193 both become 65
+while go == 1
+  title()                        # menu: NEW GAME / QUIT
+  if ok == 1 then
+    go = 0
+  else
+    new_game()
 
-  if k == 65 then                # A = left
-    if fits(px - 1, py, pr) == 1 then
-      dec px
-      sfx_move()
-    end
-  end
-  if k == 68 then                # D = right
-    if fits(px + 1, py, pr) == 1 then
-      inc px
-      sfx_move()
-    end
-  end
-  if k == 87 then rotate() end   # W = rotate
-  if k == 67 then hold_piece() end # C = hold
-  if k == 83 then                # S = soft drop
-    t = limit
-    score += 1
-  end
-  if k == 32 then                # SPACE = hard drop
-    while fits(px, py + 1, pr) == 1
-      inc py
-      score += 2
-    end
-    t = limit
-  end
-  if k == 81 then running = 2 end # Q = quit
+    while running == 1
+      wait raster 250            # update below the playfield -> no tearing
+      draw_piece(BLANK)          # erase old position
+      k = inkey()                # PETSCII of the next buffered key, 0 = none
+      k = k and 127              # 'A' = 65 and Shift+'A' = 193 both become 65
 
-  inc t
-  if t >= limit then
-    t = 0
-    if fits(px, py + 1, pr) == 1 then
-      inc py
-    else
-      draw_piece(BLK)            # leave it on the screen...
-      if pt == 7 then
-        explode_bomb()           # a bomb blows up instead of locking
-      else
-        lock_piece()             # ...and in the field
-        sfx_land()
-        clear_lines()
+      if k == 65 then            # A = left
+        if fits(px - 1, py, pr) == 1 then
+          dec px
+          sfx_move()
+        end
       end
-      draw_hud()
-      spawn()
+      if k == 68 then            # D = right
+        if fits(px + 1, py, pr) == 1 then
+          inc px
+          sfx_move()
+        end
+      end
+      if k == 87 then rotate() end   # W = rotate
+      if k == 67 then hold_piece() end # C = hold
+      if k == 83 then            # S = soft drop
+        t = limit
+        score += 1
+      end
+      if k == 32 then            # SPACE = hard drop
+        while fits(px, py + 1, pr) == 1
+          inc py
+          score += 2
+        end
+        t = limit
+      end
+      if k == 81 then running = 2 end # Q = back to the menu
+
+      inc t
+      if t >= limit then
+        t = 0
+        if fits(px, py + 1, pr) == 1 then
+          inc py
+        else
+          draw_piece(BLK)        # leave it on the screen...
+          if pt == 7 then
+            explode_bomb()       # a bomb blows up instead of locking
+          else
+            lock_piece()         # ...and in the field
+            sfx_land()
+            clear_lines()
+          end
+          draw_hud()
+          spawn()
+        end
+      end
+
+      if pt == 7 then            # the bomb flashes red / yellow
+        c = t shr 1
+        c = c and 1
+        pc = 2 + c * 5
+      end
+      draw_piece(BLK)
+    end
+
+    if running == 0 then         # game over
+      print at 16, 11, "GAME OVER"
+      print at 14, 13, "PRESS ANY KEY"
+      sound 0, $2A00, 8          # falling jingle (blocking `sound`)
+      sound 0, $2000, 8
+      sound 0, $1800, 8
+      sound 0, $1000, 24
+      k = getch()
     end
   end
-
-  if pt == 7 then                # the bomb flashes red / yellow
-    c = t shr 1
-    c = c and 1
-    pc = 2 + c * 5
-  end
-  draw_piece(BLK)
-end
-
-if running == 0 then
-  print at 16, 11, "GAME OVER"
-  print at 14, 13, "PRESS ANY KEY"
-  sound 0, $2A00, 8              # falling jingle (blocking `sound`)
-  sound 0, $2000, 8
-  sound 0, $1800, 8
-  sound 0, $1000, 24
-  k = getch()
 end
 
 sid stop                         # silence the SID
