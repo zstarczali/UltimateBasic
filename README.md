@@ -95,6 +95,22 @@ New language elements:
   just a slice of a file. `incbin ..., addr` may now target an `org` gap.
 - **`sfx channel, freq, frames [, wave]`** is a non-blocking SID note: it returns at once and the
   envelope fades the note out, so it can be used inside a game loop (`sound` blocks).
+- **`tune ... end`** describes a 3-voice SID tracker tune (instruments, order list and pattern rows
+  such as `"C-4 01 V24"`) directly in the source. The compiler builds a self-contained player at
+  compile time - it uses no zero page - and defines `sid_init` / `sid_play`, so
+  `music play|stop|pause|resume` work as with `load sid`. Vibrato, slide, note cut and speed
+  changes are supported. This is what the Visual Assembler SID editor's "Export to UltimateBasic"
+  generates.
+
+  ```basic
+  tune
+    speed 6
+    inst 0, $41, $09, $F0, $0800, $0064, $27, $1F
+    order 0
+    pat 0, 0, "C-4 00", "...", "E-4 00 V24", "...", "G-4 00", "... .. C00"
+  end
+  music play
+  ```
 
   ```basic
   charset $3800
@@ -107,6 +123,10 @@ New language elements:
 
 Fixes:
 
+- **`music play`** stopped after the first tick: its CIA1 IRQ wrapper acknowledged the timer by
+  writing `$01` to `$DC0D` (which clears the interrupt mask) instead of reading it.
+- **Inline `asm { }`** dropped the addressing mode of label operands, so `LDA table,X`,
+  `LDA table,Y` and `JMP (label)` were assembled as plain absolute instructions.
 - **`sound`** lasted half as long as requested and crashed for durations other than 0 (a wrong
   branch patch). Now it waits on raster line 200 like `delay`.
 - **`word` products** (`score += 300 * level`, `w = 100 * l + 900`) are now computed in 16 bits;
