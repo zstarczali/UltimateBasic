@@ -1,6 +1,27 @@
 Ultimate Basic v1.5.7 – Release Notes
 ======================================
 
+2026-09-21 – Tracker tunes and an inline-assembler fix
+------------------------------------------------------------------
+  New language elements
+  - Added `tune ... end`: describe a 3-voice SID tracker tune (instruments,
+    order list, per-voice pattern rows such as "C-4 01 V24") directly in the
+    source. The compiler builds a self-contained, zero-page-free player at
+    compile time and defines `sid_init` / `sid_play`, so `music play|stop|
+    pause|resume` work exactly as with `load sid`. Vibrato, slide, note cut
+    and speed change are supported. `tune at $addr` moves the blob (default
+    $8000). This is what the Visual Assembler SID editor's "Export to
+    UltimateBasic" now generates.
+
+  Fixes
+  - Inline `asm { }`: `label,X`, `label,Y` and `JMP (label)` were assembled
+    as plain absolute instructions (the index/indirect mode was dropped), so
+    table lookups such as `LDA table,X` read the wrong byte. The addressing
+    mode is now kept.
+  - `music play`: the CIA1 IRQ wrapper acknowledged the timer by WRITING $01 to
+    $DC0D, which clears the interrupt mask, so the music IRQ stopped after the
+    first tick. It now acknowledges by reading $DC0D.
+
 2026-09-21 – Custom charsets, code layout and non-blocking sound
 ------------------------------------------------------------------
   New language elements
