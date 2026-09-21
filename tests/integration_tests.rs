@@ -6672,3 +6672,23 @@ fn sfx_rejects_bad_arguments() {
         assert!(failed, "{src:?} should be rejected");
     }
 }
+
+#[test]
+fn charset_overlapping_program_code_is_an_error() {
+    // the code starts at $080D; a charset at $0800 (2 KB) sits right on top of it
+    let res = compile(
+        "charset $0800\ncharset on\n",
+        &CompileOptions { basic_stub: true, explicit: false },
+    );
+    assert!(
+        res.errors.iter().any(|e| e.contains("overlaps the charset")),
+        "expected overlap error, got {:?}",
+        res.errors
+    );
+    // a charset above the code is fine
+    let ok = compile(
+        "charset $3800\nchardef 1\n  $FF\nend\ncharset on\n",
+        &CompileOptions { basic_stub: true, explicit: false },
+    );
+    assert!(ok.errors.is_empty(), "errors: {:?}", ok.errors);
+}

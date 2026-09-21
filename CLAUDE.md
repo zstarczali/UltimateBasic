@@ -549,6 +549,7 @@ charset off              # back to ROM set ($1000; $1800 after `lowercase`)
 set. `charset on` requires a multiple of `$800` inside VIC bank 0, else a compile-time error;
 it uses the `charset addr` compiled last (keep it in the main body — subs compile after it).
 `%` binary literals are **not** supported by the lexer (use `$xx` / decimal).
+The program code must not overlap the charset: `charset on` claims the 2 KB set and `chardef` its 8 bytes, and a compile-time error is reported if the generated code reaches into them (e.g. a big program with `charset $2800` — use `charset $3800`, above the code).
 
 ### Ultimate 64 — CPU Speed
 

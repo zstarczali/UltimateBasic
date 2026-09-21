@@ -4,28 +4,31 @@
 #   C = hold / swap piece  Q = quit
 #
 # - field:  10x20 array, 0 = empty, otherwise the block colour
-# - shapes: 7 pieces x 4 rotations x 4 cells; a cell is dy*4+dx inside the piece's box
-# - charset: the ROM set is copied to $2800 (so text still works), char 127 is the block
+# - shapes: 7 pieces (+ the bomb) x 4 rotations x 4 cells; a cell is dy*4+dx inside the piece's box
+# - charset: the ROM set is copied to $3800 (so text still works), char 127 is the block
 # - level = 1 + lines/10 (max 10); every level shortens the gravity delay
+# - TWIST: about every 8th piece is a BOMB (one flashing cell). When it lands it blows a 3x3
+#   crater into the field; every destroyed block scores. It can be held, too.
 # - sound: `sfx` (non-blocking, the envelope fades the note out) for the effects; only the
 #   game-over jingle uses the blocking `sound`
 # - the update runs below the playfield (`wait raster 250`) so the beam never sees a half-drawn piece
 
-charset $2800                   # chardef destination + the set `charset on` switches to
+charset $3800                   # chardef destination + the set `charset on` switches to
 
 const X0 = 15
 const Y0 = 2
 const BLK = 127                 # screen code of the block character
 const BLANK = 32
 const ANIM = 123                # 123-126: explosion frames (solid flash -> sparse debris)
+const BOMB = 122                # the bomb character
 
 var field = array(20, 10)
-var shapes = array(112)
+var shapes = array(128)
 var rowf = array(20)            # 1 = this row is complete (being cleared)
 
 var px = 3
 var py = 0
-var pt = 0                      # piece type 0-6  (I O T S Z J L)
+var pt = 0                      # piece type 0-6  (I O T S Z J L), 7 = bomb
 var pr = 0                      # rotation 0-3
 var pc = 2                      # colour
 var t = 0
@@ -33,7 +36,7 @@ var limit = 30                  # frames per gravity step
 var lines = 0
 var level = 1
 var score: word = 0
-var hpt = 7                     # held piece type, 7 = nothing held
+var hpt = 8                     # held piece type, 8 = nothing held
 var canh = 1                    # 1 = hold allowed for this piece
 var k = 0
 var running = 1                 # 1 = playing, 0 = game over, 2 = quit
@@ -53,13 +56,13 @@ var full = 0
 var cnt = 0
 var tmpv = 0
 
-# ---- charset: ROM set copied to $2800, 127 = bevelled block, 123-126 = explosion frames ----
+# ---- charset: ROM set copied to $3800, 127 = bevelled block, 123-126 = explosion frames ----
 sub setup_charset()
   asm {
     SEI
   }
   poke $01, $33                  # make the character ROM visible at $D000
-  memcopy $D000, $2800, 2048
+  memcopy $D000, $3800, 2048
   poke $01, $37
   asm {
     CLI
@@ -74,6 +77,9 @@ sub setup_charset()
     $81          # 10000001
     $FF          # 11111111
   end
+  chardef 122                    # bomb with a fuse
+    $04,$08,$3C,$7E,$7E,$7E,$3C,$00
+  end
   chardef 123                    # flash: solid
     $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
   end
@@ -86,7 +92,7 @@ sub setup_charset()
   chardef 126                    # sparse debris
     $44,$11,$44,$11,$44,$11,$44,$11
   end
-  charset on                     # point the VIC-II at the $2800 set
+  charset on                     # point the VIC-II at the $3800 set
 end
 
 # ---- sound effects: `sfx ch, freq, frames, wave` starts a note and returns at once ----
@@ -109,10 +115,6 @@ end
 
 sub sfx_land()
   sfx 1, $0500, 8, 128
-end
-
-sub sfx_line()
-  sfx 2, $3000, 15, 128
 end
 
 sub draw_walls()
@@ -160,6 +162,9 @@ fn fits(fx, fy, fr)
 end
 
 sub draw_piece(ch)
+  if pt == 7 then
+    if ch == BLK then ch = BOMB end
+  end
   o = (pt * 4 + pr) * 4
   for i = 0 to 3
     c = shapes[o + i]
@@ -174,6 +179,9 @@ sub draw_hold()
       screen 3 + cc, 5 + rr, BLANK, 0
     next
   next
+  if hpt == 7 then
+    screen 3, 5, BOMB, 2
+  end
   if hpt < 7 then
     o = hpt * 16
     for i = 0 to 3
@@ -207,35 +215,160 @@ sub draw_field()
   next
 end
 
-# blow up the complete rows (marked in rowf): 4 frames, colour and border flash
-sub explode()
-  sfx_line()
-  for i = 0 to 3
-    cl = 1
-    if i == 1 then cl = 7 end
-    if i == 2 then cl = 8 end
-    if i == 3 then cl = 2 end
-    poke $D020, cl
-    poke $D40F, 48 - i * 10        # pitch sweeps down
-    for rr = 0 to 19
-      if rowf[rr] == 1 then
-        for cc = 0 to 9
-          screen X0 + cc, Y0 + rr, ANIM + i, cl
+# BOOM: destroy the 3x3 area around the landed bomb, ripple out from its centre
+sub explode_bomb()
+  sfx 2, $0C00, 45, 128          # very deep rumble
+  sfx 1, $6000, 10, 128          # crack
+  cnt = 0
+  for r2 = 0 to 2                # remove the blocks in the crater and count them
+    cy = py + r2 - 1
+    if cy < 20 then
+      for cc = 0 to 2
+        cx = px + cc - 1
+        if cx < 10 then
+          if field[cy, cx] != 0 then
+            inc cnt
+            field[cy, cx] = 0
+          end
+        end
+      next
+    end
+  next
+  for i = 0 to 5
+    poke $D40F, 24 - i * 3
+    poke $D408, $60 - i * 12
+    poke $D401, $18 + i * 5      # rising pulse
+    poke $D404, $40
+    poke $D404, $41
+    scroll x rnd(5)
+    scroll y 1 + rnd(5)
+    for r2 = 0 to 2
+      cy = py + r2 - 1
+      if cy < 20 then
+        for cc = 0 to 2
+          cx = px + cc - 1
+          if cx < 10 then
+            c = 1                # ring 1 = the 8 neighbours ...
+            if r2 == 1 then
+              if cc == 1 then c = 0 end   # ... ring 0 = the centre goes first
+            end
+            if i >= c then
+              nr = i - c         # age 0 = flash ... 3 = last debris, 4 = gone
+              cl = 1
+              if nr == 1 then cl = 7 end
+              if nr == 2 then cl = 8 end
+              if nr >= 3 then cl = 2 end
+              if nr < 4 then
+                screen X0 + cx, Y0 + cy, ANIM + nr, cl
+              end
+              if nr == 4 then
+                screen X0 + cx, Y0 + cy, BLANK, 0
+              end
+            end
+          end
         next
       end
     next
-    for t = 0 to 2               # hold every frame for 3 video frames
+    poke $D020, cl
+    for t = 0 to 2
       wait raster 250
     next
   next
+  scroll x 0
+  scroll y 3
   poke $D020, 0
-  for rr = 0 to 19              # wipe the debris at once
+  score += 50 + 20 * cnt         # 50 for the bang, 20 per destroyed block
+  c = inkey()
+  while c != 0
+    c = inkey()
+  end
+end
+
+# Blow up the complete rows (marked in rowf):
+#   1. blink white/cyan   2. a shock wave runs from the centre to both edges, every cell goes
+#   through the 4 debris frames in fire colours   3. screen shake + rising arpeggio + noise sweep
+# Four rows at once (a "Tetris") blink longer, flash the background and play a fanfare.
+sub explode()
+  sfx 2, $1800, 40, 128          # deep rumble on voice 3 (long decay)
+  sfx 1, $5000, 6, 128           # sharp crack on voice 2
+  sfx 0, $2000, 5, 64            # pulse on voice 1 (re-triggered below)
+  tmpv = 5                       # blink steps - 1
+  if cnt == 4 then
+    tmpv = 9
+    print at 28, 12, "TETRIS!"
+  end
+  for i = 0 to tmpv              # ---- phase 1: blink ----
+    c = i and 1
+    cl = 1
+    if c == 1 then cl = 3 end
+    poke $D020, cl
+    if cnt == 4 then poke $D021, cl end
+    for rr = 0 to 19
+      if rowf[rr] == 1 then
+        for cc = 0 to 9
+          screen X0 + cc, Y0 + rr, ANIM, cl
+        next
+      end
+    next
+    for t = 0 to 1
+      wait raster 250
+    next
+  next
+  poke $D021, 0
+  for i = 0 to 8                 # ---- phase 2: shock wave from the centre ----
+    poke $D40F, 32 - i * 3       # the rumble sinks
+    poke $D408, $50 - i * 8      # the crack sinks too
+    poke $D401, $20 + i * 6      # pulse pitch climbs
+    poke $D404, $40
+    poke $D404, $41
+    scroll x rnd(4)              # shake
+    scroll y 2 + rnd(3)
+    for rr = 0 to 19
+      if rowf[rr] == 1 then
+        for cc = 0 to 9
+          if cc < 5 then
+            c = 4 - cc           # distance from the centre 0-4
+          else
+            c = cc - 5
+          end
+          if i >= c then
+            cx = i - c           # age of this cell: 0 = fresh flash ... 3 = last debris
+            cl = 1
+            if cx == 1 then cl = 7 end
+            if cx == 2 then cl = 8 end
+            if cx >= 3 then cl = 2 end
+            if cx < 4 then
+              screen X0 + cc, Y0 + rr, ANIM + cx, cl
+            end
+            if cx == 4 then
+              screen X0 + cc, Y0 + rr, BLANK, 0
+            end
+          end
+        next
+      end
+    next
+    poke $D020, cl
+    for t = 0 to 1
+      wait raster 250
+    next
+  next
+  scroll x 0                     # shake off
+  scroll y 3
+  poke $D020, 0
+  for rr = 0 to 19               # make sure nothing is left behind
     if rowf[rr] == 1 then
       for cc = 0 to 9
         screen X0 + cc, Y0 + rr, BLANK, 0
       next
     end
   next
+  if cnt == 4 then               # fanfare (blocking `sound` is fine: the game is frozen anyway)
+    sound 0, $3000, 3
+    sound 0, $3C00, 3
+    sound 0, $4800, 3
+    sound 0, $6000, 10
+    print at 28, 12, "       "
+  end
   c = inkey()                    # drop keys typed during the animation
   while c != 0
     c = inkey()
@@ -304,6 +437,7 @@ end
 
 sub spawn()
   pt = rnd(7)
+  if rnd(8) == 0 then pt = 7 end   # every ~8th piece is a bomb
   canh = 1
   place()
 end
@@ -313,7 +447,7 @@ sub hold_piece()
   if canh == 1 then
     canh = 0
     sfx_hold()
-    if hpt == 7 then
+    if hpt == 8 then
       hpt = pt
       pt = rnd(7)
     else
@@ -370,8 +504,9 @@ data 1, 2, 4, 5, 0, 4, 5, 9, 1, 2, 4, 5, 0, 4, 5, 9   # S
 data 0, 1, 5, 6, 1, 4, 5, 8, 0, 1, 5, 6, 1, 4, 5, 8   # Z
 data 0, 4, 5, 6, 0, 1, 4, 8, 0, 1, 2, 6, 1, 5, 8, 9   # J
 data 2, 4, 5, 6, 0, 4, 8, 9, 0, 1, 2, 4, 0, 1, 5, 9   # L
+data 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0   # bomb: a single cell
 
-for i = 0 to 111                 # `data` is a flat table; copy it into an array for indexing
+for i = 0 to 127                 # `data` is a flat table; copy it into an array for indexing
   read c
   shapes[i] = c
 next
@@ -430,14 +565,23 @@ while running == 1
       inc py
     else
       draw_piece(BLK)            # leave it on the screen...
-      lock_piece()               # ...and in the field
-      sfx_land()
-      clear_lines()
+      if pt == 7 then
+        explode_bomb()           # a bomb blows up instead of locking
+      else
+        lock_piece()             # ...and in the field
+        sfx_land()
+        clear_lines()
+      end
       draw_hud()
       spawn()
     end
   end
 
+  if pt == 7 then                # the bomb flashes red / yellow
+    c = t shr 1
+    c = c and 1
+    pc = 2 + c * 5
+  end
   draw_piece(BLK)
 end
 

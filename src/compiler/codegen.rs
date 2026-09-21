@@ -599,6 +599,7 @@ pub struct Codegen {
     goto_patches: Vec<(usize, String, usize)>,
     gosub_patches: Vec<(usize, String, usize)>, // (code_pos, label_name, src_line) for gosub forward refs
     charset_base: u16,                          // base address for chardef data (default $3800)
+    charset_regions: Vec<(u16, u16)>, // RAM ranges written at run time by chardef / charset on
     perm_zp: u8,
     tmp_zp: u8,
     break_patches: Vec<Vec<usize>>,
@@ -713,6 +714,7 @@ impl Codegen {
             goto_patches: vec![],
             gosub_patches: vec![],
             charset_base: 0x3800,
+            charset_regions: vec![],
             perm_zp: ZP_BASE,
             tmp_zp: TMP_BASE,
             break_patches: vec![],
@@ -12000,6 +12002,7 @@ impl Codegen {
                 //   charset off → ROM set ($1000 upper/graphics, $1800 after `lowercase`)
                 let bits: u8 = if *on {
                     let base = self.charset_base;
+                    self.charset_regions.push((base, base.saturating_add(0x800)));
                     if base % 0x800 != 0 || base >= 0x4000 {
                         self.incbin_errors.push(format!(
                             "charset on: base ${base:04X} must be a multiple of $800 inside VIC bank 0 ($0000-$3FFF)"
@@ -12256,6 +12259,7 @@ impl Codegen {
                 let id = *id;
                 let charset_base = self.charset_base;
                 let dst = charset_base + id as u16 * 8;
+                self.charset_regions.push((dst, dst.saturating_add(8)));
 
                 // JMP past inline data (3 bytes for JMP instruction)
                 self.emit(0x4C);
@@ -14776,6 +14780,22 @@ impl Codegen {
             errs.push(error.clone());
         }
         errs.extend(self.incbin_errors.iter().cloned());
+        // Generated code must not sit where the program later writes the charset
+        // (`charset on` copies/uses a 2 KB set, `chardef` writes 8 bytes).
+        let code_start = self.load_addr as u32;
+        let code_end = code_start + self.code.len() as u32;
+        for &(lo, hi) in &self.charset_regions {
+            if (lo as u32) < code_end && (hi as u32) > code_start {
+                errs.push(format!(
+                    "the program code (${:04X}-${:04X}) overlaps the charset area ${:04X}-${:04X}; move the charset with `charset $xxxx` (a multiple of $800, above the code, e.g. $3800)",
+                    code_start,
+                    code_end.saturating_sub(1),
+                    lo,
+                    hi.saturating_sub(1)
+                ));
+                break;
+            }
+        }
         // Permanent zero page is $02-$4F; beyond that it would silently overlap the
         // per-statement scratch area ($50+) and corrupt variables / for-loop limits.
         if self.perm_zp > 0x50 {
