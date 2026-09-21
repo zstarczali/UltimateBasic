@@ -13057,7 +13057,9 @@ impl Codegen {
                 self.emit(0x11);
                 self.emit(0x8D);
                 self.emit16(base + 4);
-                // Wait `duration` PAL frames (count raster line 0 crossings)
+                // Wait `duration` PAL frames. Count the frame boundary at raster line 200 (like
+                // `delay`): $D012 only holds the low 8 bits, so "line 0" would be seen twice per
+                // frame (lines 0 and 256) and every note would last half as long.
                 let fc = self.tmp_zp;
                 self.tmp_zp += 1;
                 self.eval_expr(&duration);
@@ -13066,33 +13068,37 @@ impl Codegen {
                 self.emit(0x00); // BEQ skip_wait (patched)
                 self.emit(0x85);
                 self.emit(fc); // STA fc
-                // wait_not_zero: wait while $D012 == 0 to avoid false-positive
-                let wait_nz = self.code.len();
+                // wait_a: wait until the beam is on line 200
+                let wait_a = self.code.len();
                 self.emit(0xAD);
                 self.emit(0x12);
                 self.emit(0xD0); // LDA $D012
-                let beq_nz = self.code.len();
-                self.emit(0xF0);
-                self.emit(0x00); // BEQ wait_not_zero (patched)
-                // wait_zero: wait until $D012 == 0 (raster line 0 = new frame)
-                let wait_z = self.code.len();
-                self.emit(0xAD);
-                self.emit(0x12);
-                self.emit(0xD0); // LDA $D012
-                let bne_z = self.code.len();
+                self.emit(0xC9);
+                self.emit(0xC8); // CMP #200
+                let bne_a = self.code.len();
                 self.emit(0xD0);
-                self.emit(0x00); // BNE wait_zero (patched)
+                self.emit(0x00); // BNE wait_a (patched)
+                // wait_b: wait until it has left line 200 again
+                let wait_b = self.code.len();
+                self.emit(0xAD);
+                self.emit(0x12);
+                self.emit(0xD0); // LDA $D012
+                self.emit(0xC9);
+                self.emit(0xC8); // CMP #200
+                let beq_b = self.code.len();
+                self.emit(0xF0);
+                self.emit(0x00); // BEQ wait_b (patched)
                 self.emit(0xC6);
                 self.emit(fc); // DEC fc
                 let bne_fc = self.code.len();
                 self.emit(0xD0);
-                self.emit(0x00); // BNE wait_not_zero (patched)
+                self.emit(0x00); // BNE wait_a (patched)
                 // skip_wait: GATE off — release note
                 let skip_addr = self.current_addr();
                 self.patch_bxx(beq_skip + 1, skip_addr);
-                self.patch_bxx(beq_nz + 1, self.load_addr + wait_nz as u16);
-                self.patch_bxx(bne_z + 1, self.load_addr + wait_z as u16);
-                self.patch_bxx(bne_fc + 1, self.load_addr + wait_nz as u16);
+                self.patch_bxx(bne_a + 1, self.load_addr + wait_a as u16);
+                self.patch_bxx(beq_b + 1, self.load_addr + wait_b as u16);
+                self.patch_bxx(bne_fc + 1, self.load_addr + wait_a as u16);
                 // GATE off: sawtooth, no gate = $10
                 self.emit(0xA9);
                 self.emit(0x10);

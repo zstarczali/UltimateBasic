@@ -2,8 +2,8 @@
 # a small playable Tetris (screen-RAM blocks, custom charset), with a title menu
 #
 #   A / D = left / right   W = rotate   S = soft drop   SPACE = hard drop
-#   C = hold / swap piece  P = pause  H = help page  Q = quit to the menu
-#   Menu: NEW GAME / INFO / SAVE SCORE (best score to disk 8, loaded again at start) / QUIT
+#   C = hold / swap piece  P = pause  H = help page
+#   Menu: NEW GAME / INFO / SAVE SCORE (name + best score to disk 8, loaded at start)
 #
 # - field:  10x20 array, 0 = empty, otherwise the block colour
 # - shapes: 7 pieces (+ the bomb) x 4 rotations x 4 cells; a cell is dy*4+dx inside the piece's box
@@ -13,7 +13,7 @@
 #   down), TURNED 90 (field on its side), TURNED 45 (a look-up table places every cell on the
 #   nearest free character cell of the turned grid), KEYS CYCLED, TURBO - but they are rare and
 #   short at the start (about 1 per minute, 4 s) and get more frequent and longer with the level
-#   (level 10: every 10-19 s, 10 s long).  Menu: NEW GAME / INFO / QUIT, keys 1-9 = start level.
+#   (level 10: every 10-19 s, 10 s long).  Keys 1-9 in the menu = start level.
 # - TWIST: clear a line with three pieces in a row (COMBO 3/3) and the next piece is a BOMB (one
 #   flashing cell). When it lands it blows a 3x3 crater into the field; every destroyed block
 #   scores. It can be held, too.
@@ -32,11 +32,14 @@ const BLK = 127                 # screen code of the block character
 const BLANK = 32
 const ANIM = 123                # 123-126: explosion frames (solid flash -> sparse debris)
 const BOMB = 122                # the bomb character
+const TUNE_STEP = 8               # game over tune: frames per step (50 = 1 second)
 const BEAD = 120                # a solid circle, joined to its neighbours by a bar (countdown)
 const RING = 121                # the same as an empty ring
 const RX = 5                    # ROTATED 90 prank: field interior columns RX .. RX+19 ...
 const RY = 11                   # ... and rows RY .. RY+9
 
+var hs = array(10)              # the saved record, FIRST array = $C000: [0..1] best score (word),
+                                # [2..9] the name as screen codes; this block goes to disk
 var field = array(20, 10)
 var shapes = array(128)
 var rowf = array(20)            # 1 = this row is complete (being cleared)
@@ -48,6 +51,10 @@ var tcx = array(200)            # ROTATED 45: screen column / row of every field
 var tcy = array(200)
 var fcx = array(54)             # ... and of the 54 solid frame cells (walls + floor)
 var fcy = array(54)
+var ins = array(9)              # game over tune: SID instrument #0 (control, AD, SR, PW lo/hi, filter, volume)
+var tune = array(32)            # ... the notes of voice 0, 32 steps ($00 = rest)
+var fl = array(96)              # ... note number (semitones above C-0) -> SID frequency, low byte
+var fh = array(96)              # ... and high byte
 var logo = array(30)            # the TETRIS logo: 6 letters x 5 rows of 4 pixels
 var pal = array(6)              # logo colours
 
@@ -64,7 +71,7 @@ var score: word = 0
 var hpt = 8                     # held piece type, 8 = nothing held
 var canh = 1                    # 1 = hold allowed for this piece
 var k = 0
-var running = 1                 # 1 = playing, 0 = game over, 2 = quit
+var running = 1                 # 1 = playing, 0 = game over
 
 var i = 0
 var o = 0
@@ -78,7 +85,7 @@ var cc = 0
 var cl = 0
 var pch = 0                     # character for put()
 var cnt = 0
-var best: word = 0               # best score; kept at $CF00 too (that is what goes to disk)
+var best: word = 0               # best score (also stored in the record hs[0..1])
 var go = 1                      # 1 = stay in the menu / game loop, 0 = leave the program
 
 # ---- charset: FONT01 (screen codes 0-63) + 122 = bomb, 123-126 = explosion, 127 = block ----
@@ -602,16 +609,14 @@ sub draw_logo()
   next
 end
 
-# ">" in front of the selected item (ok: 0 NEW GAME, 1 INFO, 2 SAVE SCORE, 3 QUIT); rows 13/15/17/19
+# ">" in front of the selected item (ok: 0 NEW GAME, 1 INFO, 2 SAVE SCORE); rows 14 / 16 / 18
 sub draw_cursor()
-  print at 14, 13, " "
-  print at 16, 15, " "
-  print at 13, 17, " "
-  print at 16, 19, " "
-  if ok == 0 then print at 14, 13, ">" end
-  if ok == 1 then print at 16, 15, ">" end
-  if ok == 2 then print at 13, 17, ">" end
-  if ok == 3 then print at 16, 19, ">" end
+  print at 14, 14, " "
+  print at 16, 16, " "
+  print at 13, 18, " "
+  if ok == 0 then print at 14, 14, ">" end
+  if ok == 1 then print at 16, 16, ">" end
+  if ok == 2 then print at 13, 18, ">" end
 end
 
 # INFO: what the tricky pranks do, one screen, any key returns to the menu
@@ -659,7 +664,6 @@ sub help_page()
   print at 8, 11, "C"
   print at 8, 13, "P"
   print at 8, 15, "H"
-  print at 8, 17, "Q"
   color text 1
   print at 16, 3, "MOVE LEFT AND RIGHT"
   print at 16, 5, "ROTATE"
@@ -668,7 +672,6 @@ sub help_page()
   print at 16, 11, "HOLD OR SWAP THE PIECE"
   print at 16, 13, "PAUSE"
   print at 16, 15, "THIS HELP PAGE"
-  print at 16, 17, "BACK TO THE MENU"
   color text 7
   print at 14, 19, "IN THE MENU"
   color text 1
@@ -691,7 +694,7 @@ sub help_game()
   if ps[0] != 0 then show_prank() end
 end
 
-# the menu: returns in `ok` (0 = new game, 1 = info, 2 = save score, 3 = quit, 4 = help)
+# the menu: returns in `ok` (0 = new game, 1 = info, 2 = save score, 4 = help)
 sub title()
   memcopy $3E00, $3800, 512       # title font
   cls
@@ -702,21 +705,27 @@ sub title()
   scroll x 0
   scroll y 3
   print at 7, 11, "BY ZSOLT TARCZALI 2026(C)"
-  print at 16, 13, "NEW GAME"
-  print at 18, 15, "INFO"
-  print at 15, 17, "SAVE SCORE"
-  print at 18, 19, "QUIT"
+  print at 16, 14, "NEW GAME"
+  print at 18, 16, "INFO"
+  print at 15, 18, "SAVE SCORE"
   print at 13, 21, "START LEVEL ", ps[6]
-  print at 10, 22, "BEST ", best, "  LAST ", score
-  print at 4, 23, "W S SELECT  RETURN START  H HELP"
+  print at 10, 22, "BEST"
+  for i = 0 to 7                 # the saved name sits between BEST and the score
+    c = hs[2 + i]
+    if c == 0 then c = 32 end
+    screen 15 + i, 22, c, 7
+  next
+  print at 24, 22, best
+  print at 15, 23, "LAST ", score
+  print at 4, 24, "W S SELECT  RETURN START  H HELP"
   if ps[8] == 1 then
     color text 5
-    print at 13, 24, "SAVED TO DISK"
+    print at 13, 20, "SAVED TO DISK"
     color text 1
   end
   if ps[8] == 2 then
     color text 2
-    print at 13, 24, "NO DISK FOUND"
+    print at 13, 20, "NO DISK FOUND"
     color text 1
   end
   print at 11, 9, "TRICKY TETRIS 1.0"
@@ -749,7 +758,7 @@ sub title()
       end
     end
     if k == 17 then
-      if ok < 3 then
+      if ok < 2 then
         inc ok
         draw_cursor()
         sfx_move()
@@ -771,18 +780,131 @@ sub title()
   sfx_level()
 end
 
-# SAVE SCORE: the best score goes to disk 8 as file HISCORE (2 bytes). "@0:" replaces an old copy.
-# The KERNAL status byte $90 has bit 7 set when no drive answers.
+# GAME OVER TUNE, built from the SID editor's export: instrument #0 "New Sound" (ins[]) and the
+# notes of voice 0 (tune[], 32 steps, $00 = rest). A note is a number of semitones above C-0;
+# fl[] / fh[] (sid_freq_lo / sid_freq_hi) turn it into the SID frequency. TUNE_STEP = frames per
+# step. Rests at the end of the pattern are skipped.
+sub game_over_tune()
+  poke $D405, ins[1]             # attack / decay
+  poke $D406, ins[2]             # sustain / release
+  poke $D402, ins[3]             # pulse width lo
+  poke $D403, ins[4]             # pulse width hi
+  poke $D415, ins[5]             # filter cutoff lo
+  poke $D416, ins[7]             # filter cutoff hi
+  poke $D418, ins[8]             # volume / filter mode
+  # ins[6] ($AF, filter resonance / routing) is not written: a voice routed through the filter
+  # without a filter mode selected would be silent
+  cx = ins[0] and 254            # the waveform without the gate bit
+  nr = 0                         # index of the last real note
+  for i = 0 to 31
+    if tune[i] != 0 then nr = i end
+  next
+  for i = 0 to nr
+    c = tune[i]
+    poke $D404, cx               # gate off ...
+    if c != 0 then
+      poke $D400, fl[c]
+      poke $D401, fh[c]
+      poke $D404, ins[0]         # ... and on again: a new note
+    end
+    delay TUNE_STEP
+  next
+  poke $D404, cx                 # the last note dies away
+  delay 30
+end
+
+# the eight name places (row 12) and the marker under the active one (row 13)
+sub draw_name()
+  for i = 0 to 7
+    screen 16 + i, 12, hs[2 + i], 1
+    if i == nr then
+      screen 16 + i, 13, 30, 7
+    else
+      screen 16 + i, 13, BLANK, 0
+    end
+  next
+end
+
+# NAME ENTRY / SAVE SCORE: pick the name character by character. W / S change the character
+# (space, A-Z, 0-9), A / D move between the 8 places, RETURN saves, Q cancels.
+# The record (best score + name, 10 bytes = the array hs at $C000) goes to disk 8 as HISCORE;
+# "@0:" replaces an older copy. KERNAL status $90 bit 7 is set when no drive answers.
 sub save_score()
-  if score > best then best = score end
-  poke16 $CF00, best
-  poke $9D, 0                    # no "SAVING ..." text over the menu
-  save "@0:HISCORE", $CF00, 2
-  ps[8] = 1
-  k = peek($90)
-  k = k and 128
-  if k != 0 then ps[8] = 2 end
-  if ps[8] == 1 then sfx_level() end
+  if score > best then best = score end   # the record always holds the best score
+  cls
+  color text 7
+  print at 12, 2, "SAVE YOUR SCORE"
+  color text 1
+  print at 12, 5, "BEST SCORE ", best
+  print at 12, 9, "CHOOSE YOUR NAME"
+  print at 3, 17, "W S  CHANGE THE CHARACTER"
+  print at 3, 18, "A D  MOVE TO ANOTHER PLACE"
+  print at 3, 20, "RETURN  SAVE          Q  CANCEL"
+  for i = 0 to 7                 # an empty name is 8 spaces
+    if hs[2 + i] == 0 then hs[2 + i] = 32 end
+  next
+  nr = 0                         # active place
+  cx = 0                         # 1 = cancelled
+  draw_name()
+  k = inkey()
+  while k != 0
+    k = inkey()
+  end
+  while k != 13
+    wait raster 250
+    k = inkey()
+    if k == 87 then k = 145 end  # W = up
+    if k == 83 then k = 17 end   # S = down
+    if k == 65 then k = 157 end  # A = left
+    if k == 68 then k = 29 end   # D = right
+    if k == 145 then             # next character: space -> A..Z -> 0..9 -> space
+      c = hs[2 + nr] + 1
+      if c == 33 then c = 1 end
+      if c == 27 then c = 48 end
+      if c == 58 then c = 32 end
+      hs[2 + nr] = c
+      draw_name()
+      sfx_move()
+    end
+    if k == 17 then              # previous character
+      c = hs[2 + nr] - 1
+      if c == 31 then c = 57 end
+      if c == 0 then c = 32 end
+      if c == 47 then c = 26 end
+      hs[2 + nr] = c
+      draw_name()
+      sfx_move()
+    end
+    if k == 157 then
+      if nr > 0 then
+        dec nr
+        draw_name()
+        sfx_rot()
+      end
+    end
+    if k == 29 then
+      if nr < 7 then
+        inc nr
+        draw_name()
+        sfx_rot()
+      end
+    end
+    if k == 81 then              # Q = cancel
+      cx = 1
+      k = 13
+    end
+  end
+  ps[8] = 0
+  if cx == 0 then
+    poke16 $C000, best
+    poke $9D, 0                  # no "SAVING ..." text over our screen
+    save "@0:HISCORE", $C000, 10
+    ps[8] = 1
+    k = peek($90)
+    k = k and 128
+    if k != 0 then ps[8] = 2 end
+    if ps[8] == 1 then sfx_level() end
+  end
 end
 
 # reset everything for a fresh game and draw the playfield
@@ -1037,6 +1159,39 @@ data 4, 11, 3, 3, 4, 5, 5, 6, 7, 7, 8, 9, 10, 11
 data 1, 9, 2, 9, 2, 10, 3, 10, 4, 11, 4, 12, 5, 13, 5, 14, 6, 14, 7, 15
 data 8, 16, 9, 16, 9, 17, 10, 18, 10, 19, 11, 19, 12, 20, 13, 20, 14, 21, 14, 22
 data 15, 22, 15, 16, 17, 18, 19, 19, 20, 21, 21, 22, 23, 23
+# game over tune - sid_instruments: #0 New Sound
+data $41, $28, $64, $00, $08, $00, $AF, $00, $0F
+# sid_v0_notes
+data $19, $1C, $1F, $19, $1C, $1F, $19, $1C
+data $00, $00, $00, $00, $00, $00, $00, $00
+data $00, $00, $00, $00, $00, $00, $00, $00
+data $00, $00, $00, $00, $00, $00, $00, $00
+# sid_freq_lo
+data $16, $27, $39, $4B, $5F, $74, $8A, $A1
+data $BA, $D4, $F0, $0E, $2D, $4E, $71, $96
+data $BE, $E7, $14, $42, $74, $A9, $E0, $1B
+data $5A, $9C, $E2, $2D, $7B, $CF, $27, $85
+data $E8, $51, $C1, $37, $B4, $38, $C4, $59
+data $F7, $9D, $4E, $0A, $D0, $A2, $81, $6D
+data $67, $70, $89, $B2, $ED, $3B, $9C, $13
+data $A0, $45, $02, $DA, $CE, $E0, $11, $64
+data $DA, $76, $39, $26, $40, $89, $04, $B4
+data $9C, $C0, $23, $C8, $B4, $EB, $72, $4C
+data $80, $12, $08, $68, $39, $80, $45, $90
+data $68, $D6, $E3, $99, $00, $24, $10, $FF
+# sid_freq_hi (computed, PAL)
+data $01, $01, $01, $01, $01, $01, $01, $01
+data $01, $01, $01, $02, $02, $02, $02, $02
+data $02, $02, $03, $03, $03, $03, $03, $04
+data $04, $04, $04, $05, $05, $05, $06, $06
+data $06, $07, $07, $08, $08, $09, $09, $0A
+data $0A, $0B, $0C, $0D, $0D, $0E, $0F, $10
+data $11, $12, $13, $14, $15, $17, $18, $1A
+data $1B, $1D, $1F, $20, $22, $24, $27, $29
+data $2B, $2E, $31, $34, $37, $3A, $3E, $41
+data $45, $49, $4E, $52, $57, $5C, $62, $68
+data $6E, $75, $7C, $83, $8B, $93, $9C, $A5
+data $AF, $B9, $C4, $D0, $DD, $EA, $F8, $FF
 
 for i = 0 to 127                 # `data` is a flat table; copy it into arrays for indexing
   read c
@@ -1066,23 +1221,37 @@ for i = 0 to 53
   read c
   fcy[i] = c
 next
+for i = 0 to 8
+  read c
+  ins[i] = c
+next
+for i = 0 to 31
+  read c
+  tune[i] = c
+next
+for i = 0 to 95
+  read c
+  fl[i] = c
+next
+for i = 0 to 95
+  read c
+  fh[i] = c
+next
 
 ps[6] = 1                        # start level
-poke16 $CF00, 0                  # the saved best score (if a HISCORE file is on disk 8)
 poke $9D, 0                      # no KERNAL messages
-load "HISCORE", $CF00
-best = peek16($CF00)
+load "HISCORE", $C000            # the saved record (best score + name), if the file is on disk 8
+best = peek16($C000)
 sid stop                         # clear the SID, then full volume
 sid volume 15
 poke $CC, 1                      # hide the KERNAL cursor blink
 setup_charset()
 
 while go == 1
-  title()                        # menu: NEW GAME / INFO / SAVE SCORE / QUIT
+  title()                        # menu: NEW GAME / INFO / SAVE SCORE
   if ok == 1 then info() end     # the info page, then the menu comes back
   if ok == 2 then save_score() end
   if ok == 4 then help_page() end
-  if ok == 3 then go = 0 end
   if ok == 0 then
     new_game()
 
@@ -1134,7 +1303,6 @@ while go == 1
         end
         t = limit
       end
-      if k == 81 then running = 2 end # Q = back to the menu
 
       inc t
       if t >= limit then
@@ -1172,9 +1340,8 @@ while go == 1
     if running == 0 then         # game over
       print at 16, 11, "GAME OVER"
       print at 14, 13, "PRESS ANY KEY"
-      sound 0, $1800, 12         # three notes going down (blocking `sound` is fine here)
-      sound 0, $1300, 12
-      sound 0, $0E00, 24
+      poke $D412, $40            # the prank siren (if any) off
+      game_over_tune()
       k = getch()
     end
   end

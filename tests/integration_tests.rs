@@ -6810,16 +6810,21 @@ fn incbin_can_skip_a_prg_header_and_limit_the_length() {
 
 #[test]
 fn sound_wait_loops_branch_back_to_the_raster_polls() {
-    // `sound` waits `duration` frames with two $D012 polling loops. Their branches once had the
-    // offset written over the opcode (0xF0 -> 0xFC), which crashed the program.
+    // `sound` waits `duration` frames on the raster line 200 (once per frame; "line 0" would be
+    // seen twice, at lines 0 and 256, and halve every note). The branches once had their offset
+    // written over the opcode, which crashed the program.
     let res = compile(
-        "sound 0, $1000, 3\n",
+        "sound 0, $1000, 3
+",
         &CompileOptions { basic_stub: false, explicit: false },
     );
     assert!(res.errors.is_empty(), "errors: {:?}", res.errors);
-    let expect = [0xAD, 0x12, 0xD0, 0xF0, 0xFB, 0xAD, 0x12, 0xD0, 0xD0, 0xFB, 0xC6];
+    // LDA $D012; CMP #200; BNE -7; LDA $D012; CMP #200; BEQ -7; DEC zp
+    let expect = [
+        0xAD, 0x12, 0xD0, 0xC9, 0xC8, 0xD0, 0xF9, 0xAD, 0x12, 0xD0, 0xC9, 0xC8, 0xF0, 0xF9, 0xC6,
+    ];
     assert!(
-        res.prg.windows(expect.len()).any(|w| w[..10] == expect[..10] && w[10] == expect[10]),
-        "expected: LDA $D012; BEQ -5; LDA $D012; BNE -5; DEC"
+        res.prg.windows(expect.len()).any(|w| w == expect),
+        "expected the two raster-200 polling loops followed by DEC"
     );
 }
