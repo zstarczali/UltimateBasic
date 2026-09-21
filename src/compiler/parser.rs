@@ -1955,6 +1955,12 @@ impl Parser {
                 self.expect_newline();
                 Some(Stmt::Chardef { id, bytes })
             }
+            Token::Charset if matches!(self.peek2(), Token::On | Token::Off) => {
+                self.advance();
+                let on = matches!(self.advance(), Token::On);
+                self.expect_newline();
+                Some(Stmt::CharsetSwitch { on })
+            }
             Token::Charset => {
                 self.advance();
                 let addr = match self.parse_expr() {

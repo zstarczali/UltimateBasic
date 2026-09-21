@@ -1,0 +1,348 @@
+# tetris_test.ub - a small playable Tetris (screen-RAM blocks, custom charset)
+#
+#   A / D = left / right   W = rotate   S = soft drop   SPACE = hard drop
+#   C = hold / swap piece  Q = quit
+#
+# - field:  10x20 array, 0 = empty, otherwise the block colour
+# - shapes: 7 pieces x 4 rotations x 4 cells; a cell is dy*4+dx inside the piece's box
+# - charset: the ROM set is copied to $2800 (so text still works), char 127 is the block
+# - level = 1 + lines/10 (max 10); every level shortens the gravity delay
+# - the update runs below the playfield (`wait raster 250`) so the beam never sees a half-drawn piece
+
+charset $2800                   # chardef destination + the set `charset on` switches to
+
+const X0 = 15
+const Y0 = 2
+const BLK = 127                 # screen code of the block character
+const BLANK = 32
+
+var field = array(20, 10)
+var shapes = array(112)
+
+var px = 3
+var py = 0
+var pt = 0                      # piece type 0-6  (I O T S Z J L)
+var pr = 0                      # rotation 0-3
+var pc = 2                      # colour
+var t = 0
+var limit = 30                  # frames per gravity step
+var lines = 0
+var level = 1
+var score: word = 0
+var hpt = 7                     # held piece type, 7 = nothing held
+var canh = 1                    # 1 = hold allowed for this piece
+var k = 0
+var running = 1                 # 1 = playing, 0 = game over, 2 = quit
+
+var i = 0
+var o = 0
+var c = 0
+var cx = 0
+var cy = 0
+var nr = 0
+var ok = 0
+var rr = 0
+var r2 = 0
+var cc = 0
+var cl = 0
+var full = 0
+var cnt = 0
+var tmpv = 0
+
+# ---- charset: ROM set copied to $2800, char 127 = bevelled block ----
+sub setup_charset()
+  asm {
+    SEI
+  }
+  poke $01, $33                  # make the character ROM visible at $D000
+  memcopy $D000, $2800, 2048
+  poke $01, $37
+  asm {
+    CLI
+  }
+  chardef 127
+    $FF          # 11111111
+    $81          # 10000001
+    $BD          # 10111101
+    $BD          # 10111101
+    $BD          # 10111101
+    $BD          # 10111101
+    $81          # 10000001
+    $FF          # 11111111
+  end
+  charset on                     # point the VIC-II at the $2800 set
+end
+
+sub draw_walls()
+  for rr = 0 to 20
+    screen X0 - 1, Y0 + rr, BLK, 11
+    screen X0 + 10, Y0 + rr, BLK, 11
+  next
+  for cc = 0 to 11
+    screen X0 - 1 + cc, Y0 + 20, BLK, 11
+  next
+end
+
+sub draw_hud()
+  print at 28, 4, score
+  print at 28, 7, level
+  print at 28, 10, lines
+end
+
+sub draw_labels()
+  print at 17, 0, "TETRIS"
+  print at 28, 3, "SCORE"
+  print at 28, 6, "LEVEL"
+  print at 28, 9, "LINES"
+  print at 3, 3, "HOLD"
+  print at 27, 14, "A D  MOVE"
+  print at 27, 15, "W    ROTATE"
+  print at 27, 16, "S  SOFT DROP"
+  print at 27, 17, "SPC HARD DROP"
+  print at 27, 18, "C    HOLD"
+  print at 27, 19, "Q    QUIT"
+end
+
+# 1 if piece `pt` in rotation fr fits at (fx, fy); a negative fx wraps to 255 and fails
+fn fits(fx, fy, fr)
+  o = (pt * 4 + fr) * 4
+  for i = 0 to 3
+    c = shapes[o + i]
+    cx = fx + (c and 3)
+    cy = fy + (c shr 2)
+    if cx > 9 then return 0 end
+    if cy > 19 then return 0 end
+    if field[cy, cx] != 0 then return 0 end
+  next
+  return 1
+end
+
+sub draw_piece(ch)
+  o = (pt * 4 + pr) * 4
+  for i = 0 to 3
+    c = shapes[o + i]
+    screen X0 + px + (c and 3), Y0 + py + (c shr 2), ch, pc
+  next
+end
+
+# the held piece, shown in its spawn rotation in a 4x4 box at the left
+sub draw_hold()
+  for rr = 0 to 3
+    for cc = 0 to 3
+      screen 3 + cc, 5 + rr, BLANK, 0
+    next
+  next
+  if hpt < 7 then
+    o = hpt * 16
+    for i = 0 to 3
+      c = shapes[o + i]
+      screen 3 + (c and 3), 5 + (c shr 2), BLK, hpt + 2
+    next
+  end
+end
+
+sub lock_piece()
+  o = (pt * 4 + pr) * 4
+  for i = 0 to 3
+    c = shapes[o + i]
+    cx = px + (c and 3)
+    cy = py + (c shr 2)
+    field[cy, cx] = pc
+  next
+end
+
+sub draw_field()
+  for rr = 0 to 19
+    for cc = 0 to 9
+      cl = field[rr, cc]
+      if cl == 0 then
+        screen X0 + cc, Y0 + rr, BLANK, 0
+      else
+        screen X0 + cc, Y0 + rr, BLK, cl
+      end
+    next
+  next
+end
+
+sub clear_lines()
+  cnt = 0
+  rr = 19
+  while rr < 20                  # rr wraps to 255 after row 0 -> loop ends
+    full = 1
+    for cc = 0 to 9
+      if field[rr, cc] == 0 then full = 0 end
+    next
+    if full == 1 then
+      inc cnt
+      r2 = rr
+      while r2 > 0               # shift everything above the full row down
+        for cc = 0 to 9
+          field[r2, cc] = field[r2 - 1, cc]
+        next
+        dec r2
+      end
+      for cc = 0 to 9
+        field[0, cc] = 0
+      next
+    else
+      dec rr
+    end
+  end
+  if cnt > 0 then
+    lines += cnt
+    level = 1 + lines / 10
+    if level > 10 then level = 10 end
+    limit = 33 - level * 3       # level 1 = 30 frames ... level 10 = 3 frames
+    if cnt == 1 then score += 100 * level end
+    if cnt == 2 then score += 300 * level end
+    if cnt == 3 then score += 500 * level end
+    if cnt == 4 then score += 800 * level end
+    draw_field()
+  end
+end
+
+# put the current piece type at the top; no room = game over
+sub place()
+  px = 3
+  py = 0
+  pr = 0
+  pc = pt + 2
+  t = 0
+  if fits(px, py, pr) == 0 then running = 0 end
+end
+
+sub spawn()
+  pt = rnd(7)
+  canh = 1
+  place()
+end
+
+# C: stash the falling piece (or swap with the held one); once per piece
+sub hold_piece()
+  if canh == 1 then
+    canh = 0
+    if hpt == 7 then
+      hpt = pt
+      pt = rnd(7)
+    else
+      tmpv = pt
+      pt = hpt
+      hpt = tmpv
+    end
+    place()
+    draw_hold()
+  end
+end
+
+# rotate clockwise, with a small wall kick
+sub rotate()
+  nr = pr + 1
+  if nr > 3 then nr = 0 end
+  ok = 0
+  if fits(px, py, nr) == 1 then ok = 1 end
+  if ok == 0 then
+    if fits(px - 1, py, nr) == 1 then
+      px -= 1
+      ok = 1
+    end
+  end
+  if ok == 0 then
+    if fits(px + 1, py, nr) == 1 then
+      px += 1
+      ok = 1
+    end
+  end
+  if ok == 0 then
+    if fits(px - 2, py, nr) == 1 then
+      px -= 2
+      ok = 1
+    end
+  end
+  if ok == 0 then
+    if fits(px - 3, py, nr) == 1 then
+      px -= 3
+      ok = 1
+    end
+  end
+  if ok == 1 then pr = nr end
+end
+
+# ---- main ----
+data 0, 1, 2, 3, 0, 4, 8, 12, 0, 1, 2, 3, 0, 4, 8, 12   # I
+data 0, 1, 4, 5, 0, 1, 4, 5, 0, 1, 4, 5, 0, 1, 4, 5   # O
+data 1, 4, 5, 6, 0, 4, 5, 8, 0, 1, 2, 5, 1, 4, 5, 9   # T
+data 1, 2, 4, 5, 0, 4, 5, 9, 1, 2, 4, 5, 0, 4, 5, 9   # S
+data 0, 1, 5, 6, 1, 4, 5, 8, 0, 1, 5, 6, 1, 4, 5, 8   # Z
+data 0, 4, 5, 6, 0, 1, 4, 8, 0, 1, 2, 6, 1, 5, 8, 9   # J
+data 2, 4, 5, 6, 0, 4, 8, 9, 0, 1, 2, 4, 0, 1, 5, 9   # L
+
+for i = 0 to 111                 # `data` is a flat table; copy it into an array for indexing
+  read c
+  shapes[i] = c
+next
+
+poke $CC, 1                      # hide the KERNAL cursor blink
+cls
+color border 0
+color bg 0
+color text 1
+setup_charset()
+draw_walls()
+draw_labels()
+draw_hud()
+draw_hold()
+spawn()
+
+while running == 1
+  wait raster 250                # update below the playfield -> no tearing
+  draw_piece(BLANK)              # erase old position
+  k = inkey()                    # PETSCII of the next buffered key, 0 = none
+  k = k and 127                  # 'A' = 65 and Shift+'A' = 193 both become 65
+
+  if k == 65 then                # A = left
+    if fits(px - 1, py, pr) == 1 then dec px end
+  end
+  if k == 68 then                # D = right
+    if fits(px + 1, py, pr) == 1 then inc px end
+  end
+  if k == 87 then rotate() end   # W = rotate
+  if k == 67 then hold_piece() end # C = hold
+  if k == 83 then                # S = soft drop
+    t = limit
+    score += 1
+  end
+  if k == 32 then                # SPACE = hard drop
+    while fits(px, py + 1, pr) == 1
+      inc py
+      score += 2
+    end
+    t = limit
+  end
+  if k == 81 then running = 2 end # Q = quit
+
+  inc t
+  if t >= limit then
+    t = 0
+    if fits(px, py + 1, pr) == 1 then
+      inc py
+    else
+      draw_piece(BLK)            # leave it on the screen...
+      lock_piece()               # ...and in the field
+      clear_lines()
+      draw_hud()
+      spawn()
+    end
+  end
+
+  draw_piece(BLK)
+end
+
+if running == 0 then
+  print at 16, 11, "GAME OVER"
+  print at 14, 13, "PRESS ANY KEY"
+  k = getch()
+end
+
+poke $CC, 0                      # cursor blink back on
+charset off                      # back to the ROM charset
+bye

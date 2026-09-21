@@ -105,7 +105,9 @@ current-line pointer).
 ### Array Storage
 
 Arrays (`var a = array(N)`) are allocated from `$C000` upward — free RAM on
-the C64 with no ROM overlay when no cartridge is present.
+the C64 with no ROM overlay when no cartridge is present. All arrays are **zeroed
+at program entry** (`emit_zero_arrays`, one shared loop over the whole array region),
+because C64 RAM powers up with a garbage pattern.
 
 ---
 
@@ -531,6 +533,22 @@ and lowercase source chars as `$61−0x20` (→ PETSCII uppercase slot).
 `scroll y n` computes `(n AND 7)` and writes it into bits 0-2 of `$D011` (preserving bits 3-7).
 `scroll row R left` shifts one constant screen row left; write the new rightmost character with `screen 39, R, ch`.
 Useful for smooth hardware scrolling: decrement each frame from 7 to 0, then shift screen RAM and reset to 7.
+
+### Custom charset
+
+```basic
+charset $2800            # chardef destination + base for `charset on` (default $3800)
+chardef 1                # 8 bytes copied to charset_base + id*8 at runtime
+  $FF,$81,$BD,$BD,$BD,$BD,$81,$FF
+end
+charset on               # $D018 bits 1-3 := base/$800 (screen bits kept)
+charset off              # back to ROM set ($1000; $1800 after `lowercase`)
+```
+
+`charset addr` is a compile-time directive (no code). `chardef` does not clear the rest of the
+set. `charset on` requires a multiple of `$800` inside VIC bank 0, else a compile-time error;
+it uses the `charset addr` compiled last (keep it in the main body — subs compile after it).
+`%` binary literals are **not** supported by the lexer (use `$xx` / decimal).
 
 ### Ultimate 64 — CPU Speed
 
@@ -1438,6 +1456,7 @@ labels. The `.dbg` format does not yet include instruction-to-source-line mappin
 | Feature | Limitation |
 |---|---|
 | Integer arithmetic | 8-bit unsigned (0–255); `word` vars hold 16-bit values |
+| Zero page budget | Permanent ZP is `$02–$4F` (78 bytes): every variable and sub/fn parameter takes 2 bytes, every running `for` loop 2 more (freed when the loop ends, if its body declared no variables). Exceeding it is a compile-time error ("out of zero page"). Reuse variables in big programs |
 | Subroutines | No recursion — ZP parameter slots are statically allocated |
 | String vars | Read-only after init; assignment replaces the pointer, not the data |
 | String concat runtime | `s1 + s2` prints sequentially — no heap allocation or length tracking |

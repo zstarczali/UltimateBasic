@@ -378,6 +378,7 @@ Forward references are fully supported.
 
 ```basic
 var scores = array(8)    # 8 bytes at $C000
+                         # (all arrays are zero-filled once at program start)
 
 scores[0] = 100          # constant index → STA $C000
 scores[i] = 99           # variable index → STA (ptr),Y
@@ -983,12 +984,22 @@ end
 skip over them), then copies them to `charset_base + id*8` at runtime.
 Values must be compile-time constants; use `%` for binary literals (`%00011000`).
 
-To activate a custom charset in VIC-II, set the character generator address via `$D018`:
+`charset addr` only sets the `chardef` destination; it emits no code. To make the VIC-II
+use the set, switch it on (and off again when you are done):
 ```basic
 charset $3800
 chardef 1  $FF,$81,$81,$81,$81,$81,$81,$FF  end  # box border
-poke $D018, $1A     # screen at $0400, charset at $3800 (bank 0)
+charset on          # VIC-II reads characters from $3800 (screen matrix untouched)
+...
+charset off         # back to the ROM set ($1800 if `lowercase` is active, else $1000)
 ```
+
+`charset on` read-modify-writes `$D018` bits 1-3 from the last `charset addr` (default `$3800`);
+the screen-matrix bits are preserved. The address must be a multiple of `$800` inside VIC
+bank 0 (`$0000-$3FFF`), otherwise it is a compile-time error. Both statements use the
+`charset addr` that was compiled last, so keep the directive in the main program body
+(subroutine bodies are compiled after it). The equivalent raw write is `poke $D018, $1A`
+for `$2800` or `poke $D018, $1E` for `$3800`.
 
 ### Memory
 

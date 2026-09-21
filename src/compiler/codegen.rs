@@ -4052,6 +4052,69 @@ impl Codegen {
         self.code[offset_pos] = (target as i32 - after) as u8;
     }
 
+    /// Zero every declared array at program entry. C64 RAM powers up with a garbage
+    /// pattern, so `array(N)` would otherwise start with arbitrary contents.
+    /// Clears `[lowest array base, end of last array)`; uses scratch ZP `$50/$51`.
+    fn emit_zero_arrays(&mut self) {
+        let lo = match self.arrays.values().min() {
+            Some(&lo) => lo,
+            None => return,
+        };
+        let hi = self
+            .arrays
+            .iter()
+            .map(|(n, &b)| b as u32 + *self.array_sizes.get(n).unwrap_or(&0) as u32)
+            .max()
+            .unwrap_or(lo as u32);
+        let len = hi.saturating_sub(lo as u32);
+        if len == 0 {
+            return;
+        }
+        let (pages, rem) = ((len >> 8) as u8, (len & 0xFF) as u8);
+        self.emit(0xA9);
+        self.emit(lo as u8); // LDA #<lo
+        self.emit(0x85);
+        self.emit(0x50); // STA $50
+        self.emit(0xA9);
+        self.emit((lo >> 8) as u8); // LDA #>lo
+        self.emit(0x85);
+        self.emit(0x51); // STA $51
+        self.emit(0xA9);
+        self.emit(0x00); // LDA #0
+        self.emit(0xA8); // TAY
+        if pages > 0 {
+            self.emit(0xA2);
+            self.emit(pages); // LDX #pages
+            let page_loop = self.current_addr();
+            self.emit(0x91);
+            self.emit(0x50); // STA ($50),Y
+            self.emit(0xC8); // INY
+            self.emit(0xD0);
+            let bne_y = self.code.len();
+            self.emit(0x00); // BNE page_loop
+            self.patch_bxx(bne_y, page_loop);
+            self.emit(0xE6);
+            self.emit(0x51); // INC $51
+            self.emit(0xCA); // DEX
+            self.emit(0xD0);
+            let bne_x = self.code.len();
+            self.emit(0x00); // BNE page_loop
+            self.patch_bxx(bne_x, page_loop);
+        }
+        if rem > 0 {
+            let rem_loop = self.current_addr();
+            self.emit(0x91);
+            self.emit(0x50); // STA ($50),Y
+            self.emit(0xC8); // INY
+            self.emit(0xC0);
+            self.emit(rem); // CPY #rem
+            self.emit(0xD0);
+            let bne_r = self.code.len();
+            self.emit(0x00); // BNE rem_loop
+            self.patch_bxx(bne_r, rem_loop);
+        }
+    }
+
     fn patch_abs(&mut self, lo_pos: usize, target: u16) {
         self.code[lo_pos] = target as u8;
         self.code[lo_pos + 1] = (target >> 8) as u8;
@@ -8534,6 +8597,17 @@ impl Codegen {
                 self.print_single_arg(&l);
                 self.print_single_arg(&r);
             }
+            // Float-typed arithmetic (e.g. `a / 10` with `a: float`): evaluate as Q8.8
+            // and print as "N.DD" instead of the raw 16-bit value.
+            Expr::BinOp(_, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div, _)
+                if self.is_float_like(arg) =>
+            {
+                let arg = arg.clone();
+                let tmp = self.tmp_zp;
+                self.tmp_zp += 2;
+                self.eval_expr_word(&arg, tmp, tmp + 1);
+                self.print_fixed(tmp);
+            }
             _ => {
                 let arg = arg.clone();
                 if self.can_be_word_result(&arg) {
@@ -8747,6 +8821,28 @@ impl Codegen {
                                     self.emit(dst_zp + 1); // STA hi
                                     return true;
                                 }
+                            }
+                            // word + product: the product must be computed in 16 bits
+                            // (e.g. `score += 300 * level`), then added with full carry
+                            other if matches!(other, Expr::BinOp(_, BinOp::Mul, _)) => {
+                                let other = other.clone();
+                                let tl = self.tmp_zp;
+                                self.tmp_zp += 2;
+                                self.eval_expr_word(&other, tl, tl + 1);
+                                self.emit(0x18); // CLC
+                                self.emit(0xA5);
+                                self.emit(lzp); // LDA lo_l
+                                self.emit(0x65);
+                                self.emit(tl); // ADC prod_lo
+                                self.emit(0x85);
+                                self.emit(dst_zp); // STA lo
+                                self.emit(0xA5);
+                                self.emit(lzp + 1); // LDA hi_l
+                                self.emit(0x65);
+                                self.emit(tl + 1); // ADC prod_hi
+                                self.emit(0x85);
+                                self.emit(dst_zp + 1); // STA hi
+                                return true;
                             }
                             // word + 8-bit expr: add to lo, propagate carry to hi
                             other => {
@@ -9701,6 +9797,18 @@ impl Codegen {
                 }
                 return true;
             }
+            // int * int (or const * int) assigned to a word: keep the full 16-bit product
+            Expr::BinOp(_, BinOp::Mul, _) => {
+                let expr = expr.clone();
+                self.eval_expr_word(&expr, dst_zp, dst_zp + 1);
+                true
+            }
+            // int +/- something that only fits in 16 bits (e.g. `100 * l + 900`)
+            Expr::BinOp(_, BinOp::Add | BinOp::Sub, _) if self.can_be_word_result(expr) => {
+                let expr = expr.clone();
+                self.eval_expr_word(&expr, dst_zp, dst_zp + 1);
+                true
+            }
             _ => false,
         }
     }
@@ -10204,6 +10312,12 @@ impl Codegen {
                 let breaks = self.break_patches.pop().unwrap_or_default();
                 for pos in breaks {
                     self.patch_abs(pos, loop_end);
+                }
+                // The limit/step temps are dead once the loop is done: hand their two
+                // permanent ZP bytes back so sequential loops share them. Only safe when
+                // the body declared no new variables above them.
+                if self.perm_zp == zp_step + 1 {
+                    self.perm_zp = zp_to;
                 }
             }
             Stmt::WhileLoop(cond, body) => {
@@ -11878,6 +11992,33 @@ impl Codegen {
             Stmt::CharsetBase(addr) => {
                 // Compile-time directive: set charset base address
                 self.charset_base = *addr;
+            }
+            Stmt::CharsetSwitch { on } => {
+                // $D018 bits 1-3 select the character generator (base / $800); bits 4-7
+                // (screen matrix) and bit 0 are preserved.
+                //   charset on  → RAM set at `charset addr`
+                //   charset off → ROM set ($1000 upper/graphics, $1800 after `lowercase`)
+                let bits: u8 = if *on {
+                    let base = self.charset_base;
+                    if base % 0x800 != 0 || base >= 0x4000 {
+                        self.incbin_errors.push(format!(
+                            "charset on: base ${base:04X} must be a multiple of $800 inside VIC bank 0 ($0000-$3FFF)"
+                        ));
+                    }
+                    (((base >> 11) & 7) << 1) as u8
+                } else if self.charset_lowercase {
+                    0x06
+                } else {
+                    0x04
+                };
+                self.emit(0xAD);
+                self.emit16(0xD018); // LDA $D018
+                self.emit(0x29);
+                self.emit(0xF1); // AND #$F1
+                self.emit(0x09);
+                self.emit(bits); // ORA #bits
+                self.emit(0x8D);
+                self.emit16(0xD018); // STA $D018
             }
 
             // ── mplot x, y, color ─────────────────────────────────────────────────
@@ -14037,6 +14178,8 @@ impl Codegen {
         // program entry.
         self.emit(0xD8); // CLD
 
+        self.emit_zero_arrays();
+
         // Initialise the bitmap draw base to the default single-buffer layout:
         // bitmap $2000 (hi=$20), video matrix $0400 (hi=$04). `graphics on double`
         // and `flip` overwrite these to redirect drawing to the hidden back buffer.
@@ -14535,6 +14678,14 @@ impl Codegen {
             errs.push(error.clone());
         }
         errs.extend(self.incbin_errors.iter().cloned());
+        // Permanent zero page is $02-$4F; beyond that it would silently overlap the
+        // per-statement scratch area ($50+) and corrupt variables / for-loop limits.
+        if self.perm_zp > 0x50 {
+            errs.push(format!(
+                "out of zero page: variables, parameters and loop temporaries need up to ${:02X}, but only $02-$4F is available - reduce the number of variables or reuse them",
+                self.perm_zp - 1
+            ));
+        }
         errs
     }
 

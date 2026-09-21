@@ -501,6 +501,8 @@ pub enum Stmt {
     },
     /// `charset addr` — set charset RAM base address (compile-time directive, default $3800)
     CharsetBase(u16),
+    /// `charset on` / `charset off` — point the VIC-II at the `charset addr` RAM set / back to the ROM set
+    CharsetSwitch { on: bool },
     /// `mplot x, y, color` — set a 2-bit color pixel in multicolor bitmap mode (160×200)
     Mplot {
         x: Expr,
