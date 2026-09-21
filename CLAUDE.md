@@ -653,6 +653,23 @@ Master volume (`$D418`) is always set to `$0F`.
 `sid volume N` writes N directly to `$D418`. Bits 0-3 = volume (0-15), bits 4-7 = filter mode.
 `sid stop` emits a 10-byte zero-fill loop (`LDX #24; LDA #0; STA $D400,X; DEX; BPL`) — faster than 25 individual pokes.
 
+### Non-blocking sound effects (`sfx`)
+
+```basic
+sound 0, $2000, 25            # BLOCKS: the program waits 25 frames here
+sfx 0, $2000, 25              # returns at once; the note fades out by itself
+sfx 1, $0500, 8, 128          # optional wave: 16 triangle, 32 saw (default), 64 pulse, 128 noise
+sfx 0, freq_word, 4, 16       # freq may be a constant, a word var or an 8-bit expression
+```
+
+`sfx <channel>, <freq>, <frames> [, <wave>]` programs one SID voice and returns immediately,
+so it is safe inside a game loop. There is no gate-off timer: the envelope is set to
+attack 0 / sustain 0 / release 0 and the **decay** is chosen at compile time from `frames`
+(1 frame = 20 ms, nearest SID decay time: 6, 24, 48, 72, 114, 168, 204, 240, 300, 750,
+1500, 2400 ms ...), so the note dies away over roughly that time. It re-triggers the voice
+each call (gate off, then on) and sets master volume `$0F`.
+`channel` (0-2), `frames` (1-255) and `wave` must be compile-time constants.
+
 ### Music Playback
 
 High-level `music play/stop/pause/resume` commands built on top of `load sid` and CIA1 timer A.

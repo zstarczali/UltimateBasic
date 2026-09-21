@@ -12865,6 +12865,104 @@ impl Codegen {
                 self.patch_bxx(beq_leave + 1, self.load_addr + leave_top as u16);
                 self.patch_bxx(bne_next + 1, self.load_addr + outer_top as u16);
             }
+            Stmt::Sfx {
+                channel,
+                freq,
+                frames,
+                wave,
+            } => {
+                let ch = match channel {
+                    Expr::Number(n) if (0..=2).contains(n) => *n as u16,
+                    _ => panic!("sfx: channel must be a constant 0, 1, or 2"),
+                };
+                let frames = match frames {
+                    Expr::Number(n) if (1..=255).contains(n) => *n as u32,
+                    _ => panic!("sfx: frames must be a constant 1-255"),
+                };
+                let wave = match wave {
+                    None => 0x20u8, // sawtooth, like `sound`
+                    Some(Expr::Number(n)) if matches!(*n, 0x10 | 0x20 | 0x40 | 0x80) => *n as u8,
+                    _ => panic!("sfx: wave must be 16 (triangle), 32 (saw), 64 (pulse) or 128 (noise)"),
+                };
+                // SID decay times in ms; sustain 0 makes the note fade out over that time.
+                const DECAY_MS: [u32; 16] = [
+                    6, 24, 48, 72, 114, 168, 204, 240, 300, 750, 1500, 2400, 3000, 9000, 15000,
+                    24000,
+                ];
+                let want_ms = frames * 20; // 1 PAL frame = 20 ms
+                let decay = (0..16usize)
+                    .min_by_key(|&i| (DECAY_MS[i].abs_diff(want_ms), i))
+                    .unwrap_or(0) as u8;
+                let base = 0xD400u16 + ch * 7;
+                let freq = freq.clone();
+                self.emit(0xA9);
+                self.emit(0x0F); // LDA #$0F
+                self.emit(0x8D);
+                self.emit16(0xD418); // master volume
+                self.emit(0xA9);
+                self.emit(decay); // attack 0, decay = chosen
+                self.emit(0x8D);
+                self.emit16(base + 5);
+                self.emit(0xA9);
+                self.emit(0x00); // sustain 0, release 0
+                self.emit(0x8D);
+                self.emit16(base + 6);
+                if wave == 0x40 {
+                    // pulse: 50% duty ($0800)
+                    self.emit(0xA9);
+                    self.emit(0x00);
+                    self.emit(0x8D);
+                    self.emit16(base + 2);
+                    self.emit(0xA9);
+                    self.emit(0x08);
+                    self.emit(0x8D);
+                    self.emit16(base + 3);
+                }
+                match &freq {
+                    Expr::Number(n) => {
+                        let n = *n as u16;
+                        self.emit(0xA9);
+                        self.emit(n as u8);
+                        self.emit(0x8D);
+                        self.emit16(base); // freq lo
+                        self.emit(0xA9);
+                        self.emit((n >> 8) as u8);
+                        self.emit(0x8D);
+                        self.emit16(base + 1); // freq hi
+                    }
+                    Expr::Var(name) if matches!(self.var_types.get(name), Some(VarType::Word)) => {
+                        if let Some(zp) = self.var_addr(name) {
+                            self.emit(0xA5);
+                            self.emit(zp);
+                            self.emit(0x8D);
+                            self.emit16(base);
+                            self.emit(0xA5);
+                            self.emit(zp + 1);
+                            self.emit(0x8D);
+                            self.emit16(base + 1);
+                        }
+                    }
+                    other => {
+                        // 8-bit expression: lo = value, hi = 0
+                        let other = other.clone();
+                        self.eval_expr(&other);
+                        self.emit(0x8D);
+                        self.emit16(base);
+                        self.emit(0xA9);
+                        self.emit(0x00);
+                        self.emit(0x8D);
+                        self.emit16(base + 1);
+                    }
+                }
+                self.emit(0xA9);
+                self.emit(wave); // gate off first, so the envelope restarts
+                self.emit(0x8D);
+                self.emit16(base + 4);
+                self.emit(0xA9);
+                self.emit(wave | 0x01); // gate on
+                self.emit(0x8D);
+                self.emit16(base + 4);
+            }
             Stmt::Sound {
                 channel,
                 freq,

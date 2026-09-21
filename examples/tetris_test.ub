@@ -7,6 +7,8 @@
 # - shapes: 7 pieces x 4 rotations x 4 cells; a cell is dy*4+dx inside the piece's box
 # - charset: the ROM set is copied to $2800 (so text still works), char 127 is the block
 # - level = 1 + lines/10 (max 10); every level shortens the gravity delay
+# - sound: `sfx` (non-blocking, the envelope fades the note out) for the effects; only the
+#   game-over jingle uses the blocking `sound`
 # - the update runs below the playfield (`wait raster 250`) so the beam never sees a half-drawn piece
 
 charset $2800                   # chardef destination + the set `charset on` switches to
@@ -15,9 +17,11 @@ const X0 = 15
 const Y0 = 2
 const BLK = 127                 # screen code of the block character
 const BLANK = 32
+const ANIM = 123                # 123-126: explosion frames (solid flash -> sparse debris)
 
 var field = array(20, 10)
 var shapes = array(112)
+var rowf = array(20)            # 1 = this row is complete (being cleared)
 
 var px = 3
 var py = 0
@@ -49,7 +53,7 @@ var full = 0
 var cnt = 0
 var tmpv = 0
 
-# ---- charset: ROM set copied to $2800, char 127 = bevelled block ----
+# ---- charset: ROM set copied to $2800, 127 = bevelled block, 123-126 = explosion frames ----
 sub setup_charset()
   asm {
     SEI
@@ -70,7 +74,45 @@ sub setup_charset()
     $81          # 10000001
     $FF          # 11111111
   end
+  chardef 123                    # flash: solid
+    $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
+  end
+  chardef 124                    # dense crumble
+    $EE,$BB,$EE,$BB,$EE,$BB,$EE,$BB
+  end
+  chardef 125                    # half broken up
+    $AA,$55,$AA,$55,$AA,$55,$AA,$55
+  end
+  chardef 126                    # sparse debris
+    $44,$11,$44,$11,$44,$11,$44,$11
+  end
   charset on                     # point the VIC-II at the $2800 set
+end
+
+# ---- sound effects: `sfx ch, freq, frames, wave` starts a note and returns at once ----
+# wave: 16 triangle, 32 saw, 64 pulse, 128 noise. The note fades out over ~`frames` frames.
+sub sfx_move()
+  sfx 0, $3000, 3, 16
+end
+
+sub sfx_rot()
+  sfx 0, $4000, 4, 64
+end
+
+sub sfx_hold()
+  sfx 0, $2800, 5, 32
+end
+
+sub sfx_level()
+  sfx 0, $6000, 12, 64
+end
+
+sub sfx_land()
+  sfx 1, $0500, 8, 128
+end
+
+sub sfx_line()
+  sfx 2, $3000, 15, 128
 end
 
 sub draw_walls()
@@ -151,8 +193,9 @@ sub lock_piece()
   next
 end
 
+# redraw rows 0..ok of the field (ok = lowest row that changed)
 sub draw_field()
-  for rr = 0 to 19
+  for rr = 0 to ok
     for cc = 0 to 9
       cl = field[rr, cc]
       if cl == 0 then
@@ -164,34 +207,82 @@ sub draw_field()
   next
 end
 
+# blow up the complete rows (marked in rowf): 4 frames, colour and border flash
+sub explode()
+  sfx_line()
+  for i = 0 to 3
+    cl = 1
+    if i == 1 then cl = 7 end
+    if i == 2 then cl = 8 end
+    if i == 3 then cl = 2 end
+    poke $D020, cl
+    poke $D40F, 48 - i * 10        # pitch sweeps down
+    for rr = 0 to 19
+      if rowf[rr] == 1 then
+        for cc = 0 to 9
+          screen X0 + cc, Y0 + rr, ANIM + i, cl
+        next
+      end
+    next
+    for t = 0 to 2               # hold every frame for 3 video frames
+      wait raster 250
+    next
+  next
+  poke $D020, 0
+  for rr = 0 to 19              # wipe the debris at once
+    if rowf[rr] == 1 then
+      for cc = 0 to 9
+        screen X0 + cc, Y0 + rr, BLANK, 0
+      next
+    end
+  next
+  c = inkey()                    # drop keys typed during the animation
+  while c != 0
+    c = inkey()
+  end
+end
+
 sub clear_lines()
   cnt = 0
-  rr = 19
-  while rr < 20                  # rr wraps to 255 after row 0 -> loop ends
+  for rr = 0 to 19               # mark the complete rows
+    rowf[rr] = 0
     full = 1
     for cc = 0 to 9
       if field[rr, cc] == 0 then full = 0 end
     next
     if full == 1 then
+      rowf[rr] = 1
       inc cnt
-      r2 = rr
-      while r2 > 0               # shift everything above the full row down
-        for cc = 0 to 9
-          field[r2, cc] = field[r2 - 1, cc]
-        next
+      ok = rr                    # remember the lowest complete row
+    end
+  next
+  if cnt > 0 then
+    explode()
+    r2 = 19                      # compact: copy the surviving rows down, bottom to top
+    rr = 19
+    while rr < 20                # rr wraps to 255 after row 0 -> loop ends
+      if rowf[rr] == 0 then
+        if rr != r2 then
+          for cc = 0 to 9
+            field[r2, cc] = field[rr, cc]
+          next
+        end
         dec r2
       end
-      for cc = 0 to 9
-        field[0, cc] = 0
-      next
-    else
       dec rr
     end
-  end
-  if cnt > 0 then
+    rr = 0                       # the top cnt rows are empty now
+    while rr < cnt
+      for cc = 0 to 9
+        field[rr, cc] = 0
+      next
+      inc rr
+    end
     lines += cnt
+    tmpv = level
     level = 1 + lines / 10
     if level > 10 then level = 10 end
+    if level > tmpv then sfx_level() end
     limit = 33 - level * 3       # level 1 = 30 frames ... level 10 = 3 frames
     if cnt == 1 then score += 100 * level end
     if cnt == 2 then score += 300 * level end
@@ -221,6 +312,7 @@ end
 sub hold_piece()
   if canh == 1 then
     canh = 0
+    sfx_hold()
     if hpt == 7 then
       hpt = pt
       pt = rnd(7)
@@ -264,7 +356,10 @@ sub rotate()
       ok = 1
     end
   end
-  if ok == 1 then pr = nr end
+  if ok == 1 then
+    pr = nr
+    sfx_rot()
+  end
 end
 
 # ---- main ----
@@ -281,6 +376,8 @@ for i = 0 to 111                 # `data` is a flat table; copy it into an array
   shapes[i] = c
 next
 
+sid stop                         # clear the SID, then full volume
+sid volume 15
 poke $CC, 1                      # hide the KERNAL cursor blink
 cls
 color border 0
@@ -300,10 +397,16 @@ while running == 1
   k = k and 127                  # 'A' = 65 and Shift+'A' = 193 both become 65
 
   if k == 65 then                # A = left
-    if fits(px - 1, py, pr) == 1 then dec px end
+    if fits(px - 1, py, pr) == 1 then
+      dec px
+      sfx_move()
+    end
   end
   if k == 68 then                # D = right
-    if fits(px + 1, py, pr) == 1 then inc px end
+    if fits(px + 1, py, pr) == 1 then
+      inc px
+      sfx_move()
+    end
   end
   if k == 87 then rotate() end   # W = rotate
   if k == 67 then hold_piece() end # C = hold
@@ -328,6 +431,7 @@ while running == 1
     else
       draw_piece(BLK)            # leave it on the screen...
       lock_piece()               # ...and in the field
+      sfx_land()
       clear_lines()
       draw_hud()
       spawn()
@@ -340,9 +444,14 @@ end
 if running == 0 then
   print at 16, 11, "GAME OVER"
   print at 14, 13, "PRESS ANY KEY"
+  sound 0, $2A00, 8              # falling jingle (blocking `sound`)
+  sound 0, $2000, 8
+  sound 0, $1800, 8
+  sound 0, $1000, 24
   k = getch()
 end
 
+sid stop                         # silence the SID
 poke $CC, 0                      # cursor blink back on
 charset off                      # back to the ROM charset
 bye

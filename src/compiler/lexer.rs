@@ -56,6 +56,7 @@ pub enum Token {
     Delay,
     Raster,
     Sound,
+    Sfx,   // sfx ch, freq, frames [, wave] — non-blocking SID effect
     Sprite,      // sprite id, x, y [, data_addr] / sprite on/off/color/multi
     SpriteHit,   // sprhit()   — $D01E sprite-sprite collision
     SpriteBgHit, // sprbghit() — $D01F sprite-background collision
@@ -581,6 +582,7 @@ impl Lexer {
             "delay" => Token::Delay,
             "raster" => Token::Raster,
             "sound" => Token::Sound,
+            "sfx" => Token::Sfx,
             "int" => Token::Int,
             "string" => Token::Str,
             "float" => Token::Float,

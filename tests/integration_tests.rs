@@ -6635,3 +6635,40 @@ c = 100 * l + 900
     assert_eq!(word(0x04), 905, "b = b + 300*l");
     assert_eq!(word(0x06), 1200, "c = 100*l + 900");
 }
+
+#[test]
+fn sfx_is_non_blocking_and_programs_the_voice() {
+    let src = "sfx 0, $3000, 3, 16\nsfx 2, $1000, 25\nvar w: word = $2233\nsfx 1, w, 1, 128\n";
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
+    assert!(res.errors.is_empty(), "errors: {:?}", res.errors);
+    let mut cpu = TestCpu::new(&res.prg);
+    // no raster wait loop: this finishes at once even though $D012 never changes
+    cpu.run_until_main_rts(2_000);
+    assert_eq!(cpu.mem[0xD404], 0x11, "voice 1 triangle + gate");
+    assert_eq!(cpu.mem[0xD405], 0x02, "3 frames (60 ms) -> decay 2 (48 ms)");
+    assert_eq!(cpu.mem[0xD406], 0x00, "sustain 0 / release 0");
+    assert_eq!((cpu.mem[0xD400], cpu.mem[0xD401]), (0x00, 0x30), "freq $3000");
+    // channel 2 (base $D40E): default saw, 25 frames = 500 ms -> decay 8 (300 ms)
+    assert_eq!(cpu.mem[0xD412], 0x21, "voice 3 default = saw + gate");
+    assert_eq!(cpu.mem[0xD413], 0x08, "500 ms -> nearest decay index 8");
+    assert_eq!((cpu.mem[0xD40E], cpu.mem[0xD40F]), (0x00, 0x10), "freq $1000");
+    // channel 1 (base $D407): noise, frequency from a word variable, 1 frame -> decay 1
+    assert_eq!(cpu.mem[0xD40B], 0x81, "voice 2 noise + gate");
+    assert_eq!(cpu.mem[0xD40C], 0x01, "20 ms -> decay 1 (24 ms)");
+    assert_eq!((cpu.mem[0xD407], cpu.mem[0xD408]), (0x33, 0x22), "freq from word var");
+    assert_eq!(cpu.mem[0xD418], 0x0F);
+}
+
+#[test]
+fn sfx_rejects_bad_arguments() {
+    for src in ["sfx 3, 100, 5\n", "sfx 0, 100, 0\n", "sfx 0, 100, 5, 7\n"] {
+        let res = std::panic::catch_unwind(|| {
+            compile(src, &CompileOptions { basic_stub: false, explicit: false })
+        });
+        let failed = match res {
+            Ok(r) => !r.errors.is_empty(),
+            Err(_) => true,
+        };
+        assert!(failed, "{src:?} should be rejected");
+    }
+}

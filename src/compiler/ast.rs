@@ -392,6 +392,14 @@ pub enum Stmt {
         freq: Expr,
         duration: Expr,
     }, // SID: sound ch, freq(16-bit), frames
+    /// `sfx ch, freq, frames [, wave]` — fire-and-forget SID note: returns at once and the
+    /// envelope decay (chosen from `frames`) fades it out. `frames` and `wave` are constants.
+    Sfx {
+        channel: Expr,
+        freq: Expr,
+        frames: Expr,
+        wave: Option<Expr>,
+    },
     Sprite {
         id: Expr,
         x: Expr,

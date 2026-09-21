@@ -2946,6 +2946,31 @@ impl Parser {
                     duration,
                 })
             }
+            Token::Sfx => {
+                self.advance();
+                let channel = self.parse_expr();
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
+                let freq = self.parse_expr();
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
+                let frames = self.parse_expr();
+                let wave = if self.peek() == &Token::Comma {
+                    self.advance();
+                    Some(self.parse_expr())
+                } else {
+                    None
+                };
+                self.expect_newline();
+                Some(Stmt::Sfx {
+                    channel,
+                    freq,
+                    frames,
+                    wave,
+                })
+            }
             Token::Sprite => {
                 self.advance();
                 match self.peek() {
