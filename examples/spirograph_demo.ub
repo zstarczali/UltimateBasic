@@ -1,0 +1,127 @@
+############################################################################
+##                                                                        ##
+##  spirograph_demo.ub - Lissajous mandala slideshow                      ##
+##                                                                        ##
+##  Eight harmonic figures, drawn dot by dot with solid colour blocks.    ##
+##  Column angle runs at kx steps, row angle at ky steps, so every        ##
+##  kx:ky pair gives a different rosette. Both axes share one divisor     ##
+##  (row divisor = 2x column divisor to compensate the 8x8 char aspect),  ##
+##  and each figure is centred on the screen with cbase / rbase.          ##
+##                                                                        ##
+##  Every dot is written straight into screen RAM + colour RAM with       ##
+##  "screen col,row,160,hue" - char 160 is the reversed space, a solid    ##
+##  block. (print chr$(160) would go through CHROUT and land as screen    ##
+##  code 96 = blank, i.e. an invisible plot.)                             ##
+##                                                                        ##
+##  Any key quits.                                                        ##
+##                                                                        ##
+############################################################################
+
+cls fast
+color bg 0
+color border 0
+color text 1
+print "ULTIMATE BASIC - LISSAJOUS MANDALA"
+print "ANY KEY = QUIT"
+delay 80
+cls fast
+
+var pat = 0            # figure index 0-7
+var kx = 1             # column harmonic
+var ky = 1             # row harmonic
+var cdiv = 7           # column divisor - figure width
+var rdiv = 14          # row divisor    - figure height
+var cbase = 2          # centring offset, columns
+var rbase = 3          # centring offset, rows
+var a = 0              # angle 0-250
+var hue = 1            # colour of the current dot
+var col = 0
+var row = 0
+var f = 0
+var k = 0
+var freq: word
+
+label _newpat
+
+  select pat
+    case 0:
+      kx = 1
+      ky = 1
+      cdiv = 7
+    case 1:
+      kx = 3
+      ky = 2
+      cdiv = 7
+    case 2:
+      kx = 2
+      ky = 3
+      cdiv = 8
+    case 3:
+      kx = 5
+      ky = 4
+      cdiv = 7
+    case 4:
+      kx = 7
+      ky = 6
+      cdiv = 8
+    case 5:
+      kx = 5
+      ky = 2
+      cdiv = 7
+    case 6:
+      kx = 4
+      ky = 3
+      cdiv = 7
+    else:
+      kx = 9
+      ky = 8
+      cdiv = 8
+  end
+
+  rdiv = cdiv * 2
+  cbase = 20 - (128 / cdiv)      # centre the figure horizontally
+  rbase = 12 - (128 / rdiv)      # and vertically
+  a = 0
+
+label _draw
+
+  inc a
+
+  col = cbase + (cos(a * kx) / cdiv)
+  row = rbase + (sin(a * ky) / rdiv)
+  screen col, row, 160, hue
+
+  inc hue
+  if hue == 16 then hue = 1 end
+
+  k = inkey()
+  if k != 0 then goto _done end
+
+  if a > 250 then goto _endpat end
+  goto _draw
+
+label _endpat
+
+  # finished figure: SID chime + border zap, then hold it on screen
+  freq = $1200 + (pat * $200)
+  sound 0, freq, 6
+
+  for f = 1 to 15
+    color border f
+    delay 1
+  next
+  color border 0
+
+  delay 60
+  cls fast
+
+  inc pat
+  if pat == 8 then pat = 0 end
+  goto _newpat
+
+label _done
+color border 0
+color bg 0
+sid stop
+cls fast
+bye
