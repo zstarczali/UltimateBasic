@@ -941,10 +941,20 @@ impl Parser {
                     self.advance();
                     val as u16
                 } else {
+                    // Unknown identifier: consume it anyway so callers that loop
+                    // until Newline/Eof (e.g. the tune-block operand list) always
+                    // make progress instead of spinning forever on the same token.
+                    self.advance();
                     0
                 }
             }
-            _ => 0,
+            Token::Newline | Token::Eof => 0,
+            _ => {
+                // Any other unexpected token must still be consumed here, for the
+                // same reason as above.
+                self.advance();
+                0
+            }
         }
     }
 
