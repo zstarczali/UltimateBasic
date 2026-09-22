@@ -3,10 +3,33 @@
   "name": "tricky-tetris",
   "files": [
     {
-      "type": "file",
       "name": "trickytetris.ub",
-      "path": "trickytetris.ub"
+      "path": "trickytetris.ub",
+      "type": "file"
+    },
+    {
+      "_collapsed": false,
+      "children": [
+        {
+          "name": "font01.bin",
+          "path": "fonts/font01.bin",
+          "type": "file"
+        },
+        {
+          "name": "font02.bin",
+          "path": "fonts/font02.bin",
+          "type": "file"
+        },
+        {
+          "name": "font03.bin",
+          "path": "fonts/font03.bin",
+          "type": "file"
+        }
+      ],
+      "name": "fonts",
+      "path": "fonts",
+      "type": "folder"
     }
   ],
-  "startupFile": null
+  "startupFile": "trickytetris.ub"
 }
