@@ -52,7 +52,7 @@ var tcy = array(200)
 var fcx = array(54)             # ... and of the 54 solid frame cells (walls + floor)
 var fcy = array(54)
 var ins = array(9)              # game over tune: SID instrument #0 (control, AD, SR, PW lo/hi, filter, volume)
-var tune = array(32)            # ... the notes of voice 0, 32 steps ($00 = rest)
+var gotune = array(32)          # ... the notes of voice 0, 32 steps ($00 = rest)
 var fl = array(96)              # ... note number (semitones above C-0) -> SID frequency, low byte
 var fh = array(96)              # ... and high byte
 var logo = array(30)            # the TETRIS logo: 6 letters x 5 rows of 4 pixels
@@ -781,7 +781,7 @@ sub title()
 end
 
 # GAME OVER TUNE, built from the SID editor's export: instrument #0 "New Sound" (ins[]) and the
-# notes of voice 0 (tune[], 32 steps, $00 = rest). A note is a number of semitones above C-0;
+# notes of voice 0 (gotune[], 32 steps, $00 = rest). A note is a number of semitones above C-0;
 # fl[] / fh[] (sid_freq_lo / sid_freq_hi) turn it into the SID frequency. TUNE_STEP = frames per
 # step. Rests at the end of the pattern are skipped.
 sub game_over_tune()
@@ -797,10 +797,10 @@ sub game_over_tune()
   cx = ins[0] and 254            # the waveform without the gate bit
   nr = 0                         # index of the last real note
   for i = 0 to 31
-    if tune[i] != 0 then nr = i end
+    if gotune[i] != 0 then nr = i end
   next
   for i = 0 to nr
-    c = tune[i]
+    c = gotune[i]
     poke $D404, cx               # gate off ...
     if c != 0 then
       poke $D400, fl[c]
@@ -1227,7 +1227,7 @@ for i = 0 to 8
 next
 for i = 0 to 31
   read c
-  tune[i] = c
+  gotune[i] = c
 next
 for i = 0 to 95
   read c

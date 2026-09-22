@@ -1,0 +1,12 @@
+{
+  "app": "ultimate-basic",
+  "name": "tricky-tetris",
+  "files": [
+    {
+      "type": "file",
+      "name": "trickytetris.ub",
+      "path": "trickytetris.ub"
+    }
+  ],
+  "startupFile": null
+}
