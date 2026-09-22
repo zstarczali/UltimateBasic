@@ -21,9 +21,9 @@
           "type": "file"
         },
         {
-          "type": "file",
           "name": "font03.bin",
-          "path": "fonts/font03.bin"
+          "path": "fonts/font03.bin",
+          "type": "file"
         }
       ],
       "name": "fonts",
@@ -31,5 +31,5 @@
       "type": "folder"
     }
   ],
-  "startupFile": null
+  "startupFile": "trickytetris.ub"
 }

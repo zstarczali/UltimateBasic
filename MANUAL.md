@@ -808,6 +808,88 @@ each call (gate off, then on) and sets master volume `$0F`.
 `channel` (0-2), `frames` (1-255) and `wave` must be compile-time constants.
 
 
+### SID Music
+
+```basic
+load sid "tune.sid"            # embed SID music at its native load address
+load sid "tune.sid", $2000     # override: embed at $2000 regardless of SID header
+```
+
+`load sid` reads a PSID or RSID file at **compile time**, strips the header, and appends the raw music bytes to the output `.prg`. After `load sid`, two compile-time constants become available:
+
+| Constant   | Description |
+|---|---|
+| `sid_init` | Init routine address — call once with A = song number (0-based) |
+| `sid_play` | Play routine address — call every frame (50 Hz PAL) from an IRQ handler |
+
+Both constants work anywhere a constant address is accepted: `sys`, `irq`, `poke`, expressions.
+
+**Typical usage:**
+
+```basic
+load sid "music.sid"
+
+sub music_irq()
+  poke $D019, $FF       # ACK VIC raster IRQ
+  sys sid_play          # advance one frame of music
+  irq_exit              # JMP $EA81: restore A/X/Y + RTI (proper IRQ exit)
+end
+
+sys sid_init, 0         # initialise SID chip: A=0 → first sub-tune
+irq music_irq, $C0      # raster IRQ at line $C0 → 50 Hz on PAL
+
+sid volume 15           # master volume on
+```
+
+**Notes:**
+- SID data is placed **after** all generated code, padded with zeros up to the load address. The compiler warns if the SID load address would overlap generated code.
+- PSID v1 and v2 are supported. If the SID header's load address is 0, the first two data bytes are used as the address (PRG-style, little-endian).
+- Only one `load sid` per program is meaningful (the last one wins).
+
+### Tracker tunes (`tune`)
+
+```basic
+tune                       # optional: tune at $C800  (default $8000)
+  speed 6                  # frames per row (50 Hz PAL)
+  inst 0, $41, $09, $F0, $0800, $0064, $27, $1F
+  inst 1, $10, $08, $A8, $0400, $0000, $00, $0F
+  order 0, 1, 0            # pattern order (patterns may repeat)
+  pat 0, 0, "C-4 00", "...", "E-4 00 V24", "...", "G-4 00", "... .. C00"
+  pat 0, 1, "C-2 01", "...", "...", "...", "G-2 01 F03"
+end
+music play                 # or: sys sid_init / irq handler calling sys sid_play
+```
+
+`tune ... end` describes a 3-voice tracker tune in plain text (the same cell notation the
+Visual Assembler SID editor shows) and builds the player **at compile time**. It defines
+`sid_init` / `sid_play` exactly like `load sid`, so `music play`, `music stop`,
+`music pause` and `music resume` (and a manual `irq` handler calling `sys sid_play`) work
+unchanged.
+
+| Line | Meaning |
+|---|---|
+| `speed N` | Frames per tracker row (1-255). |
+| `inst id, ctrl, ad, sr, pw, cutoff, resfilt, modevol` | One instrument: control register (waveform bits; the gate bit is added by the player), attack/decay, sustain/release, 12-bit pulse width, 11-bit filter cutoff, resonance/filter-routing byte (`$D417`) and mode/volume byte (`$D418`). |
+| `order p, p, ...` | Pattern order. Lines accumulate, up to 255 steps. |
+| `pat p, v, "cell", ...` | Up to 32 rows for voice `v` (0-2) of pattern `p` (0-7). Missing rows are empty. |
+
+A **cell** is `NOTE INST FX`: `C-4`, `D#3`, `Eb2` or `...` for no note, a two-digit hex
+instrument (`..` to leave it), and an optional effect - `Vxy` vibrato (x = hold rows,
+y = depth), `Uxx` / `Dxx` slide up / down, `C` note cut, `Fxx` set speed. An effect-only cell
+can be written as `"... .. F06"` or just `"F06"`.
+
+Notes on the player:
+
+- All player state lives **inside the blob** (absolute addressing) - it uses no zero page, so it
+  cannot collide with UltimateBasic variables or temporaries, and it keeps working when the
+  program returns to BASIC.
+- The blob is placed at a fixed address (default `$8000`, or `tune at $addr`) and the `.prg` is
+  padded up to it, like `load sid`. Keep it clear of your code, arrays (`$C000+`) and any
+  bitmap/charset memory. A tune needs about 1.3 KB plus 12 bytes per row-column of data.
+- At most 8 patterns (32 rows each); the order list can repeat them freely.
+- `music play` uses the CIA1 timer at 50 Hz; do not combine it with another `load sid`/`tune`
+  (the last one wins).
+
 ### Music playback
 
 `music play/stop/pause/resume` is a high-level alternative to the manual `sys sid_init` / `cia_timer` setup.
@@ -1092,88 +1174,6 @@ save "PROG", start, len  # addr and len from word/int variables
 Without address: secondary address 0 (file's own 2-byte header used as load address).
 With address: secondary address 1 (file loaded to specified location).
 `save` calls `SETNAM`+`SETLFS`+`SAVE` (`$FFBD`/`$FFBA`/`$FFD8`). Requires both `addr` and `len`.
-
-### Tracker tunes (`tune`)
-
-```basic
-tune                       # optional: tune at $C800  (default $8000)
-  speed 6                  # frames per row (50 Hz PAL)
-  inst 0, $41, $09, $F0, $0800, $0064, $27, $1F
-  inst 1, $10, $08, $A8, $0400, $0000, $00, $0F
-  order 0, 1, 0            # pattern order (patterns may repeat)
-  pat 0, 0, "C-4 00", "...", "E-4 00 V24", "...", "G-4 00", "... .. C00"
-  pat 0, 1, "C-2 01", "...", "...", "...", "G-2 01 F03"
-end
-music play                 # or: sys sid_init / irq handler calling sys sid_play
-```
-
-`tune ... end` describes a 3-voice tracker tune in plain text (the same cell notation the
-Visual Assembler SID editor shows) and builds the player **at compile time**. It defines
-`sid_init` / `sid_play` exactly like `load sid`, so `music play`, `music stop`,
-`music pause` and `music resume` (and a manual `irq` handler calling `sys sid_play`) work
-unchanged.
-
-| Line | Meaning |
-|---|---|
-| `speed N` | Frames per tracker row (1-255). |
-| `inst id, ctrl, ad, sr, pw, cutoff, resfilt, modevol` | One instrument: control register (waveform bits; the gate bit is added by the player), attack/decay, sustain/release, 12-bit pulse width, 11-bit filter cutoff, resonance/filter-routing byte (`$D417`) and mode/volume byte (`$D418`). |
-| `order p, p, ...` | Pattern order. Lines accumulate, up to 255 steps. |
-| `pat p, v, "cell", ...` | Up to 32 rows for voice `v` (0-2) of pattern `p` (0-7). Missing rows are empty. |
-
-A **cell** is `NOTE INST FX`: `C-4`, `D#3`, `Eb2` or `...` for no note, a two-digit hex
-instrument (`..` to leave it), and an optional effect - `Vxy` vibrato (x = hold rows,
-y = depth), `Uxx` / `Dxx` slide up / down, `C` note cut, `Fxx` set speed. An effect-only cell
-can be written as `"... .. F06"` or just `"F06"`.
-
-Notes on the player:
-
-- All player state lives **inside the blob** (absolute addressing) - it uses no zero page, so it
-  cannot collide with UltimateBasic variables or temporaries, and it keeps working when the
-  program returns to BASIC.
-- The blob is placed at a fixed address (default `$8000`, or `tune at $addr`) and the `.prg` is
-  padded up to it, like `load sid`. Keep it clear of your code, arrays (`$C000+`) and any
-  bitmap/charset memory. A tune needs about 1.3 KB plus 12 bytes per row-column of data.
-- At most 8 patterns (32 rows each); the order list can repeat them freely.
-- `music play` uses the CIA1 timer at 50 Hz; do not combine it with another `load sid`/`tune`
-  (the last one wins).
-
-### SID Music
-
-```basic
-load sid "tune.sid"            # embed SID music at its native load address
-load sid "tune.sid", $2000     # override: embed at $2000 regardless of SID header
-```
-
-`load sid` reads a PSID or RSID file at **compile time**, strips the header, and appends the raw music bytes to the output `.prg`. After `load sid`, two compile-time constants become available:
-
-| Constant   | Description |
-|---|---|
-| `sid_init` | Init routine address — call once with A = song number (0-based) |
-| `sid_play` | Play routine address — call every frame (50 Hz PAL) from an IRQ handler |
-
-Both constants work anywhere a constant address is accepted: `sys`, `irq`, `poke`, expressions.
-
-**Typical usage:**
-
-```basic
-load sid "music.sid"
-
-sub music_irq()
-  poke $D019, $FF       # ACK VIC raster IRQ
-  sys sid_play          # advance one frame of music
-  irq_exit              # JMP $EA81: restore A/X/Y + RTI (proper IRQ exit)
-end
-
-sys sid_init, 0         # initialise SID chip: A=0 → first sub-tune
-irq music_irq, $C0      # raster IRQ at line $C0 → 50 Hz on PAL
-
-sid volume 15           # master volume on
-```
-
-**Notes:**
-- SID data is placed **after** all generated code, padded with zeros up to the load address. The compiler warns if the SID load address would overlap generated code.
-- PSID v1 and v2 are supported. If the SID header's load address is 0, the first two data bytes are used as the address (PRG-style, little-endian).
-- Only one `load sid` per program is meaningful (the last one wins).
 
 ### Serial channel file I/O
 
