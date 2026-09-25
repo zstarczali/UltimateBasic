@@ -1,4 +1,4 @@
-# Ultimate Basic v1.5.7 — Language Manual
+# Ultimate Basic v1.5.8 — Language Manual
 
 Complete language and CLI reference for Ultimate Basic, a BASIC-like language that
 compiles directly to 6502 machine code for the Commodore 64. Output: `.prg` files
@@ -893,7 +893,7 @@ Notes on the player:
 ### Music playback
 
 `music play/stop/pause/resume` is a high-level alternative to the manual `sys sid_init` / `cia_timer` setup.
-Requires a prior `load sid` statement (defines `sid_init` / `sid_play`).
+Requires a prior `load sid` statement or a `tune ... end` block (both define `sid_init` / `sid_play`).
 
 ```basic
 load sid "tune.sid"         # embed SID file (defines sid_init / sid_play)
@@ -1437,6 +1437,24 @@ read varname             # load next byte into varname (auto-declares if needed)
 All `data` values are collected at compile time. A 2-byte ZP pointer is automatically
 allocated and initialised at program start. Each `read` advances the pointer.
 
+**Initialised arrays — `data <array>: …` (new in 1.5.8)**
+
+```basic
+var sinus = array(8)
+data sinus: 128, 218, 255, 218
+data sinus: 128, 37, 0, 37      # further lines continue where the previous one stopped
+print sinus[i]                  # random access, like any array
+
+var xpos = array_word(2)
+data xpos: 24, 300              # word arrays take 16-bit values (stored lo, hi)
+```
+
+A `data` line whose first item is `name:` fills a declared `array` / `array_word` instead of
+the `read` stream. The values are stored after the code and copied into the array once at
+program start (right after the arrays are zeroed), so the table is fully writable and indexed
+like any other array. More values than the array holds, or an undeclared name, is a compile
+error. These lines do not affect `read`.
+
 ### Inline assembly
 
 ```basic
@@ -1773,6 +1791,6 @@ With `-v` the output additionally shows the internal ZP allocations and a full h
 | `plot4` | No bounds checking — x must be 0–79, y must be 0–49 (block mode) |
 | `circle4` | Clips off-screen block pixels; useful radius is roughly 0–49 in 80×50 block mode |
 | `chr$` | No PETSCII↔ASCII mapping — n is passed as-is to CHROUT |
-| `music play` | Requires `load sid`; only one CIA1 wrapper is emitted (last `music play` wins) |
+| `music play` | Requires `load sid` or a `tune` block; only one CIA1 wrapper is emitted (last `music play` wins) |
 | `graphics on double` | Hires only; uses `$4000–$7FFF` for the back buffer, so program code must stay below `$4400`; not combinable with sprites or multicolor |
 | Error reporting | Compile-time only; `onerr goto` handles KERNAL I/O errors at runtime |

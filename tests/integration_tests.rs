@@ -6828,3 +6828,65 @@ fn sound_wait_loops_branch_back_to_the_raster_polls() {
         "expected the two raster-200 polling loops followed by DEC"
     );
 }
+
+#[test]
+fn array_data_initialises_byte_array_across_pages() {
+    // 300 values → one full page + 44 remainder bytes in the entry-time copy.
+    let values: Vec<String> = (0..300).map(|i| ((i * 7) % 256).to_string()).collect();
+    let mut src = String::from("var tbl = array(300)\n");
+    for chunk in values.chunks(16) {
+        src.push_str(&format!("data tbl: {}\n", chunk.join(", ")));
+    }
+    src.push_str("var i = 5\npoke $0400, tbl[i]\n");
+    let res = compile(&src, &CompileOptions { basic_stub: false, explicit: false });
+    assert!(res.errors.is_empty(), "unexpected errors: {:?}", res.errors);
+    let mut cpu = TestCpu::new(&res.prg);
+    cpu.run_until_main_rts(200_000);
+    for i in 0..300usize {
+        assert_eq!(cpu.mem[0xC000 + i], ((i * 7) % 256) as u8, "tbl[{i}]");
+    }
+    assert_eq!(cpu.mem[0x0400], 35, "indexed read of an initialised array");
+}
+
+#[test]
+fn array_data_initialises_word_array_lo_hi() {
+    let src = "\
+var w = array_word(3)
+data w: 10, 300, $1234
+";
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
+    assert!(res.errors.is_empty(), "unexpected errors: {:?}", res.errors);
+    let mut cpu = TestCpu::new(&res.prg);
+    cpu.run_until_main_rts(100_000);
+    assert_eq!(&cpu.mem[0xC000..0xC006], &[10, 0, 44, 1, 0x34, 0x12]);
+}
+
+#[test]
+fn array_data_does_not_feed_read_stream() {
+    let src = "\
+var tbl = array(2)
+data tbl: 9, 8
+data 77
+var v = 0
+read v
+poke $0400, v
+";
+    let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
+    assert!(res.errors.is_empty(), "unexpected errors: {:?}", res.errors);
+    let mut cpu = TestCpu::new(&res.prg);
+    cpu.run_until_main_rts(100_000);
+    assert_eq!(cpu.mem[0x0400], 77);
+    assert_eq!(&cpu.mem[0xC000..0xC002], &[9, 8]);
+}
+
+#[test]
+fn array_data_reports_unknown_array_and_overflow() {
+    let res = compile("data nope: 1, 2\n", &CompileOptions { basic_stub: false, explicit: false });
+    assert!(res.errors.iter().any(|e| e.contains("not a declared array")), "{:?}", res.errors);
+
+    let res = compile(
+        "var t = array(2)\ndata t: 1, 2, 3\n",
+        &CompileOptions { basic_stub: false, explicit: false },
+    );
+    assert!(res.errors.iter().any(|e| e.contains("do not fit")), "{:?}", res.errors);
+}

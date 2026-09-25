@@ -678,6 +678,9 @@ pub struct Codegen {
     data_regions: Vec<crate::compiler::DataRegion>,
     addressed_incbins: Vec<(u16, String, Vec<u8>)>,
     incbin_errors: Vec<String>,
+    array_inits: Vec<(String, Vec<u8>)>, // `data arr: …` → initial bytes per array (declaration order)
+    array_init_patches: Vec<(usize, usize)>, // (LDA #<src pos, LDA #>src pos) per array_inits entry
+    array_init_errors: Vec<String>,
 }
 
 /// Carry SID metadata through pre_scan → compile().
@@ -795,6 +798,9 @@ impl Codegen {
             data_regions: vec![],
             addressed_incbins: vec![],
             incbin_errors: vec![],
+            array_inits: vec![],
+            array_init_patches: vec![],
+            array_init_errors: vec![],
         }
     }
 
@@ -4119,6 +4125,141 @@ impl Codegen {
             let bne_r = self.code.len();
             self.emit(0x00); // BNE rem_loop
             self.patch_bxx(bne_r, rem_loop);
+        }
+    }
+
+    /// Gather `data arr: …` lines into per-array initial images (word arrays take
+    /// 2 bytes/value, lo first). Must run after `pre_scan` registered the arrays.
+    fn collect_array_inits(&mut self, stmts: &[Stmt]) {
+        fn walk(stmts: &[Stmt], out: &mut Vec<(String, Vec<Expr>)>) {
+            for stmt in stmts {
+                match stmt {
+                    Stmt::ArrayData(name, items) => out.push((name.clone(), items.clone())),
+                    Stmt::SubDef(_, _, body) | Stmt::FnDef(_, _, _, body) => walk(body, out),
+                    Stmt::If(_, then_b, else_b) => {
+                        walk(then_b, out);
+                        if let Some(eb) = else_b {
+                            walk(eb, out);
+                        }
+                    }
+                    Stmt::ForLoop { body, .. } | Stmt::Loop(_, body) | Stmt::WhileLoop(_, body) => {
+                        walk(body, out)
+                    }
+                    Stmt::RepeatLoop(body, _) => walk(body, out),
+                    _ => {}
+                }
+            }
+        }
+        let mut lines = vec![];
+        walk(stmts, &mut lines);
+        for (name, items) in lines {
+            if !self.arrays.contains_key(&name) {
+                self.array_init_errors
+                    .push(format!("data {name}: '{name}' is not a declared array"));
+                continue;
+            }
+            let word = self.word_arrays.contains(&name);
+            let idx = match self.array_inits.iter().position(|(n, _)| *n == name) {
+                Some(i) => i,
+                None => {
+                    self.array_inits.push((name.clone(), vec![]));
+                    self.array_inits.len() - 1
+                }
+            };
+            let bytes = &mut self.array_inits[idx].1;
+            for item in &items {
+                if let Expr::Number(n) = item {
+                    let v = *n as u16;
+                    bytes.push(v as u8);
+                    if word {
+                        bytes.push((v >> 8) as u8);
+                    }
+                }
+            }
+        }
+        for (name, bytes) in &self.array_inits {
+            let size = *self.array_sizes.get(name).unwrap_or(&0) as usize;
+            if bytes.len() > size {
+                self.array_init_errors.push(format!(
+                    "data {name}: {} bytes do not fit the array ({size} bytes)",
+                    bytes.len()
+                ));
+            }
+        }
+    }
+
+    /// Copy every `data arr: …` image into its array at program entry (after the
+    /// zero fill). Source addresses are patched once the images are emitted after
+    /// the code. Uses scratch ZP `$50-$53`.
+    fn emit_array_init_copies(&mut self) {
+        for i in 0..self.array_inits.len() {
+            let (name, bytes) = &self.array_inits[i];
+            let size = *self.array_sizes.get(name).unwrap_or(&0) as usize;
+            let len = bytes.len().min(size);
+            let dst = self.arrays[name];
+            if len == 0 {
+                self.array_init_patches.push((usize::MAX, usize::MAX));
+                continue;
+            }
+            let (pages, rem) = ((len >> 8) as u8, (len & 0xFF) as u8);
+            self.emit(0xA9);
+            let lo_pos = self.code.len();
+            self.emit(0x00); // LDA #<src (patched)
+            self.emit(0x85);
+            self.emit(0x52); // STA $52
+            self.emit(0xA9);
+            let hi_pos = self.code.len();
+            self.emit(0x00); // LDA #>src (patched)
+            self.emit(0x85);
+            self.emit(0x53); // STA $53
+            self.array_init_patches.push((lo_pos, hi_pos));
+            self.emit(0xA9);
+            self.emit(dst as u8); // LDA #<dst
+            self.emit(0x85);
+            self.emit(0x50); // STA $50
+            self.emit(0xA9);
+            self.emit((dst >> 8) as u8); // LDA #>dst
+            self.emit(0x85);
+            self.emit(0x51); // STA $51
+            self.emit(0xA0);
+            self.emit(0x00); // LDY #0
+            if pages > 0 {
+                self.emit(0xA2);
+                self.emit(pages); // LDX #pages
+                let page_loop = self.current_addr();
+                self.emit(0xB1);
+                self.emit(0x52); // LDA ($52),Y
+                self.emit(0x91);
+                self.emit(0x50); // STA ($50),Y
+                self.emit(0xC8); // INY
+                self.emit(0xD0);
+                let bne_y = self.code.len();
+                self.emit(0x00); // BNE page_loop
+                self.patch_bxx(bne_y, page_loop);
+                self.emit(0xE6);
+                self.emit(0x53); // INC $53
+                self.emit(0xE6);
+                self.emit(0x51); // INC $51
+                self.emit(0xCA); // DEX
+                self.emit(0xD0);
+                let bne_x = self.code.len();
+                self.emit(0x00); // BNE page_loop
+                self.patch_bxx(bne_x, page_loop);
+            }
+            if rem > 0 {
+                let rem_loop = self.current_addr();
+                self.emit(0xB1);
+                self.emit(0x52); // LDA ($52),Y
+                self.emit(0x91);
+                self.emit(0x50); // STA ($50),Y
+                self.emit(0xC8); // INY
+                self.emit(0xC0);
+                self.emit(rem); // CPY #rem
+                self.emit(0xD0);
+                let bne_r = self.code.len();
+                self.emit(0x00); // BNE rem_loop
+                self.patch_bxx(bne_r, rem_loop);
+            }
         }
     }
 
@@ -12747,7 +12888,7 @@ impl Codegen {
 
                 self.emit(0x58); // CLI
             }
-            Stmt::Data(_) => {
+            Stmt::Data(_) | Stmt::ArrayData(..) => {
                 // Data bytes were collected in pre_scan and will be emitted as a block
                 // after all executable code. Nothing to emit here.
             }
@@ -14287,6 +14428,7 @@ impl Codegen {
     pub fn compile(&mut self, stmts: &[Stmt]) -> Vec<u8> {
         // Pre-scan: allocate ZP for sub params, register arrays, data pointer
         self.pre_scan(stmts);
+        self.collect_array_inits(stmts);
 
         // Real C64 environments may leave the decimal flag set. The generated
         // arithmetic assumes binary ADC/SBC semantics, so normalize once at
@@ -14294,6 +14436,7 @@ impl Codegen {
         self.emit(0xD8); // CLD
 
         self.emit_zero_arrays();
+        self.emit_array_init_copies();
 
         // Initialise the bitmap draw base to the default single-buffer layout:
         // bitmap $2000 (hi=$20), video matrix $0400 (hi=$04). `graphics on double`
@@ -14563,6 +14706,24 @@ impl Codegen {
             self.listing_data(data_start, "ub_data");
         }
 
+        // Emit `data arr: …` images and patch the entry-time copy loops
+        for i in 0..self.array_inits.len() {
+            let (lo_pos, hi_pos) = self.array_init_patches[i];
+            if lo_pos == usize::MAX {
+                continue;
+            }
+            let (name, bytes) = self.array_inits[i].clone();
+            let size = *self.array_sizes.get(&name).unwrap_or(&0) as usize;
+            let start = self.code.len();
+            let addr = self.current_addr();
+            self.code[lo_pos] = addr as u8;
+            self.code[hi_pos] = (addr >> 8) as u8;
+            for &b in &bytes[..bytes.len().min(size)] {
+                self.emit(b);
+            }
+            self.listing_data(start, &format!("ub_init_{name}"));
+        }
+
         // Emit sin/cos lookup table and patch all LDA abs,X references
         if !self.sin_table_patches.is_empty() {
             let table_start = self.code.len();
@@ -14821,6 +14982,7 @@ impl Codegen {
             errs.push(error.clone());
         }
         errs.extend(self.incbin_errors.iter().cloned());
+        errs.extend(self.array_init_errors.iter().cloned());
         // Generated code must not sit where the program later writes the charset
         // (`charset on` copies/uses a 2 KB set, `chardef` writes 8 bytes).
         let code_start = self.load_addr as u32;

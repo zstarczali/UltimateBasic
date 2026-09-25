@@ -316,6 +316,7 @@ pub enum Stmt {
         data: Vec<u8>,  // raw music bytes (SID header stripped)
     },
     Data(Vec<Expr>), // data 1,2,3 — constant byte table (read with 'read')
+    ArrayData(String, Vec<Expr>), // data arr: 1,2,3 — initial contents of an array (appends; indexed with arr[i])
     Read(String),    // read varname — load next data byte into variable
     Load {
         filename: String,
