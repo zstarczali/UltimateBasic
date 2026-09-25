@@ -2,7 +2,7 @@
 
 <img src="assets/ultimate-basic-banner.png" alt="Ultimate Basic C64 banner" width="50%">
 
-Current version: **1.5.7**
+Current version: **1.5.8**
 
 A modern BASIC-like language that compiles directly to 6502 machine code for the
 **Commodore 64** and **Commodore 64 Ultimate**. It produces `.prg` files that run in
@@ -81,6 +81,23 @@ bytes. Compiler-generated helper routines are included in the same listing.
 The output uses KickAssembler syntax and can be assembled again. Known data regions—such
 as `data`, maps, sprite/character definitions, lookup tables, SID/Koala payloads, and
 `incbin` content—are emitted as `.byte` blocks instead of being mistaken for instructions.
+
+## What's new in 1.5.8
+
+- **Initialised arrays: `data <array>: v, …`** fill a declared `array` / `array_word` with constant
+  values. Several lines continue where the previous one stopped, word arrays take 16-bit values
+  (stored lo, hi), and the table is indexed like any array (`sinus[i]`). The values are stored
+  after the code and copied into the array once at program start, right after the arrays are
+  zeroed. These lines do not affect the `read` stream; more values than the array holds, or an
+  undeclared name, is a compile-time error. This is what the Visual Assembler Curve Editor's
+  "Export to UltimateBasic" generates.
+
+  ```basic
+  var sinus = array(8)
+  data sinus: 128, 218, 255, 218
+  data sinus: 128, 37, 0, 37
+  sprite 0, x, sinus[i]
+  ```
 
 ## What's new in 1.5.7
 

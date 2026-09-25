@@ -1,5 +1,18 @@
-Ultimate Basic v1.5.7 – Release Notes
+Ultimate Basic v1.5.8 – Release Notes
 ======================================
+
+2026-09-25 – Initialised arrays
+------------------------------------------------------------------
+  New language elements
+  - Added `data <array>: v, v, ...`: fills a declared `array` / `array_word`
+    with constant values. Further lines continue where the previous one
+    stopped; word arrays take 16-bit values (stored lo, hi). The values are
+    stored after the code and copied into the array once at program start
+    (right after the arrays are zeroed), so the table is writable and indexed
+    like any other array (`sinus[i]`). These lines do not affect `read`.
+    An undeclared name or more values than the array holds is a compile-time
+    error. This is what the Visual Assembler Curve Editor's "Export to
+    UltimateBasic" and "Export UltimateBasic demo" generate.
 
 2026-09-21 – Tracker tunes and an inline-assembler fix
 ------------------------------------------------------------------

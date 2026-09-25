@@ -1198,6 +1198,19 @@ All `data` values are collected at compile time into a single block. A 2-byte ZP
 pointer is automatically allocated and initialized at program start. Each `read` advances
 the pointer. Values must be byte-sized constants (0–255).
 
+```basic
+var sinus = array(8)
+data sinus: 128, 218, 255, 218   # initial contents of a declared array (new in 1.5.8)
+data sinus: 128, 37, 0, 37       # further lines append
+```
+
+`data name: …` (identifier + colon after `data`) parses to `Stmt::ArrayData`, not `Stmt::Data`,
+so it never feeds the `read` stream. `collect_array_inits` (run right after `pre_scan`) builds one
+byte image per array (word arrays: lo, hi per value) and reports unknown names / overflow via
+`array_init_errors`. `emit_array_init_copies` emits a `($52),Y → ($50),Y` page+remainder copy
+loop per array right after `emit_zero_arrays`; the source address is patched when the images are
+emitted after the code (`ub_init_<name>` data regions in the listing).
+
 ### Bitmap Graphics
 
 ```basic

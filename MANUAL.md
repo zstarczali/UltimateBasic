@@ -1,4 +1,4 @@
-# Ultimate Basic v1.5.7 — Language Manual
+# Ultimate Basic v1.5.8 — Language Manual
 
 Complete language and CLI reference for Ultimate Basic, a BASIC-like language that
 compiles directly to 6502 machine code for the Commodore 64. Output: `.prg` files
@@ -1437,7 +1437,7 @@ read varname             # load next byte into varname (auto-declares if needed)
 All `data` values are collected at compile time. A 2-byte ZP pointer is automatically
 allocated and initialised at program start. Each `read` advances the pointer.
 
-**Initialised arrays — `data <array>: …`**
+**Initialised arrays — `data <array>: …` (new in 1.5.8)**
 
 ```basic
 var sinus = array(8)
