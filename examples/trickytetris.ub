@@ -9,10 +9,12 @@
 # - shapes: 7 pieces (+ the bomb) x 4 rotations x 4 cells; a cell is dy*4+dx inside the piece's box
 # - level = 1 + lines/10 (max 10); every level shortens the gravity delay
 # - PRANKS: the game pulls a random prank (visible countdown, a weird siren on voice 3) and pays
-#   5x points meanwhile. All nine can come from level 1 - W S swap, A D swap, MIRROR (field upside
+#   5x points meanwhile. All 13 can come from level 1 - W S swap, A D swap, MIRROR (field upside
 #   down), TURNED 90 (field on its side), TURNED 45 (a look-up table places every cell on the
 #   nearest free character cell of the turned grid), both turns also mirrored (MIRRORED 90 /
-#   MIRRORED 45), KEYS CYCLED, TURBO - but they are rare and
+#   MIRRORED 45), KEYS CYCLED, TURBO, EARTHQUAKE (shaking screen, sudden drops), DISCO (rainbow
+#   blocks, flashing border, a beat), BLACKOUT (landed blocks invisible), SPOTLIGHT (only a 6x6
+#   light around the piece shows) - but they are rare and
 #   short at the start (about 1 per minute, 4 s) and get more frequent and longer with the level
 #   (level 10: every 10-19 s, 10 s long).  Keys 1-9 in the menu = start level.
 # - TWIST: clear a line with three pieces in a row (COMBO 3/3) and the next piece is a BOMB (one
@@ -40,15 +42,18 @@ const RX = 5                    # ROTATED 90 prank: field interior columns RX ..
 const RY = 11                   # ... and rows RY .. RY+9
 
 var hs = array(10)              # the saved record, FIRST array = $C000: [0..1] best score (word),
-                                # [2..9] the name as screen codes; this block goes to disk
+# [2..9] the name as screen codes; this block goes to disk
 var field = array(20, 10)
 var shapes = array(128)
 var rowf = array(20)            # 1 = this row is complete (being cleared)
 # prank state: [0] active prank (0 none, 1 mirror, 2 A<->D, 3 W<->S, 4 all keys cycled, 5 turbo,
-#              6 turned 90, 7 turned 45, 8 turned 90 mirrored, 9 turned 45 mirrored)
+#              6 turned 90, 7 turned 45, 8 turned 90 mirrored, 9 turned 45 mirrored,
+#              10 earthquake, 11 disco, 12 blackout, 13 spotlight)
 #              [1] seconds left, [2] seconds until the next prank, [3] frame counter, [4] score x
 #              [5] combo (consecutive pieces that cleared a line), [6] start level chosen in the menu
-var ps = array(10)
+#              [9] [10] SPOTLIGHT: piece column / row at the start of the frame
+#              [11] DISCO: frames to the next beat, [12] DISCO: colour shift (counts the beats)
+var ps = array(14)
 var tcx = array(200)            # ROTATED 45: screen column / row of every field cell (index cy*10+cx)
 var tcy = array(200)
 var fcx = array(73)             # ... and of the 73 solid frame cells (walls + floor)
@@ -560,6 +565,24 @@ end
 # MIRROR: upside down. ROTATED 90: on its side (20 wide, 10 high). ROTATED 45: table driven.
 # 8 and 9 are the mirror images of 6 and 7 (left and right swapped on the screen).
 sub put()
+  if ps[0] >= 11 then            # DISCO / BLACKOUT / SPOTLIGHT change what a cell shows
+    if ps[0] == 11 then          # DISCO: the landed blocks take a colour from a moving rainbow
+      if pch == BLK then
+        if field[cy, cx] != 0 then cl = 2 + ((cx + cy + ps[12]) and 7) end
+      end
+    end
+    if ps[0] == 12 then          # BLACKOUT: the landed blocks are invisible, only the piece shows
+      if pch == BLK then
+        if field[cy, cx] != 0 then pch = BLANK end
+      end
+    end
+    if ps[0] == 13 then          # SPOTLIGHT: only a 6x6 light around the piece box is visible
+      if cx + 1 < px then pch = BLANK end
+      if cx > px + 4 then pch = BLANK end
+      if cy + 1 < py then pch = BLANK end
+      if cy > py + 4 then pch = BLANK end
+    end
+  end
   if ps[0] == 1 then
     screen X0 + cx, Y0 + 19 - cy, pch, cl
   else
@@ -583,6 +606,28 @@ sub put()
       end
     end
   end
+end
+
+# SPOTLIGHT: the piece moved, so the light moved: redraw the rows that the old and the new
+# light cover (i = first row, o = last row)
+sub spot_redraw()
+  i = ps[10]
+  if py < i then i = py end
+  if i > 0 then dec i end
+  o = ps[10]
+  if py > o then o = py end
+  o += 4
+  if o > 19 then o = 19 end
+  for rr = i to o
+    for cc = 0 to 9
+      cl = field[rr, cc]
+      cx = cc
+      cy = rr
+      pch = BLK
+      if cl == 0 then pch = BLANK end
+      put()
+    next
+  next
 end
 
 # rotate clockwise, with a small wall kick
@@ -655,20 +700,23 @@ sub info()
   color text 7
   print at 13, 1, "TRICKY PRANKS"
   color text 1
-  print at 3, 3, "NOW AND THEN THE GAME PULLS A PRANK."
-  print at 3, 4, "IT PAYS 5X POINTS WHILE IT LASTS."
-  print at 3, 5, "THE COUNTDOWN IS ON THE SCREEN."
+  print at 3, 2, "NOW AND THEN THE GAME PULLS A PRANK."
+  print at 3, 3, "IT PAYS 5X POINTS WHILE IT LASTS."
+  print at 3, 4, "THE COUNTDOWN IS ON THE SCREEN."
   color text 3
-  print at 3, 7, "W S SWAP    ROTATE AND DROP SWAP"
-  print at 3, 8, "A D SWAP    LEFT AND RIGHT SWAP"
-  print at 3, 9, "MIRROR      FIELD UPSIDE DOWN"
-  print at 3, 10, "TURNED 90   ON ITS SIDE, OR MIRRORED"
-  print at 3, 11, "TURNED 45   A DIAMOND, OR MIRRORED"
-  print at 3, 12, "KEYS CYCLED A W D S SHIFT ROUND"
-  print at 3, 13, "TURBO       GRAVITY TWICE AS FAST"
+  print at 3, 6, "W S SWAP    ROTATE AND DROP SWAP"
+  print at 3, 7, "A D SWAP    LEFT AND RIGHT SWAP"
+  print at 3, 8, "MIRROR      FIELD UPSIDE DOWN"
+  print at 3, 9, "TURNED 90   ON ITS SIDE, OR MIRRORED"
+  print at 3, 10, "TURNED 45   A DIAMOND, OR MIRRORED"
+  print at 3, 11, "KEYS CYCLED A W D S SHIFT ROUND"
+  print at 3, 12, "TURBO       GRAVITY TWICE AS FAST"
+  print at 3, 13, "EARTHQUAKE  SHAKING, SUDDEN DROPS"
+  print at 3, 14, "DISCO       COLOURS AND A BEAT"
+  print at 3, 15, "BLACKOUT    LANDED BLOCKS INVISIBLE"
+  print at 3, 16, "SPOTLIGHT   ONLY AROUND THE PIECE"
   color text 1
-  print at 3, 15, "AT LEVEL 1 THEY ARE RARE AND SHORT."
-  print at 3, 16, "HIGHER LEVELS: MORE OFTEN, UP TO 10 S."
+  print at 3, 17, "MORE OFTEN AND LONGER AT HIGH LEVELS."
   color text 7
   print at 3, 18, "BOMB: CLEAR A LINE WITH THREE"
   print at 3, 19, "PIECES IN A ROW (COMBO 3/3) AND THE"
@@ -735,9 +783,13 @@ sub title()
   scroll x 0
   scroll y 3
   print at 7, 11, "BY ZSOLT TARCZALI 2026(C)"
+  color text 2
+
   print at 16, 14, "NEW GAME"
   print at 18, 16, "INFO"
   print at 15, 18, "SAVE SCORE"
+  color text 1
+
   print at 13, 21, "START LEVEL ", ps[6]
   print at 10, 22, "BEST"
   for i = 0 to 7                 # the saved name sits between BEST and the score
@@ -986,6 +1038,10 @@ sub show_prank()
   if ps[0] == 7 then print at 27, 22, "TURNED 45 DEG" end
   if ps[0] == 8 then print at 27, 22, "MIRRORED 90" end
   if ps[0] == 9 then print at 27, 22, "MIRRORED 45" end
+  if ps[0] == 10 then print at 27, 22, "EARTHQUAKE" end
+  if ps[0] == 11 then print at 27, 22, "DISCO" end
+  if ps[0] == 12 then print at 27, 22, "BLACKOUT" end
+  if ps[0] == 13 then print at 27, 22, "SPOTLIGHT" end
   color text 1
   print at 27, 23, "TIME ", ps[1], "  5X   "
   cl = 5                         # the chain: green, then yellow, then red
@@ -1068,9 +1124,9 @@ sub pause_game()
 end
 
 sub start_prank()
-  # all nine pranks are possible from level 1; what grows with the level is how OFTEN they come
+  # all 13 pranks are possible from level 1; what grows with the level is how OFTEN they come
   # and how LONG they last (level 1: 4 s ... level 7 and up: 10 s)
-  c = rnd(9)
+  c = rnd(13)
   ps[0] = 3
   if c == 1 then ps[0] = 2 end
   if c == 2 then ps[0] = 1 end
@@ -1080,6 +1136,11 @@ sub start_prank()
   if c == 6 then ps[0] = 5 end
   if c == 7 then ps[0] = 8 end
   if c == 8 then ps[0] = 9 end
+  if c == 9 then ps[0] = 10 end
+  if c == 10 then ps[0] = 11 end
+  if c == 11 then ps[0] = 12 end
+  if c == 12 then ps[0] = 13 end
+  ps[11] = 0
   ps[1] = 3 + level              # seconds: level 1 = 4 ... level 7 and up = 10
   if ps[1] > 10 then ps[1] = 10 end
   ps[7] = ps[1]                  # remembered: the chain in the panel is this many links long
@@ -1095,6 +1156,7 @@ sub start_prank()
   if ps[0] == 7 then redraw_field() end
   if ps[0] == 8 then redraw_field() end
   if ps[0] == 9 then redraw_field() end
+  if ps[0] >= 11 then redraw_field() end   # DISCO, BLACKOUT, SPOTLIGHT: the field looks different at once
   poke $D410, $00                # a weird siren on voice 3: pulse wave, its pitch wobbles every frame
   poke $D411, $08
   poke $D413, $00
@@ -1119,6 +1181,11 @@ sub end_prank()
   if cx == 7 then redraw_field() end
   if cx == 8 then redraw_field() end
   if cx == 9 then redraw_field() end
+  if cx == 10 then               # EARTHQUAKE: the screen back in place
+    scroll x 0
+    scroll y 3
+  end
+  if cx >= 11 then redraw_field() end
 end
 
 # once per second
@@ -1302,6 +1369,8 @@ while go == 1
     while running == 1
       wait raster 250            # update below the playfield -> no tearing
       draw_piece(BLANK)          # erase old position
+      ps[9] = px                 # SPOTLIGHT: where the light is now
+      ps[10] = py
       k = inkey()                # PETSCII of the next buffered key, 0 = none
       k = k and 127              # 'A' = 65 and Shift+'A' = 193 both become 65
       if ps[0] > 1 then scramble_keys() end   # the controls prank
@@ -1318,6 +1387,28 @@ while go == 1
         poke $D40F, 5 + c
         poke $D414, $C0
         poke $D412, $41
+      end
+      if ps[0] == 10 then        # EARTHQUAKE: the screen shakes, now and then the piece drops a row
+        scroll x rnd(5)
+        scroll y 1 + rnd(5)
+        if rnd(40) == 0 then t = limit end
+      end
+      if ps[0] == 11 then        # DISCO: 4 beats a second - the border flashes, the blocks recolour
+        ps[11] = ps[11] + 1
+        if ps[11] >= 12 then
+          ps[11] = 0
+          ps[12] = ps[12] + 1
+          c = ps[12] and 7
+          poke $D020, 2 + c
+          ok = 19
+          draw_field()
+          c = ps[12] and 1
+          if c == 0 then
+            sfx 0, $0600, 4, 128   # the beat: a low noise thump ...
+          else
+            sfx 0, $4000, 2, 128   # ... and a hi-hat tick
+          end
+        end
       end
 
       if k == 65 then            # A = left
@@ -1368,6 +1459,7 @@ while go == 1
             end
           end
           draw_hud()
+          if ps[0] == 12 then draw_piece(BLANK) end   # BLACKOUT: the landed piece vanishes, too
           spawn()
         end
       end
@@ -1377,9 +1469,18 @@ while go == 1
         c = c and 1
         pc = 2 + c * 5
       end
+      if ps[0] == 13 then        # SPOTLIGHT: the light follows the piece
+        c = 0
+        if px != ps[9] then c = 1 end
+        if py != ps[10] then c = 1 end
+        if c == 1 then spot_redraw() end
+      end
       draw_piece(BLK)
     end
 
+    scroll x 0                   # a prank may have shaken the screen or coloured the border
+    scroll y 3
+    poke $D020, 0
     if score > best then best = score end
     if running == 0 then         # game over
       print at 16, 11, "GAME OVER"
