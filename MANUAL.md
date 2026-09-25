@@ -1437,6 +1437,24 @@ read varname             # load next byte into varname (auto-declares if needed)
 All `data` values are collected at compile time. A 2-byte ZP pointer is automatically
 allocated and initialised at program start. Each `read` advances the pointer.
 
+**Initialised arrays — `data <array>: …`**
+
+```basic
+var sinus = array(8)
+data sinus: 128, 218, 255, 218
+data sinus: 128, 37, 0, 37      # further lines continue where the previous one stopped
+print sinus[i]                  # random access, like any array
+
+var xpos = array_word(2)
+data xpos: 24, 300              # word arrays take 16-bit values (stored lo, hi)
+```
+
+A `data` line whose first item is `name:` fills a declared `array` / `array_word` instead of
+the `read` stream. The values are stored after the code and copied into the array once at
+program start (right after the arrays are zeroed), so the table is fully writable and indexed
+like any other array. More values than the array holds, or an undeclared name, is a compile
+error. These lines do not affect `read`.
+
 ### Inline assembly
 
 ```basic

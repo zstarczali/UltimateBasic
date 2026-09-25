@@ -3050,6 +3050,16 @@ impl Parser {
             }
             Token::Data => {
                 self.advance();
+                // `data arr: v, v, …` — initial contents of a declared array. A plain
+                // `data` line only takes numbers, so an identifier + colon is unambiguous.
+                let target = match (self.peek().clone(), self.peek2()) {
+                    (Token::Ident(name), Token::Colon) => {
+                        self.advance();
+                        self.advance();
+                        Some(name)
+                    }
+                    _ => None,
+                };
                 let mut items = vec![];
                 loop {
                     match self.peek().clone() {
@@ -3069,7 +3079,10 @@ impl Parser {
                     }
                 }
                 self.expect_newline();
-                Some(Stmt::Data(items))
+                match target {
+                    Some(name) => Some(Stmt::ArrayData(name, items)),
+                    None => Some(Stmt::Data(items)),
+                }
             }
             Token::Read => {
                 self.advance();
