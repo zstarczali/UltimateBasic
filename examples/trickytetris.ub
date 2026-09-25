@@ -493,11 +493,14 @@ end
 # the gap in between.
 org $4000
 
-# the fixed labels of the game screen (moved above $4000); the key hints in blue
+# the fixed labels of the game screen (moved above $4000): SCORE / LEVEL / LINES in light
+# green (the numbers under them stay white), the key hints in blue
 sub draw_labels()
+  color text 13
   print at 28, 3, "SCORE"
   print at 28, 6, "LEVEL"
   print at 28, 9, "LINES"
+  color text 7
   print at 3, 3, "HOLD"
   color text 3
   print at 28, 15, "H FOR HELP"
