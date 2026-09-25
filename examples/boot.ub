@@ -1,7 +1,9 @@
 # TRICKY TETRIS - starter. Shows the title picture (tetris.koa, a Koala image) and loads the game
-# (TRICKYTETRIS on the same disk) when RETURN or SPACE is pressed.
+# (DATA on the same disk) when RETURN or SPACE is pressed.
 #
-# Disk: build this with  ub build boot.ub --d64 tricky.d64 --add trickytetris.prg
+# Disk: build the game as data.prg, then this one with the game added:
+#   ub build trickytetris.ub -o data.prg
+#   ub build boot.ub --d64 tricky.d64 --add data.prg
 # (the starter is the first file, so LOAD"*",8 + RUN starts it).
 #
 # The game loads to $0801 - right over this program - so the loading itself is done by a
@@ -11,9 +13,16 @@
 
 koala load "tetris.koa"          # embedded at compile time, shown from $2000 / $0400 / $D800
 
-var a: word = $033C              # where the loader goes
-var i = 0
-var c = 0
+# An Exomizer (or other) self-extractor may start us with interrupts off and the CIA timer IRQ
+# disabled: then the KERNAL does not scan the keyboard (inkey never sees RETURN) and the serial
+# bus may be in an odd state. Put the I/O and the system vectors back as after power on.
+asm {
+        SEI
+        JSR $FDA3                ; IOINIT: CIA timers (the 60 Hz keyboard IRQ), serial bus, $01
+        JSR $FF8A                ; RESTOR: default IRQ / BRK / NMI and I/O vectors
+        CLI
+}
+
 var k = 0
 
 color border 0                   # black border and background around / behind the picture
@@ -38,39 +47,52 @@ color bg 0
 color text 1
 print at 14, 12, "LOADING..."
 
-for i = 0 to 67                  # copy the loader and the file name to $033C-$037F
-  read c
-  poke a, c
-  a = a + 1
-next
-
 poke $01, $37                    # BASIC + KERNAL ROM visible for the loader
-sys $033C                        # does not come back when the game loads
+asm {
+        ; copy the loader below (and the file name after it) to the cassette buffer $033C:
+        ; this program is overwritten by the game while it loads
+        LDA #<loader
+        STA $FB
+        LDA #>loader
+        STA $FC
+        LDY #0
+copy:   LDA ($FB),Y
+        STA $033C,Y
+        INY
+        CPY #50                  ; 46 bytes of code + 4 bytes of name
+        BNE copy
+        JSR $033C                ; does not come back when the game loads
+        BCS done                 ; file not found (carry set): back to the BASIC part below
 
-print at 13, 14, "LOAD ERROR"    # only if the file was not found
-print at 4, 16, "TRICKYTETRIS MUST BE ON THE DISK"
+        ; ---- the loader: runs at $033C, position independent (the name is at $036A) ----
+        ; A self-extractor (Exomizer sfx) that started this program may have used BASIC's zero
+        ; page (the CHRGET routine, program pointers): set BASIC up again, as after power on,
+        ; or the RUN below ends in a SYNTAX ERROR.
+loader: JSR $E453                ; BASIC vectors ($0300-$030B)
+        JSR $E3BF                ; BASIC RAM: CHRGET, program start $0801, memory pointers
+        LDA #4                   ; name length
+        LDX #$6A                 ; name at $036A
+        LDY #$03
+        JSR $FFBD                ; SETNAM
+        LDX $BA                  ; the drive we were loaded from ...
+        BNE dev
+        LDX #8                   ; ... or drive 8
+dev:    LDA #1                   ; logical file 1
+        LDY #1                   ; secondary 1: load to the file's own address ($0801)
+        JSR $FFBA                ; SETLFS
+        LDA #0                   ; LOAD, not VERIFY
+        JSR $FFD5                ; LOAD
+        BCS err
+        STX $2D                  ; end of the loaded program = start of the BASIC variables
+        STY $2E
+        JSR $A659                ; CLR, point at the start of the program
+        JMP $A7AE                ; RUN
+err:    RTS
+        ; the file name DATA (must follow the 46 code bytes directly -> $036A)
+        $44 $41 $54 $41
+done:
+}
+color text 2
+print at 14, 12, "LOAD ERROR"    # only if the file was not found
 k = getch()
 bye
-
-# the loader at $033C (40 bytes)
-data $A9, $0C                    # LDA #12            name length
-data $A2, $64                    # LDX #<$0364        name address
-data $A0, $03                    # LDY #>$0364
-data $20, $BD, $FF               # JSR SETNAM
-data $A6, $BA                    # LDX $BA            the drive we were loaded from ...
-data $D0, $02                    # BNE +2
-data $A2, $08                    # LDX #8             ... or drive 8
-data $A9, $01                    # LDA #1             logical file 1
-data $A0, $01                    # LDY #1             secondary 1: load to the file's own address
-data $20, $BA, $FF               # JSR SETLFS
-data $A9, $00                    # LDA #0             LOAD (not VERIFY)
-data $20, $D5, $FF               # JSR LOAD
-data $B0, $0A                    # BCS error
-data $86, $2D                    # STX $2D            end of the loaded program = start of
-data $84, $2E                    # STY $2E            BASIC variables
-data $20, $59, $A6               # JSR $A659          CLR, start of program
-data $4C, $AE, $A7               # JMP $A7AE          RUN
-data $60                         # error: RTS back to the starter
-# $0364: the file name (12 characters), then padding up to 68 bytes
-data $54, $52, $49, $43, $4B, $59, $54, $45, $54, $52, $49, $53   # TRICKYTETRIS
-data 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
