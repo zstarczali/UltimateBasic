@@ -8,7 +8,7 @@
       "type": "file"
     },
     {
-      "_collapsed": false,
+      "_collapsed": true,
       "children": [
         {
           "name": "font01.bin",
@@ -29,7 +29,17 @@
       "name": "fonts",
       "path": "fonts",
       "type": "folder"
+    },
+    {
+      "type": "file",
+      "name": "boot.ub",
+      "path": "boot.ub"
+    },
+    {
+      "type": "file",
+      "name": "tetris.koa",
+      "path": "tetris.koa"
     }
   ],
-  "startupFile": "trickytetris.ub"
+  "startupFile": "boot.ub"
 }
