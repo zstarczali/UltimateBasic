@@ -2,7 +2,7 @@
 
 <img src="assets/ultimate-basic-banner.png" alt="Ultimate Basic C64 banner" width="50%">
 
-Current version: **1.5.8**
+Current version: **1.5.9**
 
 A modern BASIC-like language that compiles directly to 6502 machine code for the
 **Commodore 64** and **Commodore 64 Ultimate**. It produces `.prg` files that run in
@@ -81,6 +81,34 @@ bytes. Compiler-generated helper routines are included in the same listing.
 The output uses KickAssembler syntax and can be assembled again. Known data regions—such
 as `data`, maps, sprite/character definitions, lookup tables, SID/Koala payloads, and
 `incbin` content—are emitted as `.byte` blocks instead of being mistaken for instructions.
+
+## What's new in 1.5.9
+
+- **`chain "FILE" [, device]`** loads another program over the running one and RUNs it, as if
+  `LOAD"FILE",8,1` + `RUN` had been typed — the missing piece for a boot / title program that
+  shows a picture and then starts the game. A small position-independent loader is copied to the
+  cassette buffer (`$033C`), the I/O is reset (IOINIT, RESTOR, VIC IRQs off), BASIC is
+  re-initialised after the load (so Exomizer `sfx` crunched boot programs work too) and the
+  program is started. If the file cannot be loaded, execution continues after `chain`.
+
+  ```basic
+  koala load "title.koa"
+  koala show
+  k = getch()
+  chain "GAME"
+  print "LOAD ERROR"
+  ```
+
+- **Fix: `load` secondary address.** `load "FILE"` used secondary address 0 with X/Y = 0, so the
+  file was loaded to `$0000`; `load "FILE", addr` ignored `addr`. Now `load "FILE"` loads to the
+  file's own address and `load "FILE", addr` to `addr`.
+
+- **Fix: `--d64` images with more than one file.** Directory entries were written 30 bytes apart
+  instead of 32, so every file after the first had a broken directory entry (a `--add`ed file
+  could not be loaded). The disk ID / DOS type were also in the wrong BAM bytes, data only used
+  tracks 1–17 (a bigger disk crashed the build), and sectors were written without the 1541
+  interleave. Images are now laid out as the 1541 DOS writes them (tracks 17→1, then 19→35,
+  interleave 10), and a full disk is a clean build error.
 
 ## What's new in 1.5.8
 

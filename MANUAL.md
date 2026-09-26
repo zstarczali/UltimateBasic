@@ -1,4 +1,4 @@
-# Ultimate Basic v1.5.8 — Language Manual
+# Ultimate Basic v1.5.9 — Language Manual
 
 Complete language and CLI reference for Ultimate Basic, a BASIC-like language that
 compiles directly to 6502 machine code for the Commodore 64. Output: `.prg` files
@@ -66,7 +66,7 @@ confusing error (a `var` line silently fails to declare, or an expression like
 
 **Print & I/O**
 `print`, `spc`, `tab`, `at`, `input`, `chr$`, `str$`, `hex`, `bin`,
-`open`, `close`, `load`, `save`, `data`, `read`, `include`, `incbin`
+`open`, `close`, `load`, `save`, `chain`, `data`, `read`, `include`, `incbin`
 (also `dec` — listed above as the decrement statement; the same token
 is used for the `dec(n, width)` print format)
 
@@ -1164,6 +1164,7 @@ poke16 ptr, w                 # word var as address; word var as value
 ```basic
 load "PROGRAM"           # KERNAL LOAD: loads file from device 8 to its native address
 load "DATA", $C000       # loads file to a specific address
+chain "GAME"             # load another program over this one and RUN it (see below)
 load "DATA", ptr         # addr from word variable
 
 save "DATA", $C000, 4096 # KERNAL SAVE from $C000, 4096 bytes → device 8
@@ -1171,9 +1172,43 @@ save "PROG", start, len  # addr and len from word/int variables
 ```
 
 `load` calls KERNAL `SETNAM`+`SETLFS`+`LOAD` (`$FFBD`/`$FFBA`/`$FFD5`).
-Without address: secondary address 0 (file's own 2-byte header used as load address).
-With address: secondary address 1 (file loaded to specified location).
+Without address: secondary address 1 (the file's own 2-byte header is the load address).
+With address: secondary address 0 (the file is loaded to the given address, its header is skipped).
+(Fixed in 1.5.9 — before, the two were swapped: `load "F"` loaded to `$0000`.)
 `save` calls `SETNAM`+`SETLFS`+`SAVE` (`$FFBD`/`$FFBA`/`$FFD8`). Requires both `addr` and `len`.
+
+#### Chaining to another program — `chain` (new in 1.5.9)
+
+```basic
+chain "GAME"             # load GAME from the drive we were started from and RUN it
+chain "GAME", 9          # from drive 9 (any expression)
+print "LOAD ERROR"       # only reached if the file could not be loaded
+```
+
+`chain` loads another program to its own load address — normally `$0801`, right over the
+running program — and starts it exactly as if `LOAD"GAME",8,1` and `RUN` had been typed. This
+is what a boot / title program needs. A plain `load` cannot do it: the loaded file would
+overwrite the code that is executing the `load`.
+
+How it works:
+
+- A 46-byte, position-independent loader plus the file name is copied to the cassette buffer
+  (`$033C`), which neither an Ultimate Basic program nor an Exomizer-packed file loads over.
+- Before that the machine is put back into a clean state: VIC IRQs off, SID volume 0, `IOINIT`
+  (`$FDA3`: CIA timers, keyboard IRQ, serial bus), `RESTOR` (`$FF8A`: default IRQ/BRK/NMI and
+  I/O vectors), `$01 = $37`. Custom raster IRQs, `music play` and `nmi` handlers stop. Screen,
+  colours and VIC bank registers other than `$DD00` are left as they are, so a picture can stay
+  on screen while the next program loads (`IOINIT` selects VIC bank 0).
+- The loader calls `SETNAM` / `SETLFS` (secondary 1) / `LOAD`. Without a device argument it
+  uses the drive the program itself was loaded from (`$BA`), or drive 8.
+- After a successful load it sets the end-of-program pointer (`$2D/$2E`), re-initialises
+  BASIC (`$E453`, `$E3BF` — a self-extracting cruncher such as Exomizer `sfx` may have used
+  BASIC's zero page) and RUNs the program (`$A659`, `$A7AE`). It works for Ultimate Basic
+  programs, crunched (`exomizer sfx sys`) files and ordinary BASIC programs alike.
+- If the file cannot be loaded (not found, no drive), `chain` returns and the program continues
+  with the next statement.
+
+The file name must be a string literal of 1–16 characters.
 
 ### Serial channel file I/O
 

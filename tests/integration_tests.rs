@@ -6890,3 +6890,83 @@ fn array_data_reports_unknown_array_and_overflow() {
     );
     assert!(res.errors.iter().any(|e| e.contains("do not fit")), "{:?}", res.errors);
 }
+
+// ── chain "FILE" [, device] (new in 1.5.9) ───────────────────────────────────
+
+fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    hay.windows(needle.len()).position(|w| w == needle)
+}
+
+#[test]
+fn chain_copies_loader_to_cassette_buffer_and_calls_it() {
+    let res = compile("chain \"DATA\"", &CompileOptions { basic_stub: false, explicit: false });
+    assert!(res.errors.is_empty(), "chain should compile, got {:?}", res.errors);
+    let b = &res.prg;
+    // stub start: LDA #4 / LDX #<$036A / LDY #>$036A / JSR SETNAM
+    let stub = find(b, &[0xA9, 0x04, 0xA2, 0x6A, 0xA0, 0x03, 0x20, 0xBD, 0xFF])
+        .expect("loader stub with name at $036A");
+    // SETLFS with secondary 1, LOAD, BCS err, pointers, BASIC init, RUN, RTS
+    assert_eq!(
+        &b[stub + 15..stub + 46],
+        &[
+            0xA9, 0x01, 0xA0, 0x01, 0x20, 0xBA, 0xFF, 0xA9, 0x00, 0x20, 0xD5, 0xFF, 0xB0, 0x10,
+            0x86, 0x2D, 0x84, 0x2E, 0x20, 0x53, 0xE4, 0x20, 0xBF, 0xE3, 0x20, 0x59, 0xA6, 0x4C,
+            0xAE, 0xA7, 0x60
+        ]
+    );
+    // the PETSCII name follows the 46 code bytes directly
+    assert_eq!(&b[stub + 46..stub + 50], b"DATA");
+    // I/O reset, copy loop (STA $033C,X) and the call
+    assert!(find(b, &[0x20, 0xA3, 0xFD, 0x20, 0x8A, 0xFF]).is_some(), "IOINIT + RESTOR");
+    assert!(find(b, &[0xA2, 49]).is_some(), "LDX #len-1 (46 + 4 - 1)");
+    assert!(find(b, &[0x9D, 0x3C, 0x03]).is_some(), "STA $033C,X");
+    assert!(find(b, &[0x20, 0x3C, 0x03]).is_some(), "JSR $033C");
+}
+
+#[test]
+fn chain_with_device_sets_ba() {
+    let res = compile("chain \"GAME\", 9", &CompileOptions { basic_stub: false, explicit: false });
+    assert!(res.errors.is_empty(), "{:?}", res.errors);
+    assert!(find(&res.prg, &[0xA9, 0x09, 0x85, 0xBA]).is_some(), "LDA #9 / STA $BA");
+}
+
+#[test]
+fn chain_filename_errors() {
+    for src in ["chain", "chain \"\"", "chain \"ABCDEFGHIJKLMNOPQ\""] {
+        let res = compile(src, &CompileOptions { basic_stub: false, explicit: false });
+        assert!(!res.errors.is_empty(), "expected an error for {src:?}");
+    }
+    let ok = compile("chain \"ABCDEFGHIJKLMNOP\"", &CompileOptions { basic_stub: false, explicit: false });
+    assert!(ok.errors.is_empty(), "16 characters are allowed: {:?}", ok.errors);
+}
+
+#[test]
+fn chain_continues_when_load_fails() {
+    // the statement after chain must be reachable (the stub returns on a LOAD error)
+    let res = compile(
+        "chain \"DATA\"\npoke $D020, 2",
+        &CompileOptions { basic_stub: false, explicit: false },
+    );
+    assert!(res.errors.is_empty(), "{:?}", res.errors);
+    let b = &res.prg;
+    let call = find(b, &[0x20, 0x3C, 0x03]).unwrap();
+    let poke = find(b, &[0x8D, 0x20, 0xD0]).expect("poke after chain");
+    assert!(poke > call);
+}
+
+// ── load: secondary address (fixed in 1.5.9) ────────────────────────────────
+
+#[test]
+fn load_without_address_uses_file_header() {
+    let b = compile_raw("load \"FILE\"");
+    // SETLFS: LDA #1 / LDX #8 / LDY #1 (secondary 1 = the file's own load address)
+    assert!(find(&b, &[0xA9, 0x01, 0xA2, 0x08, 0xA0, 0x01, 0x20, 0xBA, 0xFF]).is_some());
+}
+
+#[test]
+fn load_with_address_uses_xy() {
+    let b = compile_raw("load \"FILE\", $C000");
+    // secondary 0 = load to X/Y, then LDX #$00 / LDY #$C0 / JSR LOAD
+    assert!(find(&b, &[0xA9, 0x01, 0xA2, 0x08, 0xA0, 0x00, 0x20, 0xBA, 0xFF]).is_some());
+    assert!(find(&b, &[0xA9, 0x00, 0xA2, 0x00, 0xA0, 0xC0, 0x20, 0xD5, 0xFF]).is_some());
+}

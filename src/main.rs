@@ -342,7 +342,31 @@ fn print_hex_dump(start_addr: u16, bytes: &[u8]) {
 
 /// Build a D64 disk image containing one or more PRG files.
 /// `files` is a list of (display_name, raw_bytes) pairs.
+///
+/// Layout as the 1541 DOS writes it: BAM at 18/0, directory from 18/1 (32-byte entries, 8 per
+/// sector), file data on tracks 17..1 then 19..35 with the DOS interleave of 10 sectors.
 fn make_d64(path: &PathBuf, disk_name: &str, files: &[(&str, &[u8])]) {
+    match build_d64(disk_name, files) {
+        Ok(disk) => {
+            fs::write(path, &disk).unwrap_or_else(|e| {
+                eprintln!("D64 write error: {e}");
+                process::exit(1);
+            });
+        }
+        Err(e) => {
+            eprintln!("D64 error: {e}");
+            process::exit(1);
+        }
+    }
+    println!(
+        "  D64  -> {} ({} file{})",
+        path.display(),
+        files.len(),
+        if files.len() == 1 { "" } else { "s" }
+    );
+}
+
+fn build_d64(disk_name: &str, files: &[(&str, &[u8])]) -> Result<Vec<u8>, String> {
     // Sectors per track for a standard 1541 disk
     fn sectors_for_track(t: usize) -> usize {
         match t {
@@ -360,29 +384,51 @@ fn make_d64(path: &PathBuf, disk_name: &str, files: &[(&str, &[u8])]) {
         }
         (off + s) * 256
     }
+    const INTERLEAVE: usize = 10; // 1541 DOS default for PRG files
+
+    if files.len() > 144 {
+        return Err(format!("too many files ({}), a D64 directory holds 144", files.len()));
+    }
 
     // Standard 35-track 1541: 683 sectors, 174 848 bytes total
     let mut disk = vec![0u8; 683 * 256];
+    let mut used = vec![vec![false; 21]; 36]; // [track][sector]
 
-    // === Allocate data sectors for each file (track 17 down to 1) ===
-    let mut alloc_track = 17usize;
-    let mut alloc_sec = 0usize;
+    // Track 18: BAM (sector 0) + directory sectors 1..=n_dir_secs
+    let n_dir_secs = ((files.len() + 7) / 8).max(1);
+    for s in 0..=n_dir_secs {
+        used[18][s] = true;
+    }
+
+    // === Allocate data sectors: tracks 17 down to 1, then 19 up to 35, interleave 10 ===
+    let track_order: Vec<usize> = (1..=17).rev().chain(19..=35).collect();
+    let mut ti = 0usize; // index into track_order
+    let mut next_sec = 0usize;
     let mut file_sectors: Vec<Vec<(usize, usize)>> = Vec::new();
-    for (_name, data) in files.iter() {
+    for (name, data) in files.iter() {
         let n_secs = ((data.len() + 253) / 254).max(1);
         let mut dsec: Vec<(usize, usize)> = Vec::with_capacity(n_secs);
         for _ in 0..n_secs {
-            dsec.push((alloc_track, alloc_sec));
-            alloc_sec += 1;
-            if alloc_sec >= sectors_for_track(alloc_track) {
-                alloc_sec = 0;
-                if alloc_track > 1 {
-                    alloc_track -= 1;
-                } else {
-                    eprintln!("D64 error: disk full");
-                    break;
+            // find a free sector on the current track, from next_sec on; else the next track
+            let found = loop {
+                if ti >= track_order.len() {
+                    break None;
                 }
-            }
+                let t = track_order[ti];
+                let spt = sectors_for_track(t);
+                if let Some(k) = (0..spt).find(|k| !used[t][(next_sec + k) % spt]) {
+                    let s = (next_sec + k) % spt;
+                    break Some((t, s));
+                }
+                ti += 1;
+                next_sec = 0;
+            };
+            let Some((t, s)) = found else {
+                return Err(format!("disk full while writing {name} (664 blocks max)"));
+            };
+            used[t][s] = true;
+            dsec.push((t, s));
+            next_sec = (s + INTERLEAVE) % sectors_for_track(t);
         }
         file_sectors.push(dsec);
     }
@@ -403,59 +449,32 @@ fn make_d64(path: &PathBuf, disk_name: &str, files: &[(&str, &[u8])]) {
             } else {
                 let n = data.len() - po;
                 disk[o] = 0;
-                disk[o + 1] = (n + 1) as u8; // 1-based offset of last data byte
+                disk[o + 1] = (n + 1) as u8; // offset of the last data byte in the sector
                 disk[o + 2..o + 2 + n].copy_from_slice(&data[po..]);
             }
         }
     }
 
     // === BAM block: track 18, sector 0 ===
-    // [0]=dir track, [1]=dir sector, [2]=DOS ver,
+    // [0]=dir track, [1]=dir sector, [2]=DOS ver 'A', [3]=0,
     // [4..8F]=BAM entries (4 bytes each for tracks 1-35),
-    // [90..9F]=disk name, [A0..A4]=disk ID + DOS type
+    // [90..9F]=disk name, [A0..A1]=$A0, [A2..A3]=disk ID, [A4]=$A0, [A5..A6]="2A", [A7..AA]=$A0
     let bam = sec_off(18, 0);
     disk[bam] = 18; // first dir track
     disk[bam + 1] = 1; // first dir sector
     disk[bam + 2] = 0x41; // DOS version 'A'
-
-    // BAM entries — all-free initially
     for t in 1usize..=35 {
-        let nsec = sectors_for_track(t) as u8;
-        let (b1, b2, b3): (u8, u8, u8) = match nsec {
-            21 => (0xFF, 0xFF, 0x1F),
-            19 => (0xFF, 0xFF, 0x07),
-            18 => (0xFF, 0xFF, 0x03),
-            _ => (0xFF, 0xFF, 0x01), // 17
-        };
+        let spt = sectors_for_track(t);
         let p = bam + 4 + (t - 1) * 4;
-        disk[p] = nsec;
-        disk[p + 1] = b1;
-        disk[p + 2] = b2;
-        disk[p + 3] = b3;
-    }
-
-    // Number of directory sectors needed on track 18 (8 entries per sector)
-    let n_dir_secs = ((files.len() + 7) / 8).max(1);
-
-    // Mark track 18: sector 0 (BAM) + sectors 1..=n_dir_secs (directory) used
-    {
-        let used = 1 + n_dir_secs;
-        let p = bam + 4 + 17 * 4; // track 18 BAM entry
-        disk[p] -= used as u8;
-        for s in 0..used {
-            disk[p + 1 + s / 8] &= !(1u8 << (s % 8));
+        let mut free = 0u8;
+        for s in 0..spt {
+            if !used[t][s] {
+                free += 1;
+                disk[p + 1 + s / 8] |= 1u8 << (s % 8);
+            }
         }
+        disk[p] = free;
     }
-    // Mark all file data sectors as used
-    for dsec in &file_sectors {
-        for &(t, s) in dsec {
-            let p = bam + 4 + (t - 1) * 4;
-            disk[p] -= 1;
-            disk[p + 1 + s / 8] &= !(1u8 << (s % 8));
-        }
-    }
-
-    // Disk name (16 bytes, padded 0xA0) at bam+0x90
     let dn: Vec<u8> = disk_name
         .bytes()
         .take(16)
@@ -464,17 +483,20 @@ fn make_d64(path: &PathBuf, disk_name: &str, files: &[(&str, &[u8])]) {
     for i in 0..16 {
         disk[bam + 0x90 + i] = dn.get(i).copied().unwrap_or(0xA0);
     }
-    disk[bam + 0xA0] = b'U'; // disk ID
-    disk[bam + 0xA1] = b'B';
-    disk[bam + 0xA2] = 0xA0;
-    disk[bam + 0xA3] = 0x32; // '2'
-    disk[bam + 0xA4] = 0x41; // 'A'
-    for i in 5..=10usize {
-        disk[bam + 0xA0 + i] = 0xA0;
+    disk[bam + 0xA0] = 0xA0;
+    disk[bam + 0xA1] = 0xA0;
+    disk[bam + 0xA2] = b'U'; // disk ID "UB"
+    disk[bam + 0xA3] = b'B';
+    disk[bam + 0xA4] = 0xA0;
+    disk[bam + 0xA5] = b'2'; // DOS type "2A"
+    disk[bam + 0xA6] = b'A';
+    for i in 0xA7..=0xAA {
+        disk[bam + i] = 0xA0;
     }
 
     // === Directory sectors: track 18, sectors 1 … n_dir_secs ===
-    // Each sector: bytes 0-1 = chain link, then 8 x 30-byte entries
+    // 8 entries of 32 bytes per sector; bytes 0-1 of the sector (= of the first entry) are the
+    // link to the next directory sector.
     for ds in 0..n_dir_secs {
         let dir = sec_off(18, ds + 1);
         if ds + 1 < n_dir_secs {
@@ -492,28 +514,22 @@ fn make_d64(path: &PathBuf, disk_name: &str, files: &[(&str, &[u8])]) {
             let (name, _data) = &files[fi];
             let dsec = &file_sectors[fi];
             let n_secs = dsec.len();
-            let de = dir + 2 + ei * 30;
-            disk[de] = 0x82; // PRG, closed
-            disk[de + 1] = dsec[0].0 as u8; // first data track
-            disk[de + 2] = dsec[0].1 as u8; // first data sector
+            let de = dir + ei * 32;
+            disk[de + 2] = 0x82; // PRG, closed
+            disk[de + 3] = dsec[0].0 as u8; // first data track
+            disk[de + 4] = dsec[0].1 as u8; // first data sector
             let pn: Vec<u8> = name
                 .bytes()
                 .take(16)
                 .map(|b| b.to_ascii_uppercase())
                 .collect();
             for i in 0..16 {
-                disk[de + 3 + i] = pn.get(i).copied().unwrap_or(0xA0);
+                disk[de + 5 + i] = pn.get(i).copied().unwrap_or(0xA0);
             }
-            disk[de + 28] = n_secs as u8;
-            disk[de + 29] = (n_secs >> 8) as u8;
+            disk[de + 30] = n_secs as u8; // size in blocks, lo / hi
+            disk[de + 31] = (n_secs >> 8) as u8;
         }
     }
 
-    fs::write(path, &disk).unwrap_or_else(|e| eprintln!("D64 write error: {e}"));
-    println!(
-        "  D64  -> {} ({} file{})",
-        path.display(),
-        files.len(),
-        if files.len() == 1 { "" } else { "s" }
-    );
+    Ok(disk)
 }

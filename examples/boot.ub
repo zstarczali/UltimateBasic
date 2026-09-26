@@ -1,0 +1,54 @@
+# TRICKY TETRIS - starter. Shows the title picture (tetris.koa, a Koala image) and loads the game
+# (DATA on the same disk) when RETURN or SPACE is pressed.
+#
+# Disk: build the game as data.prg, then this one with the game added:
+#   ub build trickytetris.ub -o data.prg
+#   ub build boot.ub --d64 tricky.d64 --add data.prg
+# (the starter is the first file, so LOAD"*",8 + RUN starts it).
+#
+# The game loads to $0801 - right over this program. `chain` (Ultimate Basic 1.5.9) takes care
+# of that: it copies a small loader to the cassette buffer, resets the I/O, loads DATA, sets
+# BASIC up again (also after an Exomizer-packed boot) and RUNs it. If DATA cannot be loaded,
+# the program continues after `chain`.
+
+koala load "tetris.koa"          # embedded at compile time, shown from $2000 / $0400 / $D800
+
+# An Exomizer (or other) self-extractor may start us with interrupts off and the CIA timer IRQ
+# disabled: then the KERNAL does not scan the keyboard (inkey never sees RETURN) and the serial
+# bus may be in an odd state. Put the I/O and the system vectors back as after power on.
+asm {
+        SEI
+        JSR $FDA3                ; IOINIT: CIA timers (the 60 Hz keyboard IRQ), serial bus, $01
+        JSR $FF8A                ; RESTOR: default IRQ / BRK / NMI and I/O vectors
+        CLI
+}
+
+var k = 0
+
+color border 0                   # black border and background around / behind the picture
+color bg 0
+koala show
+poke $D020, 0
+
+k = inkey()                      # drop any key already waiting
+while k != 0
+  k = inkey()
+end
+while k != 13                    # RETURN (or SPACE) goes on
+  wait raster 250
+  k = inkey()
+  if k == 32 then k = 13 end
+end
+
+koala hide
+cls
+color border 0
+color bg 0
+color text 1
+print at 14, 12, "LOADING..."
+
+chain "DATA"                     # load DATA over this program and RUN it (UB 1.5.9)
+color text 2
+print at 14, 12, "LOAD ERROR"    # only if the file was not found
+k = getch()
+bye

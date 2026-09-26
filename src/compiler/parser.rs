@@ -2754,6 +2754,33 @@ impl Parser {
                 self.expect_newline();
                 Some(Stmt::Load { filename, addr })
             }
+            Token::Chain => {
+                // `chain "FILE" [, device]` — load another program over this one and RUN it
+                self.advance();
+                let filename = if let Token::StringLit(s) = self.peek().clone() {
+                    self.advance();
+                    s
+                } else {
+                    self.errors
+                        .push("chain: expected a filename string, e.g. chain \"GAME\"".to_string());
+                    self.expect_newline();
+                    return None;
+                };
+                if filename.is_empty() || filename.chars().count() > 16 {
+                    self.errors.push(format!(
+                        "chain: the filename must be 1-16 characters, got {:?}",
+                        filename
+                    ));
+                }
+                let device = if self.peek() == &Token::Comma {
+                    self.advance();
+                    Some(self.parse_expr())
+                } else {
+                    None
+                };
+                self.expect_newline();
+                Some(Stmt::Chain { filename, device })
+            }
             Token::Save => {
                 self.advance();
                 let filename = if let Token::StringLit(s) = self.peek().clone() {
