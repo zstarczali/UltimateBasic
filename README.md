@@ -1,6 +1,6 @@
 # Ultimate Basic
 
-<img src="assets/ultimate-basic-banner.png" alt="Ultimate Basic C64 banner" width="50%">
+<img src="assets/logo.png" alt="Ultimate Basic C64 banner" width="30%">
 
 Current version: **1.5.9**
 
