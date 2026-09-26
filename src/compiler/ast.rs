@@ -322,6 +322,10 @@ pub enum Stmt {
         filename: String,
         addr: Option<Expr>,
     }, // load "file" [, addr] — KERNAL LOAD from device 8
+    Chain {
+        filename: String,
+        device: Option<Expr>,
+    }, // chain "file" [, device] — load another program and RUN it (does not return on success)
     Input {
         prompt: Option<String>,
         var: String,

@@ -1,5 +1,36 @@
-Ultimate Basic v1.5.8 – Release Notes
+Ultimate Basic v1.5.9 – Release Notes
 ======================================
+
+2026-09-26 – chain: load and start another program
+------------------------------------------------------------------
+  New language elements
+  - Added `chain "FILE" [, device]`: loads another program to its own load
+    address (normally $0801, right over the running program) and RUNs it, as
+    if LOAD"FILE",8,1 and RUN had been typed. For boot / title programs.
+    A 46-byte position-independent loader and the file name (1-16
+    characters) are copied to the cassette buffer $033C. Before the load the
+    I/O is reset (VIC IRQs off, SID volume 0, IOINIT, RESTOR, $01 = $37);
+    after it the end-of-program pointer $2D/$2E is set, BASIC is
+    re-initialised ($E453, $E3BF - a self-extracting cruncher such as
+    Exomizer sfx may have used BASIC's zero page) and the program is RUN
+    ($A659, $A7AE). Without a device the drive the program came from ($BA)
+    is used, else drive 8. If the file cannot be loaded, the program
+    continues with the statement after `chain`.
+
+  Fixes
+  - `load`: the secondary address was swapped. `load "FILE"` used secondary
+    0 with X/Y = 0 and loaded the file to $0000; `load "FILE", addr` used
+    secondary 1 and ignored `addr`. Now `load "FILE"` loads to the file's own
+    address (secondary 1) and `load "FILE", addr` to `addr` (secondary 0).
+  - `--d64`: directory entries were written 30 bytes apart instead of 32, so
+    every file after the first had a broken entry (e.g. `--add data.prg`
+    showed up as a garbled name and could not be loaded). Also fixed: disk ID
+    and DOS type were at the wrong BAM offsets; file data only used tracks
+    1-17 (a larger disk crashed the build instead of reporting it); sectors
+    are now allocated like the 1541 DOS does (tracks 17->1, then 19->35,
+    interleave 10). A full disk is reported as "D64 error: disk full ...".
+    New tests: tests/d64_tests.rs reads the image back (BAM, directory,
+    sector chains) and compares every file.
 
 2026-09-25 – Initialised arrays
 ------------------------------------------------------------------

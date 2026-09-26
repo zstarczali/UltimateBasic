@@ -137,6 +137,7 @@ pub enum Token {
     Data,
     Read,
     Load,
+    Chain, // chain "FILE" [, device] — load and RUN another program (new in 1.5.9)
     Input,
     Fill,
     Memcopy,
@@ -634,6 +635,7 @@ impl Lexer {
             "data" => Token::Data,
             "read" => Token::Read,
             "load" => Token::Load,
+            "chain" => Token::Chain,
             "sid" => Token::Sid,
             "input" => Token::Input,
             "fill" => Token::Fill,

@@ -11422,9 +11422,11 @@ impl Codegen {
                 self.emit16(0xFFBD); // JSR $FFBD
 
                 // SETLFS ($FFBA): A=1 (logical#), X=8 (disk), Y=secondary
-                // secondary=0 → use file's own 2-byte header address
-                // secondary=1 → use address in X/Y of LOAD call
-                let secondary: u8 = if addr.is_some() { 1 } else { 0 };
+                // secondary=0 → load to the address in X/Y of the LOAD call
+                // secondary=1 → load to the file's own 2-byte header address
+                // (1.5.9 fix: these were swapped, so `load "F"` loaded to $0000 and
+                // `load "F", addr` ignored addr)
+                let secondary: u8 = if addr.is_some() { 0 } else { 1 };
                 self.emit(0xA9);
                 self.emit(0x01); // LDA #1
                 self.emit(0xA2);
@@ -11483,6 +11485,104 @@ impl Codegen {
                 }
                 self.emit(0x20);
                 self.emit16(0xFFD5); // JSR $FFD5 (LOAD)
+            }
+            Stmt::Chain { filename, device } => {
+                // chain "FILE" [, device] — load another program to its own address (usually
+                // over this one) and RUN it like LOAD"FILE",8,1 + RUN typed by hand. The
+                // loader cannot run from our own code (the LOAD overwrites it), so a small
+                // position-independent routine is copied to the cassette buffer $033C first.
+                // On success it never comes back; if the file cannot be loaded it returns
+                // with carry set and the program continues after `chain`.
+                const CHAIN_BASE: u16 = 0x033C;
+                const CODE_LEN: u16 = 46;
+                let name: Vec<u8> = filename
+                    .chars()
+                    .map(|c| ascii_to_petscii(c, false))
+                    .collect();
+                let name_addr = CHAIN_BASE + CODE_LEN;
+                let mut stub: Vec<u8> = vec![
+                    0xA9, name.len() as u8,           // LDA #len
+                    0xA2, name_addr as u8,            // LDX #<name
+                    0xA0, (name_addr >> 8) as u8,     // LDY #>name
+                    0x20, 0xBD, 0xFF,                 // JSR SETNAM
+                    0xA6, 0xBA,                       // LDX $BA       device (last used / set below)
+                    0xD0, 0x02,                       // BNE +2
+                    0xA2, 0x08,                       // LDX #8        none yet: drive 8
+                    0xA9, 0x01,                       // LDA #1        logical file 1
+                    0xA0, 0x01,                       // LDY #1        secondary 1: file's own address
+                    0x20, 0xBA, 0xFF,                 // JSR SETLFS
+                    0xA9, 0x00,                       // LDA #0        LOAD, not VERIFY
+                    0x20, 0xD5, 0xFF,                 // JSR LOAD
+                    0xB0, 0x10,                       // BCS err
+                    0x86, 0x2D,                       // STX $2D       end of program = start of variables
+                    0x84, 0x2E,                       // STY $2E
+                    0x20, 0x53, 0xE4,                 // JSR $E453     BASIC vectors
+                    0x20, 0xBF, 0xE3,                 // JSR $E3BF     BASIC RAM: CHRGET, pointers (a
+                                                      //               cruncher may have used them)
+                    0x20, 0x59, 0xA6,                 // JSR $A659     CLR, TXTPTR = program start
+                    0x4C, 0xAE, 0xA7,                 // JMP $A7AE     RUN
+                    0x60,                             // err: RTS (carry set)
+                ];
+                debug_assert_eq!(stub.len() as u16, CODE_LEN);
+                stub.extend_from_slice(&name);
+
+                // Optional device number → $BA (the stub reads it from there)
+                if let Some(dev) = device {
+                    let dev = dev.clone();
+                    self.eval_expr(&dev);
+                    self.emit(0x85);
+                    self.emit(0xBA); // STA $BA
+                }
+
+                // Inline the stub, jumped over
+                self.emit(0x4C);
+                let jmp_pos = self.code.len();
+                self.emit(0x00);
+                self.emit(0x00);
+                let stub_addr = self.current_addr();
+                let stub_start = self.code.len();
+                self.code.extend_from_slice(&stub);
+                self.listing_data(stub_start, "ub_chain_loader");
+                let after = self.current_addr();
+                self.patch_abs(jmp_pos, after);
+
+                // Quiet the machine and put the I/O back as after power on: the loaded program
+                // must not inherit our raster IRQ, CIA timers, NMI or a banked-out ROM.
+                self.emit(0x78); // SEI
+                self.emit(0xA9);
+                self.emit(0x00); // LDA #0
+                self.emit(0x8D);
+                self.emit16(0xD01A); // STA $D01A   VIC IRQs off
+                self.emit(0x8D);
+                self.emit16(0xD418); // STA $D418   SID volume 0
+                self.emit(0xA9);
+                self.emit(0xFF); // LDA #$FF
+                self.emit(0x8D);
+                self.emit16(0xD019); // STA $D019   acknowledge pending VIC IRQs
+                self.emit(0x20);
+                self.emit16(0xFDA3); // JSR IOINIT  CIA timers, keyboard IRQ, serial bus
+                self.emit(0x20);
+                self.emit16(0xFF8A); // JSR RESTOR  default IRQ/BRK/NMI and I/O vectors
+                self.emit(0xA9);
+                self.emit(0x37); // LDA #$37
+                self.emit(0x85);
+                self.emit(0x01); // STA $01     BASIC + KERNAL ROM + I/O
+                self.emit(0x58); // CLI
+
+                // Copy the stub + name to $033C (backwards, X = len-1 .. 0)
+                self.emit(0xA2);
+                self.emit((stub.len() - 1) as u8); // LDX #len-1
+                let loop_addr = self.current_addr();
+                self.emit(0xBD);
+                self.emit16(stub_addr); // LDA stub,X
+                self.emit(0x9D);
+                self.emit16(CHAIN_BASE); // STA $033C,X
+                self.emit(0xCA); // DEX
+                self.emit(0x10); // BPL loop
+                let off = (loop_addr as i32) - (self.current_addr() as i32 + 1);
+                self.emit(off as i8 as u8);
+                self.emit(0x20);
+                self.emit16(CHAIN_BASE); // JSR $033C — returns only if the LOAD failed
             }
             Stmt::Input { prompt, var } => {
                 let var = var.clone();

@@ -957,7 +957,9 @@ include "defs.ub"        # inline another .ub source file (lexed+parsed in place
 
 ```basic
 load "PROGRAM"           # KERNAL LOAD from device 8, to file's own load address
-load "DATA", $C000       # load to specific address (secondary address = 1)
+load "DATA", $C000       # load to specific address (secondary address = 0)
+chain "GAME"             # load another program over this one and RUN it (1.5.9)
+chain "GAME", 9          # ... from drive 9; continues after chain only if the load failed
 load "DATA", ptr         # address from word variable
 
 save "DATA", $C000, 4096 # KERNAL SAVE from $C000, 4096 bytes → device 8
@@ -966,6 +968,14 @@ save "PROG", start, len  # addr and len from word/int variables
 
 Calls `SETNAM` ($FFBD) + `SETLFS` ($FFBA, device 8) + `LOAD` ($FFD5) or `SAVE` ($FFD8).
 `save` requires both `addr` and `len`. The `addr` is stored in a scratch ZP pair; KERNAL SAVE receives that ZP address in A, end address (addr+len) in X/Y.
+`load` without address uses secondary 1 (file header address), with address secondary 0 (X/Y) — swapped before 1.5.9.
+
+`chain` (Stmt::Chain) inlines a 46-byte position-independent loader + PETSCII name (jumped over),
+resets the I/O (SEI, $D01A=0, $D418=0, $D019=$FF, JSR $FDA3 IOINIT, JSR $FF8A RESTOR, $01=$37, CLI),
+copies loader+name to $033C (LDX #n-1 / LDA stub,X / STA $033C,X / DEX / BPL) and JSR $033C.
+Loader: SETNAM (name at $036A), SETLFS 1,$BA or 8,1, LOAD, BCS err, STX $2D, STY $2E,
+JSR $E453, JSR $E3BF, JSR $A659, JMP $A7AE; err: RTS (carry set → program continues).
+An optional device expression is stored to $BA first.
 
 ### SID Music
 

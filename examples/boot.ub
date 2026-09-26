@@ -6,10 +6,10 @@
 #   ub build boot.ub --d64 tricky.d64 --add data.prg
 # (the starter is the first file, so LOAD"*",8 + RUN starts it).
 #
-# The game loads to $0801 - right over this program - so the loading itself is done by a
-# tiny machine code routine in the cassette buffer ($033C): SETNAM / SETLFS / LOAD, then it sets
-# the BASIC end pointer and RUNs the game (JSR $A659 = CLR + start, JMP $A7AE = execute) as if
-# it had been loaded and started by hand. If the file is missing it returns with an error.
+# The game loads to $0801 - right over this program. `chain` (Ultimate Basic 1.5.9) takes care
+# of that: it copies a small loader to the cassette buffer, resets the I/O, loads DATA, sets
+# BASIC up again (also after an Exomizer-packed boot) and RUNs it. If DATA cannot be loaded,
+# the program continues after `chain`.
 
 koala load "tetris.koa"          # embedded at compile time, shown from $2000 / $0400 / $D800
 
@@ -47,51 +47,7 @@ color bg 0
 color text 1
 print at 14, 12, "LOADING..."
 
-poke $01, $37                    # BASIC + KERNAL ROM visible for the loader
-asm {
-        ; copy the loader below (and the file name after it) to the cassette buffer $033C:
-        ; this program is overwritten by the game while it loads
-        LDA #<loader
-        STA $FB
-        LDA #>loader
-        STA $FC
-        LDY #0
-copy:   LDA ($FB),Y
-        STA $033C,Y
-        INY
-        CPY #50                  ; 46 bytes of code + 4 bytes of name
-        BNE copy
-        JSR $033C                ; does not come back when the game loads
-        BCS done                 ; file not found (carry set): back to the BASIC part below
-
-        ; ---- the loader: runs at $033C, position independent (the name is at $036A) ----
-        ; A self-extractor (Exomizer sfx) that started this program may have used BASIC's zero
-        ; page (the CHRGET routine, program pointers): set BASIC up again, as after power on,
-        ; or the RUN below ends in a SYNTAX ERROR.
-loader: JSR $E453                ; BASIC vectors ($0300-$030B)
-        JSR $E3BF                ; BASIC RAM: CHRGET, program start $0801, memory pointers
-        LDA #4                   ; name length
-        LDX #$6A                 ; name at $036A
-        LDY #$03
-        JSR $FFBD                ; SETNAM
-        LDX $BA                  ; the drive we were loaded from ...
-        BNE dev
-        LDX #8                   ; ... or drive 8
-dev:    LDA #1                   ; logical file 1
-        LDY #1                   ; secondary 1: load to the file's own address ($0801)
-        JSR $FFBA                ; SETLFS
-        LDA #0                   ; LOAD, not VERIFY
-        JSR $FFD5                ; LOAD
-        BCS err
-        STX $2D                  ; end of the loaded program = start of the BASIC variables
-        STY $2E
-        JSR $A659                ; CLR, point at the start of the program
-        JMP $A7AE                ; RUN
-err:    RTS
-        ; the file name DATA (must follow the 46 code bytes directly -> $036A)
-        $44 $41 $54 $41
-done:
-}
+chain "DATA"                     # load DATA over this program and RUN it (UB 1.5.9)
 color text 2
 print at 14, 12, "LOAD ERROR"    # only if the file was not found
 k = getch()
