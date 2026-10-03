@@ -668,3 +668,37 @@ fn a_register_reuse_is_invisible() {
         assert_eq!(r.byte("t"), (d != 0) as u8, "if {a}-{b}");
     }
 }
+
+// 1.6.1: a byte product / shift assigned to a word keeps 16 bits also inside a sum
+// (`py = cy * 8 + fy` used to be truncated to 8 bits), and a constant multiplier
+// above 255 is no longer cut to 8 bits (`cy * 300`).
+#[test]
+fn word_assign_of_byte_products_keeps_16_bits() {
+    let cases: &[(&str, u16)] = &[
+        ("py = cy * 8", 320),
+        ("py = cy * 8 + fy", 323),
+        ("py = fy + cy * 8", 323),
+        ("py = 8 * cy + fy", 323),
+        ("py = cy * 9 + fy", 363),
+        ("py = cy * 8 - fy", 317),
+        ("py = cy * 300", 12000),
+        ("py = 300 * cy", 12000),
+        ("py = cy shl 3", 320),
+        ("py = (cy shl 3) + fy", 323),
+        ("py = 100 * cy + 900", 4900),
+        ("py = cy + fy", 43),
+    ];
+    for (stmt, want) in cases {
+        let r = run_src(&format!("var cy = 40
+var fy = 3
+var py: word = 0
+{stmt}
+"));
+        assert_eq!(r.word("py"), *want, "{stmt}");
+    }
+    // byte targets keep 8-bit semantics
+    let r = run_src("var cy = 40
+var b = cy * 8
+");
+    assert_eq!(r.byte("b"), (40u16 * 8) as u8);
+}

@@ -831,6 +831,13 @@ assembler with range-checked branches): buffers `$0400` / `$3C00`, prediction +
 half builds, color RAM halves around the swap, sprite pointers copied to `$3FF8`.
 `errors()` rejects code inside `$3C00-$3FFF` when `map view` is used.
 
+1.6.1 word fix: `gen_word_assign` sends `+`/`-` expressions that contain a `*` or `shl`
+(`has_mul_or_shl`) to the 16-bit `eval_expr_word` (before: `py = cy * 8 + fy` fell back to
+8 bits), a top-level `shl` too; the 16×8 multiply puts a >255 constant on the multiplicand
+side. `can_be_word_result` is unchanged on purpose — it also drives `var` type inference
+(`var x = a * 4` stays a byte). Tests: `word_assign_of_byte_products_keeps_16_bits`,
+`level_scroll_demo_scrolls_down_past_256_pixels`.
+
 ### Koala Painter images
 
 ```basic

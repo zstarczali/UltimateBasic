@@ -18,6 +18,14 @@ Ultimate Basic v1.6.1 – Release Notes
     program code reaching into $3C00-$3FFF.
   - Example: examples/level_scroll_demo.ub.
 
+  Fixes
+  - A byte product or shift assigned to a word variable inside a sum
+    was truncated to 8 bits (py = cy * 8 + fy gave 67 instead of 323
+    for cy = 40, fy = 3); it is now computed in 16 bits, like a lone
+    product. w = b shl n keeps 16 bits too.
+  - A constant multiplier above 255 was cut to 8 bits (cy * 300); the
+    16-bit operand now always takes the multiplicand side.
+
 
 2026-10-03 – Release 1.6.0: optimised 6502 code generation
 ------------------------------------------------------------------

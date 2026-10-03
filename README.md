@@ -97,6 +97,10 @@ Smooth scrolling maps for games:
   code, like `incbin "file", addr` — e.g. `$4000`, which keeps `$3C00-$3FFF` free for `map view`.
 - New example: `examples/level_scroll_demo.ub` (joystick-driven level with a player sprite).
 
+Fixes: a byte product or `shl` assigned to a `word` inside a sum now keeps 16 bits
+(`py = cy * 8 + fy` was truncated to 8 bits), and a constant multiplier above 255
+(`cy * 300`) is no longer cut to 8 bits.
+
 ## What's new in 1.6.0
 
 Faster, smaller machine code — the code generator was reworked (`codegen/opt.rs`). Existing

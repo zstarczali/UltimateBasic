@@ -167,3 +167,47 @@ fn map_view_errors() {
     let res = compile_in_dir("wide", "map load \"level.bin\"\n", &wide);
     assert!(res.errors.iter().any(|e| e.contains("255x255")), "{:?}", res.errors);
 }
+
+/// examples/level_scroll_demo.ub with the joystick held down: the view must follow
+/// past 256 pixels (`py = cy * 8 + fy` is a 16-bit sum) and show the composed level.
+#[test]
+fn level_scroll_demo_scrolls_down_past_256_pixels() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    let src = std::fs::read_to_string(dir.join("level_scroll_demo.ub")).unwrap();
+    let res = compile_with_path(&src, &OPTS, Some(&dir.join("level_scroll_demo.ub")));
+    assert!(res.errors.is_empty(), "errors: {:?}", res.errors);
+    let mut cpu = Cpu::new(&res.prg);
+    cpu.mem[0xDC00] = 0xFD; // port 2: down
+    cpu.mem[0xDC01] = 0xFF; // port 1: nothing
+    let var = |cpu: &Cpu, name: &str| {
+        let zp = res.map.variables.iter().find(|v| v.name == name).unwrap().zp_addr as usize;
+        cpu.mem[zp] as usize | if name.starts_with('p') { (cpu.mem[zp + 1] as usize) << 8 } else { 0 }
+    };
+    // run until the camera is past 300 px, then hold still for a few frames
+    while var(&cpu, "py") < 300 {
+        assert!(cpu.step(), "program ended");
+        assert!(cpu.steps < 60_000_000, "did not reach py 300 (py = {})", var(&cpu, "py"));
+    }
+    cpu.mem[0xDC00] = 0xFF;
+    let frame = cpu.cycles / (63 * 312);
+    while cpu.cycles / (63 * 312) < frame + 8 {
+        cpu.step();
+    }
+    let py = var(&cpu, "py");
+    assert_eq!(py, var(&cpu, "cy") * 8 + var(&cpu, "fy"));
+    // the level: 2x5 screens, cells 0,1 / 3,4 / 6,7 / 9,10 / 12,13
+    let level = std::fs::read(dir.join("level.bin")).unwrap();
+    let cells = [0usize, 1, 3, 4, 6, 7, 9, 10, 12, 13];
+    let mut chars = vec![0u8; 80 * 125];
+    let mut colors = vec![0u8; 80 * 125];
+    for (slot, s) in cells.iter().enumerate() {
+        let (ox, oy) = ((slot % 2) * 40, (slot / 2) * 25);
+        for r in 0..25 {
+            for c in 0..40 {
+                chars[(oy + r) * 80 + ox + c] = level[s * 2000 + r * 40 + c];
+                colors[(oy + r) * 80 + ox + c] = level[s * 2000 + 1000 + r * 40 + c] & 15;
+            }
+        }
+    }
+    assert_view(&cpu, &(chars, colors), 80, 0, py);
+}

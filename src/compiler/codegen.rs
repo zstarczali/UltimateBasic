@@ -3241,6 +3241,15 @@ impl Codegen {
         }
     }
 
+    /// Returns true if `expr` contains a `*` or `shl` (used when assigning to a word).
+    fn has_mul_or_shl(expr: &Expr) -> bool {
+        match expr {
+            Expr::BinOp(_, BinOp::Mul | BinOp::Shl, _) => true,
+            Expr::BinOp(l, _, r) => Self::has_mul_or_shl(l) || Self::has_mul_or_shl(r),
+            _ => false,
+        }
+    }
+
     /// Returns true if `expr` contains at least one FixedLit (float) node.
     fn contains_fixed_lit(expr: &Expr) -> bool {
         match expr {
@@ -3569,7 +3578,13 @@ impl Codegen {
                     self.tmp_zp += 1;
                     let mr = self.tmp_zp;
                     self.tmp_zp += 1;
-                    let (l, r) = (l.clone(), r.clone());
+                    // the multiplier is 8-bit: put a 16-bit operand (`cy * 300`) on the
+                    // multiplicand side
+                    let (l, r) = if !self.can_be_word_result(l) && self.can_be_word_result(r) {
+                        (r.clone(), l.clone())
+                    } else {
+                        (l.clone(), r.clone())
+                    };
                     self.eval_expr_word(&l, mc_lo, mc_hi);
                     self.eval_expr(&r); // 8-bit multiplier
                     self.emit(0x85);
@@ -9911,13 +9926,17 @@ impl Codegen {
                 return true;
             }
             // int * int (or const * int) assigned to a word: keep the full 16-bit product
-            Expr::BinOp(_, BinOp::Mul, _) => {
+            // (`shl` likewise: `w = b shl 3`)
+            Expr::BinOp(_, BinOp::Mul | BinOp::Shl, _) => {
                 let expr = expr.clone();
                 self.eval_expr_word(&expr, dst_zp, dst_zp + 1);
                 true
             }
-            // int +/- something that only fits in 16 bits (e.g. `100 * l + 900`)
-            Expr::BinOp(_, BinOp::Add | BinOp::Sub, _) if self.can_be_word_result(expr) => {
+            // int +/- something that only fits in 16 bits (e.g. `100 * l + 900`, and a
+            // product / left shift of bytes, which can exceed 255: `cy * 8 + fy`)
+            Expr::BinOp(_, BinOp::Add | BinOp::Sub, _)
+                if self.can_be_word_result(expr) || Self::has_mul_or_shl(expr) =>
+            {
                 let expr = expr.clone();
                 self.eval_expr_word(&expr, dst_zp, dst_zp + 1);
                 true

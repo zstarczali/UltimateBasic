@@ -511,6 +511,10 @@ score = score + 100 * level
 var big: word = 100 * level + 900
 ```
 
+Since 1.6.1 this also holds inside sums and for `shl`, and for constant multipliers above
+255: `py = cy * 8 + fy`, `py = (cy shl 3) + fy` and `w = cy * 300` keep all 16 bits (before,
+the sum forms were truncated to 8 bits). Byte targets keep 8-bit results.
+
 ### Bitmap graphics
 
 ```basic
