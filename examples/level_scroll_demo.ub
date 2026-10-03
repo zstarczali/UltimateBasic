@@ -1,0 +1,107 @@
+# Level scroll demo: move around a VisualAssembler Level Editor level with the joystick.
+#
+# map load reads the Level Editor project (level.bin, 2x5 screens) directly and
+# composes it into one 80x125 map; ", $4000" places the map data there instead of
+# inline, which keeps $3C00-$3FFF free for the second screen buffer of map view.
+#
+# map view px, py shows the map at pixel position px, py: smooth XSCROLL / YSCROLL
+# scrolling, double-buffered screens ($0400 / $3C00) and raster-timed color RAM
+# copies, so the char steps do not tear. Call it once per frame instead of
+# `wait raster`; the position shows from the next frame.
+#
+# Joystick in port 2 (or 1); fire changes the player's color.
+
+map load "level.bin", $4000
+
+sprdef 0
+  0,126,0
+  0,255,0
+  1,255,128
+  3,255,192
+  7,255,224
+  15,255,240
+  31,255,248
+  31,255,248
+  31,255,248
+  31,255,248
+  31,255,248
+  15,255,240
+  7,255,224
+  3,255,192
+  1,255,128
+  0,255,0
+  0,126,0
+  0,0,0
+  0,0,0
+  0,0,0
+  0,0,0
+end
+
+const MAX_CX = 40      # map width - 40 (80 - 40)
+const MAX_CY = 100     # map height - 25 (125 - 25)
+
+var j = 0
+var cx = 0             # char cell of the view
+var cy = 0
+var fx = 0             # pixel inside the cell (0..7)
+var fy = 0
+var px: word = 0       # pixel position for map view
+var py: word = 0
+
+color border 0
+sprite 0, 172, 150     # the player stays in the middle of the screen
+sprite color 0, 7
+sprite on 0
+
+loop
+  map view px, py
+  j = joy(2) or joy(1)
+
+  if j and 8 then                  # right
+    if cx < MAX_CX then
+      inc fx
+      if fx == 8 then
+        fx = 0
+        inc cx
+      end
+    end
+  end
+  if j and 4 then                  # left
+    if fx > 0 then
+      dec fx
+    else
+      if cx > 0 then
+        fx = 7
+        dec cx
+      end
+    end
+  end
+  if j and 2 then                  # down
+    if cy < MAX_CY then
+      inc fy
+      if fy == 8 then
+        fy = 0
+        inc cy
+      end
+    end
+  end
+  if j and 1 then                  # up
+    if fy > 0 then
+      dec fy
+    else
+      if cy > 0 then
+        fy = 7
+        dec cy
+      end
+    end
+  end
+  px = cx * 8 + fx
+  py = cy * 8 + fy
+
+  # game logic goes here: player, enemies, collisions, score ...
+  if j and 16 then
+    sprite color 0, 2
+  else
+    sprite color 0, 7
+  end
+end

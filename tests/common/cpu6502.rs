@@ -89,8 +89,16 @@ impl Cpu {
         self.c = false;
     }
 
+    /// PAL raster line derived from the cycle count (63 cycles x 312 lines).
+    pub fn raster_line(&self) -> u16 {
+        ((self.cycles / 63) % 312) as u16
+    }
     fn rd(&self, addr: u16) -> u8 {
-        self.mem[addr as usize]
+        match addr {
+            0xD012 => self.raster_line() as u8,
+            0xD011 => (self.mem[0xD011] & 0x7F) | if self.raster_line() > 255 { 0x80 } else { 0 },
+            _ => self.mem[addr as usize],
+        }
     }
     fn wr(&mut self, addr: u16, v: u8) {
         self.mem[addr as usize] = v;

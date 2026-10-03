@@ -678,6 +678,9 @@ pub struct Codegen {
     koala: Option<KoalaData>,
     koala_show_patches: Vec<usize>,
     koala_layout_error: Option<String>,
+    map_view_patches: Vec<usize>, // JSR map_view_helper sites
+    map_view_info: Option<MapInfo>,
+    map_view_error: Option<String>,
     listing_spans: Vec<crate::compiler::ListingSpan>,
     source_lines: Vec<usize>,
     source_line_pos: usize,
@@ -701,6 +704,7 @@ struct MapInfo {
     chars: u16,
     colors: Option<u16>,
     width: u8,
+    height: u8,
     multicolor: bool,
     bg: [u8; 3],
 }
@@ -799,6 +803,9 @@ impl Codegen {
             koala: None,
             koala_show_patches: vec![],
             koala_layout_error: None,
+            map_view_patches: vec![],
+            map_view_info: None,
+            map_view_error: None,
             listing_spans: vec![],
             source_lines: vec![],
             source_line_pos: 0,
@@ -3234,6 +3241,15 @@ impl Codegen {
         }
     }
 
+    /// Returns true if `expr` contains a `*` or `shl` (used when assigning to a word).
+    fn has_mul_or_shl(expr: &Expr) -> bool {
+        match expr {
+            Expr::BinOp(_, BinOp::Mul | BinOp::Shl, _) => true,
+            Expr::BinOp(l, _, r) => Self::has_mul_or_shl(l) || Self::has_mul_or_shl(r),
+            _ => false,
+        }
+    }
+
     /// Returns true if `expr` contains at least one FixedLit (float) node.
     fn contains_fixed_lit(expr: &Expr) -> bool {
         match expr {
@@ -3562,7 +3578,13 @@ impl Codegen {
                     self.tmp_zp += 1;
                     let mr = self.tmp_zp;
                     self.tmp_zp += 1;
-                    let (l, r) = (l.clone(), r.clone());
+                    // the multiplier is 8-bit: put a 16-bit operand (`cy * 300`) on the
+                    // multiplicand side
+                    let (l, r) = if !self.can_be_word_result(l) && self.can_be_word_result(r) {
+                        (r.clone(), l.clone())
+                    } else {
+                        (l.clone(), r.clone())
+                    };
                     self.eval_expr_word(&l, mc_lo, mc_hi);
                     self.eval_expr(&r); // 8-bit multiplier
                     self.emit(0x85);
@@ -9904,13 +9926,17 @@ impl Codegen {
                 return true;
             }
             // int * int (or const * int) assigned to a word: keep the full 16-bit product
-            Expr::BinOp(_, BinOp::Mul, _) => {
+            // (`shl` likewise: `w = b shl 3`)
+            Expr::BinOp(_, BinOp::Mul | BinOp::Shl, _) => {
                 let expr = expr.clone();
                 self.eval_expr_word(&expr, dst_zp, dst_zp + 1);
                 true
             }
-            // int +/- something that only fits in 16 bits (e.g. `100 * l + 900`)
-            Expr::BinOp(_, BinOp::Add | BinOp::Sub, _) if self.can_be_word_result(expr) => {
+            // int +/- something that only fits in 16 bits (e.g. `100 * l + 900`, and a
+            // product / left shift of bytes, which can exceed 255: `cy * 8 + fy`)
+            Expr::BinOp(_, BinOp::Add | BinOp::Sub, _)
+                if self.can_be_word_result(expr) || Self::has_mul_or_shl(expr) =>
+            {
                 let expr = expr.clone();
                 self.eval_expr_word(&expr, dst_zp, dst_zp + 1);
                 true
@@ -11947,37 +11973,51 @@ impl Codegen {
             }
             Stmt::MapLoad {
                 width,
-                height: _,
+                height,
                 flags,
                 bg,
                 chars,
                 colors,
+                address,
             } => {
-                // Keep map bytes in writable program RAM and jump over them at runtime.
-                self.emit(0x4C); // JMP after_data
-                let skip_patch = self.code.len();
-                self.emit16(0x0000);
-                let char_addr = self.current_addr();
-                let char_start = self.code.len();
-                for byte in chars {
-                    self.emit(*byte);
-                }
-                self.listing_data(char_start, "ub_map_chars");
-                let color_addr = colors.as_ref().map(|data| {
-                    let addr = self.current_addr();
-                    let color_start = self.code.len();
-                    for byte in data {
-                        self.emit(*byte & 0x0F);
+                let (char_addr, color_addr) = if let Some(addr) = address {
+                    // `map load "f", addr`: placed like an addressed incbin (above the
+                    // code or inside an `org` gap), chars followed by colors.
+                    let mut data = chars.clone();
+                    if let Some(c) = colors {
+                        data.extend(c.iter().map(|b| b & 0x0F));
                     }
-                    self.listing_data(color_start, "ub_map_colors");
-                    addr
-                });
-                let after_data = self.current_addr();
-                self.patch_abs(skip_patch, after_data);
+                    self.addressed_incbins.push((*addr, "map load".to_string(), data));
+                    (*addr, colors.as_ref().map(|_| addr.wrapping_add(chars.len() as u16)))
+                } else {
+                    // Keep map bytes in writable program RAM and jump over them at runtime.
+                    self.emit(0x4C); // JMP after_data
+                    let skip_patch = self.code.len();
+                    self.emit16(0x0000);
+                    let char_addr = self.current_addr();
+                    let char_start = self.code.len();
+                    for byte in chars {
+                        self.emit(*byte);
+                    }
+                    self.listing_data(char_start, "ub_map_chars");
+                    let color_addr = colors.as_ref().map(|data| {
+                        let addr = self.current_addr();
+                        let color_start = self.code.len();
+                        for byte in data {
+                            self.emit(*byte & 0x0F);
+                        }
+                        self.listing_data(color_start, "ub_map_colors");
+                        addr
+                    });
+                    let after_data = self.current_addr();
+                    self.patch_abs(skip_patch, after_data);
+                    (char_addr, color_addr)
+                };
                 let info = MapInfo {
                     chars: char_addr,
                     colors: color_addr,
                     width: *width,
+                    height: *height,
                     multicolor: flags & 2 != 0,
                     bg: *bg,
                 };
@@ -12004,6 +12044,30 @@ impl Codegen {
             Stmt::MapDraw { x, y } => {
                 if let Some(info) = self.map {
                     self.emit_map_draw(info, x, y);
+                }
+            }
+            Stmt::MapView { x, y } => {
+                if let Some(info) = self.map {
+                    // x / y (16-bit pixel position) into scratch, then to the helper's
+                    // fixed parameter bytes TMP_BASE..TMP_BASE+3.
+                    let p = self.tmp_zp;
+                    self.tmp_zp += 4;
+                    self.eval_expr_word(x, p, p + 1);
+                    self.eval_expr_word(y, p + 2, p + 3);
+                    if p != TMP_BASE {
+                        for k in 0..4u8 {
+                            self.emit(0xA5);
+                            self.emit(p + k); // LDA p+k
+                            self.emit(0x85);
+                            self.emit(TMP_BASE + k); // STA TMP_BASE+k
+                        }
+                    }
+                    self.emit(0x20); // JSR map_view_helper
+                    self.map_view_patches.push(self.code.len());
+                    self.emit16(0x0000);
+                    self.map_view_info = Some(info);
+                } else {
+                    self.map_view_error = Some("map view requires a map load before it".to_string());
                 }
             }
             Stmt::MapSet { x, y, tile } => {
@@ -14756,6 +14820,33 @@ impl Codegen {
             }
         }
 
+        // `map view` runtime (double-buffered smooth scrolling), emitted once.
+        if !self.map_view_patches.is_empty() {
+            if let Some(info) = self.map_view_info {
+                let helper_addr = self.current_addr();
+                self.listing_symbol("ub_helper_map_view");
+                let params = crate::compiler::map_view::MapViewParams {
+                    chars: info.chars,
+                    colors: info.colors,
+                    width: info.width,
+                    height: info.height,
+                    param_zp: TMP_BASE,
+                };
+                match crate::compiler::map_view::helper(helper_addr, &params) {
+                    Ok(bytes) => {
+                        for byte in bytes {
+                            self.emit(byte);
+                        }
+                        for &pos in &self.map_view_patches.clone() {
+                            self.code[pos] = helper_addr as u8;
+                            self.code[pos + 1] = (helper_addr >> 8) as u8;
+                        }
+                    }
+                    Err(error) => self.map_view_error = Some(error),
+                }
+            }
+        }
+
         // Keep the Koala display helper below $2000: displaying the picture
         // replaces $2000-$3F3F with bitmap data.
         if !self.koala_show_patches.is_empty() {
@@ -14891,6 +14982,9 @@ impl Codegen {
         if let Some(error) = &self.koala_layout_error {
             errs.push(error.clone());
         }
+        if let Some(error) = &self.map_view_error {
+            errs.push(error.clone());
+        }
         errs.extend(self.incbin_errors.iter().cloned());
         errs.extend(self.array_init_errors.iter().cloned());
         // Generated code must not sit where the program later writes the charset
@@ -14920,6 +15014,18 @@ impl Codegen {
                     hi.saturating_sub(1)
                 ));
                 break;
+            }
+        }
+        // `map view` shows its second screen buffer at $3C00-$3FFF (sprite pointers
+        // at $3FF8): the code and inline data must stay out of it.
+        if !self.map_view_patches.is_empty() {
+            let (lo, hi) = (crate::compiler::map_view::BUFFER_B as u32, 0x4000u32);
+            if segments.iter().any(|&(s, e)| lo < e && hi > s && s < e) {
+                errs.push(format!(
+                    "map view uses $3C00-$3FFF as its second screen buffer, but the program (${:04X}-${:04X}) reaches into it; place the map with `map load \"file\", $4000` (or move code with `org`)",
+                    code_start,
+                    code_end.saturating_sub(1)
+                ));
             }
         }
         // Permanent zero page is $02-$4F; beyond that it would silently overlap the

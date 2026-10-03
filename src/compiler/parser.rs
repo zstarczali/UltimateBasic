@@ -435,6 +435,9 @@ impl Parser {
                 return None;
             }
         };
+        if bytes.windows(17).any(|w| w == b"\"kind\":\"lv-level\"") {
+            return self.parse_level_file(filename, &bytes);
+        }
         if bytes.len() < 13 || &bytes[..4] != b"UBMP" {
             // VisualAssembler map exports contain the 1000 screen bytes and
             // 1000 color bytes first, followed by optional assets and a JSON
@@ -474,6 +477,7 @@ impl Parser {
                     ],
                     chars: bytes[..1000].to_vec(),
                     colors: Some(bytes[1000..2000].iter().map(|c| c & 15).collect()),
+                    address: None,
                 });
             }
             self.errors.push(format!(
@@ -529,6 +533,95 @@ impl Parser {
             bg: [bytes[10] & 15, bytes[11] & 15, bytes[12] & 15],
             chars,
             colors,
+            address: None,
+        })
+    }
+
+    /// VisualAssembler Level Editor project (`lv-level`): library screens of 2000 bytes
+    /// (1000 screen codes + 1000 colors) placed on a grid; composed into one map.
+    fn parse_level_file(&mut self, filename: &str, bytes: &[u8]) -> Option<Stmt> {
+        let magic = b"VA-BIN1!";
+        let fail = |this: &mut Self, why: &str| {
+            this.errors
+                .push(format!("map load: '{}' is not a usable Level Editor file ({})", filename, why));
+            None
+        };
+        if bytes.len() < magic.len() + 4 || &bytes[bytes.len() - magic.len()..] != magic {
+            return fail(self, "no metadata");
+        }
+        let len_pos = bytes.len() - magic.len() - 4;
+        let manifest_len = u32::from_le_bytes([
+            bytes[len_pos],
+            bytes[len_pos + 1],
+            bytes[len_pos + 2],
+            bytes[len_pos + 3],
+        ]) as usize;
+        if manifest_len > len_pos {
+            return fail(self, "broken metadata");
+        }
+        let manifest = String::from_utf8_lossy(&bytes[len_pos - manifest_len..len_pos]).into_owned();
+        let number = |key: &str| -> Option<u32> {
+            let start = manifest.find(key)? + key.len();
+            let digits: String = manifest[start..]
+                .chars()
+                .skip_while(|c| *c == ':' || c.is_whitespace())
+                .take_while(|c| c.is_ascii_digit())
+                .collect();
+            digits.parse().ok()
+        };
+        let (Some(w), Some(h), Some(base_len)) =
+            (number("\"w\""), number("\"h\""), number("\"baseLength\""))
+        else {
+            return fail(self, "missing size");
+        };
+        let cells: Vec<i64> = manifest
+            .find("\"cells\":[")
+            .and_then(|start| {
+                let rest = &manifest[start + 9..];
+                rest.find(']').map(|end| {
+                    rest[..end]
+                        .split(',')
+                        .filter_map(|v| v.trim().parse::<i64>().ok())
+                        .collect()
+                })
+            })
+            .unwrap_or_default();
+        let (cols, rows) = (w * 40, h * 25);
+        if w == 0 || h == 0 || cols > 255 || rows > 255 {
+            self.errors.push(format!(
+                "map load: level '{}' is {}x{} cells; maps can be at most 255x255 (6 screens wide, 10 tall)",
+                filename, cols, rows
+            ));
+            return None;
+        }
+        let screens = (base_len as usize).min(bytes.len()) / 2000;
+        let (cols, rows) = (cols as usize, rows as usize);
+        let mut chars = vec![0x20u8; cols * rows];
+        let mut colors = vec![14u8; cols * rows];
+        for slot in 0..(w * h) as usize {
+            let Some(&screen) = cells.get(slot) else { continue };
+            if screen < 0 || screen as usize >= screens {
+                continue;
+            }
+            let src = screen as usize * 2000;
+            let (ox, oy) = ((slot % w as usize) * 40, (slot / w as usize) * 25);
+            for r in 0..25 {
+                for c in 0..40 {
+                    chars[(oy + r) * cols + ox + c] = bytes[src + r * 40 + c];
+                    colors[(oy + r) * cols + ox + c] = bytes[src + 1000 + r * 40 + c] & 15;
+                }
+            }
+        }
+        let multicolor = manifest.contains("\"multicolor\":true");
+        let color = |key: &str, default: u32| number(key).unwrap_or(default) as u8 & 15;
+        Some(Stmt::MapLoad {
+            width: cols as u8,
+            height: rows as u8,
+            flags: 1 | if multicolor { 2 } else { 0 },
+            bg: [color("\"bgColor\"", 6), color("\"mc1Color\"", 5), color("\"mc2Color\"", 13)],
+            chars,
+            colors: Some(colors),
+            address: None,
         })
     }
 
@@ -2155,8 +2248,38 @@ impl Parser {
                                 return None;
                             }
                         };
+                        // optional `, address`: place the map data there instead of inline
+                        let address = if self.peek() == &Token::Comma {
+                            self.advance();
+                            match self.parse_expr() {
+                                Expr::Number(value) => Some(value as u16),
+                                _ => {
+                                    self.errors.push(format!(
+                                        "line {}: map load address must be a 16-bit constant",
+                                        self.line
+                                    ));
+                                    None
+                                }
+                            }
+                        } else {
+                            None
+                        };
                         self.expect_newline();
-                        self.parse_map_file(&filename)
+                        let mut stmt = self.parse_map_file(&filename);
+                        if let Some(Stmt::MapLoad { address: slot, .. }) = stmt.as_mut() {
+                            *slot = address;
+                        }
+                        stmt
+                    }
+                    Token::Ident(command) if command == "view" => {
+                        self.advance();
+                        let x = self.parse_expr();
+                        if self.peek() == &Token::Comma {
+                            self.advance();
+                        }
+                        let y = self.parse_expr();
+                        self.expect_newline();
+                        Some(Stmt::MapView { x, y })
                     }
                     Token::Ident(command) if command == "draw" => {
                         self.advance();
@@ -2198,7 +2321,7 @@ impl Parser {
                     }
                     other => {
                         self.errors.push(format!(
-                            "line {}: expected map load/draw/set/color, got {}",
+                            "line {}: expected map load/draw/view/set/color, got {}",
                             self.line,
                             token_label(&other)
                         ));
