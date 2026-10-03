@@ -2,7 +2,7 @@
 
 <img src="assets/logo.png" alt="Ultimate Basic C64 banner" width="30%">
 
-Current version: **1.5.9**
+Current version: **1.6.0**
 
 A modern BASIC-like language that compiles directly to 6502 machine code for the
 **Commodore 64** and **Commodore 64 Ultimate**. It produces `.prg` files that run in
@@ -81,6 +81,41 @@ bytes. Compiler-generated helper routines are included in the same listing.
 The output uses KickAssembler syntax and can be assembled again. Known data regions—such
 as `data`, maps, sprite/character definitions, lookup tables, SID/Koala payloads, and
 `incbin` content—are emitted as `.byte` blocks instead of being mistaken for instructions.
+
+## What's new in 1.6.0
+
+Faster, smaller machine code — the code generator was reworked (`codegen/opt.rs`). Existing
+programs compile unchanged and simply run faster:
+
+- **Conditions** (`if` / `while` / `until` / `select`) compile to a `CMP` followed directly by a
+  branch instead of building a 0/1 value and testing it again (`if x == 10` shrank from 24 to
+  9 bytes). `x > n` becomes `x >= n+1`, `and` / `or` of comparisons short-circuit, `while` loops
+  test at the bottom, and `select` compares the variable in place.
+- **Direct operands:** constants and byte variables are used as `ADC #n` / `CMP zp` operands
+  instead of being copied to scratch zero page; `poke` to a constant or `word` address stores
+  directly; identity operations (`x + 0`, `x * 1`, …) vanish.
+- **Multiply / divide / modulo:** `*` by a constant is shifts / shift-add (`x * 8` → 3× `ASL`),
+  otherwise a shift-add loop of at most 8 rounds. `/` and `mod` by a power of two are `LSR` /
+  `AND`, otherwise an 8-round shift-subtract loop — no longer proportional to the quotient
+  (`255 / 1` used to take 255 rounds).
+- **Increments:** `x = x + 1` / `x - 1` / `± 2` become `INC` / `DEC` (word variables: 16-bit
+  `INC` / `DEC` for ±1).
+- **Arrays** with a variable index use `LDA/STA $C000,Y` instead of a zero-page pointer.
+- **`for` loops** are rotated (test at the bottom, no `JMP` per iteration); constant limits and
+  steps are immediates and use no zero page.
+- **A-register reuse:** a statement that starts by loading the variable the previous statement
+  just stored skips the redundant `LDA`.
+
+Behaviour fixes that came with it:
+
+- **Division by zero no longer hangs:** `x / 0 = 255`, `x mod 0 = x`.
+- **`for i = 0 to 255`** runs 256 times and stops (the 8-bit wrap-around is detected in both
+  directions) instead of looping forever.
+
+New test infrastructure: a full 6502 emulator (`tests/common/cpu6502.rs`), semantic tests that
+run compiled programs and compare results with Rust (`tests/codegen_semantics.rs`), code-shape /
+cycle tests (`tests/codegen_opt.rs`), and an opt-in differential fuzzer against a reference
+compiler (`tests/differential_fuzz.rs`).
 
 ## What's new in 1.5.9
 

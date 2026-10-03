@@ -1,5 +1,41 @@
-Ultimate Basic v1.5.9 – Release Notes
+Ultimate Basic v1.6.0 – Release Notes
 ======================================
+
+2026-10-03 – Release 1.6.0: optimised 6502 code generation
+------------------------------------------------------------------
+  Performance
+  - Conditions (if / while / until / select) compile to CMP + branch
+    instead of materialising a 0/1 value and testing it again
+    (`if x == 10`: 24 -> 9 bytes). `x > n` becomes `x >= n+1`; and / or of
+    comparisons short-circuit when the right side is side-effect free;
+    while loops are rotated (test at the bottom); select compares the
+    variable in place.
+  - Constants and byte variables are used directly as operands
+    (ADC #n, CMP zp) instead of being staged in scratch zero page; poke to a
+    constant or word address stores directly; identity operations vanish.
+  - `*` by a constant: shifts / shift-add (x * 8 -> 3x ASL); otherwise a
+    shift-add loop of at most 8 rounds (the old repeated-addition loop
+    needed ~16 cycles per unit of the multiplier).
+  - `/` and `mod` by a power of two: LSR / AND #(n-1); otherwise an 8-round
+    shift-subtract loop (the old loop ran once per unit of the quotient).
+  - x = x +/- 1|2 -> INC / DEC (word: 16-bit INC / DEC for +/-1).
+  - Arrays with a variable index use base,Y addressing instead of a
+    zero-page pointer.
+  - for loops are rotated (no JMP per iteration); constant limits / steps
+    are immediates and use no zero page.
+  - A-register reuse: the leading LDA of a statement is skipped when it
+    reloads the value the previous statement just stored.
+
+  Fixes
+  - Division by zero used to hang: now x / 0 = 255 and x mod 0 = x.
+  - `for i = 0 to 255` looped forever; the step now detects the 8-bit
+    wrap-around in both directions, so the loop runs 256 times and stops.
+
+  Tests
+  - Full 6502 emulator for tests (tests/common/cpu6502.rs), semantic tests
+    that run compiled programs (tests/codegen_semantics.rs), code-shape /
+    cycle tests (tests/codegen_opt.rs) and an ignored differential fuzzer
+    against a reference compiler (tests/differential_fuzz.rs).
 
 2026-09-26 – chain: load and start another program
 ------------------------------------------------------------------

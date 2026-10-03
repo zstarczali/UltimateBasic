@@ -1,5 +1,7 @@
 # NUltimate Basic
 
+Current version: **1.6.0** (1.6.0 = optimised 6502 codegen, `codegen/opt.rs`; release notes in `whatnews.txt`, user docs in `README.md` / `MANUAL.md`).
+
 A custom BASIC-like language compiler targeting the Commodore 64 and Commodore 64 Ultimate. Produces `.prg` files runnable in VICE or on real hardware.
 
 ## Build & Run
@@ -174,7 +176,7 @@ n = x shr 2              # shift right 2 bits (unrolled LSR loop)
 `*` by a constant is shifts / shift-add (`x * 8` → 3× `ASL`), otherwise a ≤8-round shift-add loop.
 `/` and `mod` by a power of two are `LSR` / `AND #(n-1)`, otherwise an 8-round shift-subtract
 loop (no longer proportional to the quotient). Division by zero is defined: `x / 0 = 255`,
-`x mod 0 = x` (it used to hang).
+`x mod 0 = x` (it hung before 1.6.0).
 
 ### Increment / Decrement
 
