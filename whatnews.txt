@@ -1,5 +1,23 @@
-Ultimate Basic v1.6.0 – Release Notes
+Ultimate Basic v1.6.1 – Release Notes
 ======================================
+
+2026-10-03 – Release 1.6.1: smooth scrolling maps
+------------------------------------------------------------------
+  New
+  - map view px, py: shows the loaded map at a pixel position, once per
+    frame (instead of wait raster). XSCROLL / YSCROLL with 38 columns /
+    24 rows, two screen buffers ($0400 / $3C00) swapped at char steps,
+    the next char cell built two frames ahead, color RAM copied in two
+    halves behind / ahead of the raster beam: smooth and tear-free in
+    every direction. Sprite pointers are copied to both buffers.
+  - map load reads a VisualAssembler Level Editor project (.bin) and
+    composes its screens into one map (max 6x10 screens, 255x255 cells).
+  - map load "file", addr: the map data goes to a fixed address (like
+    incbin "file", addr) instead of inline in the code.
+  - Compile errors: map view without map load, maps smaller than 40x25,
+    program code reaching into $3C00-$3FFF.
+  - Example: examples/level_scroll_demo.ub.
+
 
 2026-10-03 – Release 1.6.0: optimised 6502 code generation
 ------------------------------------------------------------------

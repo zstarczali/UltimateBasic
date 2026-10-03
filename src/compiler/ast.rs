@@ -155,6 +155,13 @@ pub enum Stmt {
         bg: [u8; 3],
         chars: Vec<u8>,
         colors: Option<Vec<u8>>,
+        /// `map load "f", addr`: data placed at a fixed address instead of inline.
+        address: Option<u16>,
+    },
+    /// Smooth double-buffered view at pixel position x,y (once per frame).
+    MapView {
+        x: Expr,
+        y: Expr,
     },
     /// Draw a 40x25 viewport from map coordinates x,y.
     MapDraw {

@@ -4,6 +4,7 @@ pub mod codegen;
 pub mod debug_output;
 pub mod lexer;
 pub mod parser;
+pub mod map_view;
 pub mod tune;
 
 use codegen::Codegen;

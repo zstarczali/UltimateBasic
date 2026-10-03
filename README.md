@@ -2,7 +2,7 @@
 
 <img src="assets/logo.png" alt="Ultimate Basic C64 banner" width="30%">
 
-Current version: **1.6.0**
+Current version: **1.6.1**
 
 A modern BASIC-like language that compiles directly to 6502 machine code for the
 **Commodore 64** and **Commodore 64 Ultimate**. It produces `.prg` files that run in
@@ -81,6 +81,21 @@ bytes. Compiler-generated helper routines are included in the same listing.
 The output uses KickAssembler syntax and can be assembled again. Known data regions—such
 as `data`, maps, sprite/character definitions, lookup tables, SID/Koala payloads, and
 `incbin` content—are emitted as `.byte` blocks instead of being mistaken for instructions.
+
+## What's new in 1.6.1
+
+Smooth scrolling maps for games:
+
+- **`map view px, py`** shows the loaded map at a pixel position: XSCROLL / YSCROLL for the
+  fine part, two screen buffers (`$0400` / `$3C00`) swapped at char steps, the next char cell
+  built ahead of time and color RAM copied in step with the raster beam — pixel-smooth and
+  tear-free in every direction. Call it once per frame instead of `wait raster`; sprites keep
+  working (their pointers are copied to both buffers).
+- **`map load "level.bin"`** reads a VisualAssembler Level Editor project directly and composes
+  its screens into one map (up to 6×10 screens, 255×255 cells).
+- **`map load "file", addr`** places the map data at a fixed address instead of inline in the
+  code, like `incbin "file", addr` — e.g. `$4000`, which keeps `$3C00-$3FFF` free for `map view`.
+- New example: `examples/level_scroll_demo.ub` (joystick-driven level with a player sprite).
 
 ## What's new in 1.6.0
 
