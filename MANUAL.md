@@ -151,7 +151,7 @@ w = a or b               # bitwise OR
 v = a xor b              # bitwise XOR
 m = x shl 3              # shift left
 n = x shr 2              # shift right
-r = x mod 40             # 8-bit modulo (remainder); SEC/SBC/BCS loop
+r = x mod 40             # 8-bit modulo (remainder); x mod 0 = x, x / 0 = 255
 b = bnot x               # bitwise NOT: x XOR 255 (complement all 8 bits)
 ```
 

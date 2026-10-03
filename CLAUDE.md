@@ -27,6 +27,7 @@ src/
     parser.rs          – AST builder (Parser → Vec<Stmt>)
     ast.rs             – Expr, Stmt, BinOp, ColorTarget, VarType enums
     codegen.rs         – 6502 code generator (Codegen)
+    codegen/opt.rs     – optimised paths: conditions, operands, mul/div, arrays, for, A-reuse
 examples/
   features.ub          – original feature demo
   new_features.ub      – arrays, word vars, sub params, string vars demo
@@ -170,7 +171,10 @@ n = x shr 2              # shift right 2 bits (unrolled LSR loop)
 
 `and` / `or` / `xor` / `shl` / `shr` are **bitwise**, consistent with C64 BASIC convention.
 `not x` is **logical NOT** (0 → 1, non-zero → 0) — for bitwise complement use `x xor 255`.
-`mod` implements 8-bit unsigned remainder via an SEC/SBC/BCS loop followed by CLC/ADC restore.
+`*` by a constant is shifts / shift-add (`x * 8` → 3× `ASL`), otherwise a ≤8-round shift-add loop.
+`/` and `mod` by a power of two are `LSR` / `AND #(n-1)`, otherwise an 8-round shift-subtract
+loop (no longer proportional to the quotient). Division by zero is defined: `x / 0 = 255`,
+`x mod 0 = x` (it used to hang).
 
 ### Increment / Decrement
 
@@ -295,10 +299,13 @@ for i = 20 to 0 step -2   # terminates correctly at 0 (11 iterations) — no inf
   print i
 next
 # note: `for i = 10 to 1` (no step) is a compile-time error — use `step -1` explicitly.
-# Direction encoding: positive/default step → BCC/BEQ to body (unsigned var > to → exit).
-# Negative constant step → BCS to body + post-increment BCS loop_top/JMP exit
-# to catch the ADC underflow when var wraps below 0. Non-constant `step` is
-# treated as positive at compile time.
+# Codegen (opt.rs gen_for_loop): rotated loop — `JMP test` (omitted when constant
+# bounds guarantee a first pass), body, `var += step`, test at the bottom branching
+# back to the body. The step exits on 8-bit wrap-around in both directions
+# (`INC/BEQ`, `ADC/BCS` up; `LDA/BEQ/DEC`, `SBC/BCC` down), so `for i = 0 to 255`
+# runs 256 times and stops. Constant limits/steps are immediates (no ZP); a
+# non-constant limit/step is snapshotted once in permanent ZP. Non-constant
+# `step` is treated as positive.
 
 loop i = 1 to 10     # legacy syntax — still works, identical code
   print i
@@ -1515,6 +1522,32 @@ labels. The `.dbg` format does not yet include instruction-to-source-line mappin
 3. **Parser** — `parser.rs`: handle the new token in `parse_stmt()` or `parse_primary()`
 4. **Codegen** — `codegen.rs`: implement in `gen_stmt()` or `eval_expr()`
 5. **Tests** — each file has a `#[cfg(test)]` section; add unit tests there and integration tests in `tests/integration_tests.rs`
+
+### Codegen tests
+
+- `tests/common/cpu6502.rs` — full 6502 emulator (KERNAL calls trapped, `CHROUT` captured).
+- `tests/codegen_semantics.rs` — runs compiled programs and checks variable values against
+  Rust-computed results (every operator × value pairs, conditions, loops, arrays). Behaviour
+  tests: keep them green when changing codegen.
+- `tests/codegen_opt.rs` — exact byte shape / cycle bounds of the optimised code paths.
+- `tests/differential_fuzz.rs` (`#[ignore]`) — random programs compiled with this tree and a
+  reference `ub` (e.g. a build of an older commit), results compared on the emulator:
+  `UB_REFERENCE=path/ub.exe cargo test --release --test differential_fuzz -- --ignored`
+
+### Codegen optimisation notes (codegen/opt.rs)
+
+- Conditions (`if`/`while`/`until`/`select`) compile via `gen_cond_jump` to `CMP` + branch;
+  `x > n` → `>= n+1`; `and`/`or` of comparisons short-circuit only when the right side is
+  side-effect free (`is_pure`). `while`/`until` keep their "value == 1 is true" rule for plain
+  values (`Truth::EqualsOne`), `if` uses non-zero. `while` is rotated (condition at the bottom).
+- Constants / byte variables are used directly as operands (`ADC #n`, `CMP zp`); evaluation
+  order is left-to-right unless the reordered side is pure.
+- `x = x ± 1|2` → `INC`/`DEC` (word: ±1). Arrays with a variable index use `base,Y` (indices
+  are 8-bit). Back branches fall back to `JMP` when out of range.
+- `a_cache`: after `STA x` of a byte assignment, the next statement's leading `LDA x` is
+  skipped — only if the value's code ends with a flag-setting op on A, and the next statement
+  is one whose first byte can't be a jump target (`may_reuse_a`). The policy lives in
+  `gen_stmt` so the top-level pass-1 loop obeys it too.
 
 ---
 

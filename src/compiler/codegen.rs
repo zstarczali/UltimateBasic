@@ -2,6 +2,9 @@ use super::ast::{BinOp, ColorTarget, Expr, FieldKind, ReuOp, Stmt, VarType};
 use super::{ArrayEntry, MemoryMap, SubEntry, VarEntry};
 use std::collections::HashMap;
 
+mod opt;
+use opt::{Pred, Target, Truth};
+
 /// Which per-pixel helper a shared draw routine (line/rect/…) should call.
 /// `Hires` stages the full 16-bit X + Y into the plot ZP and JSRs a hires plot
 /// helper; `Multi` stages the 8-bit X + Y into the mplot ZP (color preset in
@@ -605,6 +608,10 @@ pub struct Codegen {
     code_gaps: Vec<(u16, u16)>, // address ranges skipped by `org` (zero-filled, free for data)
     perm_zp: u8,
     tmp_zp: u8,
+    /// `Some((zp, pos))`: A (and the N/Z flags) hold the byte variable at `zp`
+    /// when code position `pos` is reached by fall-through from the preceding
+    /// `STA zp`. Lets the next statement skip its leading `LDA zp`.
+    a_cache: Option<(u8, usize)>,
     break_patches: Vec<Vec<usize>>,
     continue_patches: Vec<Vec<usize>>,
     arrays: HashMap<String, u16>, // array_name → base address ($C000+)
@@ -725,6 +732,7 @@ impl Codegen {
             code_gaps: vec![],
             perm_zp: ZP_BASE,
             tmp_zp: TMP_BASE,
+            a_cache: None,
             break_patches: vec![],
             continue_patches: vec![],
             arrays: HashMap::new(),
@@ -1788,6 +1796,9 @@ impl Codegen {
             Expr::Var(name) => {
                 self.mark_used(name);
                 if let Some(zp) = self.var_addr(name) {
+                    if self.a_cache.take() == Some((zp, self.code.len())) {
+                        return; // A already holds it (preceding STA zp)
+                    }
                     self.emit(0xA5);
                     self.emit(zp); // LDA zp
                 } else {
@@ -2360,20 +2371,7 @@ impl Codegen {
                         }
                         _ => {
                             let idx = idx_expr.clone();
-                            let ptr = self.tmp_zp;
-                            self.tmp_zp += 2;
-                            self.emit(0xA9);
-                            self.emit(base as u8);
-                            self.emit(0x85);
-                            self.emit(ptr);
-                            self.emit(0xA9);
-                            self.emit((base >> 8) as u8);
-                            self.emit(0x85);
-                            self.emit(ptr + 1);
-                            self.eval_expr(&idx);
-                            self.emit(0xA8); // TAY
-                            self.emit(0xB1);
-                            self.emit(ptr); // LDA (ptr),Y
+                            self.emit_byte_array_load(base, &idx); // LDA base,Y
                         }
                     }
                 }
@@ -2770,6 +2768,9 @@ impl Codegen {
                 }
             }
             Expr::BinOp(l, op, r) => {
+                if self.emit_binop_direct(l, op, r) {
+                    return;
+                }
                 match op {
                     BinOp::And => {
                         // Bitwise AND – matches BASIC's AND semantics (e.g. color and 15)
@@ -2837,9 +2838,10 @@ impl Codegen {
                         let bne_pos = self.code.len();
                         self.emit(0xD0);
                         self.emit(0x00); // BNE loop_top (patched)
+                        // done: shift count 0 lands here too, so A = unshifted value
+                        let done_addr = self.current_addr();
                         self.emit(0xA5);
                         self.emit(tmp); // LDA tmp (done)
-                        let done_addr = self.current_addr();
                         self.patch_bxx(beq_done + 1, done_addr);
                         self.patch_bxx(bne_pos + 1, self.load_addr + loop_top as u16);
                         return; // result already in A via LDA tmp above
@@ -2941,6 +2943,17 @@ impl Codegen {
                             _ => unreachable!(),
                         }
                     }
+                    cmp_op @ (BinOp::Eq
+                    | BinOp::NotEq
+                    | BinOp::Lt
+                    | BinOp::Gt
+                    | BinOp::LtEq
+                    | BinOp::GtEq) => {
+                        // 8-bit compare → 1 (true) / 0 (false) in A
+                        let pred = Pred::from_binop(cmp_op).unwrap();
+                        let pred = self.emit_compare(l, pred, r);
+                        self.emit_bool_from_flags(pred);
+                    }
                     _ => {
                         let tmp = self.tmp_zp;
                         self.tmp_zp += 1;
@@ -3029,58 +3042,6 @@ impl Codegen {
                                 self.emit(0xA5);
                                 self.emit(quot); // LDA quot
                             }
-                            BinOp::Eq
-                            | BinOp::NotEq
-                            | BinOp::Lt
-                            | BinOp::Gt
-                            | BinOp::LtEq
-                            | BinOp::GtEq => {
-                                // Compare: returns 1 (true) or 0 (false) in A
-                                let tmp2 = self.tmp_zp;
-                                self.tmp_zp += 1;
-                                self.emit(0x85);
-                                self.emit(tmp2); // STA tmp2 (r)
-                                self.emit(0xA5);
-                                self.emit(tmp); // LDA tmp (l)
-                                self.emit(0xC5);
-                                self.emit(tmp2); // CMP tmp2
-                                let branch_op: u8 = match op {
-                                    BinOp::Eq => 0xF0,    // BEQ
-                                    BinOp::NotEq => 0xD0, // BNE
-                                    BinOp::Lt => 0x90,    // BCC
-                                    BinOp::GtEq => 0xB0,  // BCS
-                                    BinOp::Gt => 0x00,    // special
-                                    BinOp::LtEq => 0x00,  // special
-                                    _ => 0xF0,
-                                };
-                                if matches!(op, BinOp::Gt) {
-                                    // l > r  ->  r < l  -> swap and BCC
-                                    self.emit(0xA5);
-                                    self.emit(tmp2);
-                                    self.emit(0xC5);
-                                    self.emit(tmp);
-                                    self.emit(0x90); // BCC true
-                                } else if matches!(op, BinOp::LtEq) {
-                                    self.emit(0xA5);
-                                    self.emit(tmp2);
-                                    self.emit(0xC5);
-                                    self.emit(tmp);
-                                    self.emit(0xB0); // BCS true
-                                } else {
-                                    self.emit(branch_op);
-                                }
-                                self.emit(0x05); // branch +5 to true (skip LDA#0(2) + JMP(3) = 5 bytes)
-                                self.emit(0xA9);
-                                self.emit(0x00); // LDA #0 (false)
-                                self.emit(0x4C); // JMP past true
-                                let patch = self.code.len();
-                                self.emit16(0x0000);
-                                self.emit(0xA9);
-                                self.emit(0x01); // LDA #1 (true)
-                                let end = self.current_addr();
-                                self.code[patch] = end as u8;
-                                self.code[patch + 1] = (end >> 8) as u8;
-                            }
                             BinOp::Mod => {
                                 // A = r (right operand), tmp = l (left/dividend)
                                 let divisor = self.tmp_zp;
@@ -3102,9 +3063,17 @@ impl Codegen {
                                 self.emit(0x65);
                                 self.emit(divisor); // ADC divisor → remainder in A
                             }
-                            BinOp::And | BinOp::Or | BinOp::Xor | BinOp::Shl | BinOp::Shr => {
-                                unreachable!()
-                            }
+                            BinOp::And
+                            | BinOp::Or
+                            | BinOp::Xor
+                            | BinOp::Shl
+                            | BinOp::Shr
+                            | BinOp::Eq
+                            | BinOp::NotEq
+                            | BinOp::Lt
+                            | BinOp::Gt
+                            | BinOp::LtEq
+                            | BinOp::GtEq => unreachable!(),
                         } // end _ => { inner match
                     } // end outer match op
                 } // end BinOp
@@ -8780,6 +8749,8 @@ impl Codegen {
     }
 
     fn gen_stmts(&mut self, stmts: &[Stmt]) {
+        // The start of a statement list may be a jump target (loop top, sub entry).
+        self.a_cache = None;
         for stmt in stmts {
             self.tmp_zp = TMP_BASE; // reset scratch pool – prevents ZP overflow into BASIC/KERNAL vars
             self.gen_stmt(stmt);
@@ -9826,26 +9797,13 @@ impl Codegen {
                     }
                     _ => {
                         let idx = idx_expr.clone();
-                        let ptr = self.tmp_zp;
-                        self.tmp_zp += 2;
-                        self.emit(0xA9);
-                        self.emit(base as u8);
-                        self.emit(0x85);
-                        self.emit(ptr);
-                        self.emit(0xA9);
-                        self.emit((base >> 8) as u8);
-                        self.emit(0x85);
-                        self.emit(ptr + 1);
-                        self.eval_expr(&idx); // index → A
-                        self.emit(0x0A); // ASL A (×2 for word stride)
-                        self.emit(0xA8); // TAY
-                        self.emit(0xB1);
-                        self.emit(ptr); // LDA (ptr),Y  → lo byte
+                        self.emit_index_to_y(&idx, true); // Y = idx*2
+                        self.emit(0xB9);
+                        self.emit16(base); // LDA base,Y   → lo byte
                         self.emit(0x85);
                         self.emit(dst_zp);
-                        self.emit(0xC8); // INY
-                        self.emit(0xB1);
-                        self.emit(ptr); // LDA (ptr),Y  → hi byte
+                        self.emit(0xB9);
+                        self.emit16(base.wrapping_add(1)); // LDA base+1,Y → hi byte
                         self.emit(0x85);
                         self.emit(dst_zp + 1);
                         return true;
@@ -9969,7 +9927,17 @@ impl Codegen {
             .unwrap_or(1);
         self.source_line_pos += 1;
         let start = self.code.len();
+        // A value left in A by the previous statement may only be reused by
+        // statements whose first instruction can never be a jump target.
+        if !Self::may_reuse_a(stmt) {
+            self.a_cache = None;
+        }
         self.gen_stmt_inner(stmt);
+        // Only a byte assignment itself leaves A = variable behind; a cache set
+        // inside a nested block (if/loop body) is reachable by jumps.
+        if !matches!(stmt, Stmt::Assign(..) | Stmt::VarDecl { .. }) {
+            self.a_cache = None;
+        }
         let end = self.code.len();
         if end > start {
             self.listing_spans.push(crate::compiler::ListingSpan {
@@ -10116,6 +10084,7 @@ impl Codegen {
                                 self.eval_expr(&expr);
                                 self.emit(0x85);
                                 self.emit(zp);
+                                self.note_a_holds(zp, &expr);
                             }
                         } else if self.can_be_word_result(expr) {
                             if Self::contains_fixed_lit(expr) {
@@ -10136,11 +10105,24 @@ impl Codegen {
                             self.eval_expr(&expr);
                             self.emit(0x85);
                             self.emit(zp);
+                            self.note_a_holds(zp, &expr);
                         }
                     }
                 }
             }
             Stmt::Assign(name, expr) => {
+                // x = x ± 1 (and ± 2 for bytes) → INC / DEC
+                if let Some(delta) = self.self_increment(name, expr) {
+                    let step = if delta > 0 {
+                        Stmt::Inc(name.clone())
+                    } else {
+                        Stmt::Dec(name.clone())
+                    };
+                    for _ in 0..delta.unsigned_abs() {
+                        self.gen_stmt_inner(&step);
+                    }
+                    return;
+                }
                 if matches!(
                     self.var_types.get(name),
                     Some(VarType::Word) | Some(VarType::Float)
@@ -10195,6 +10177,7 @@ impl Codegen {
                     self.eval_expr(&expr);
                     self.emit(0x85);
                     self.emit(zp);
+                    self.note_a_holds(zp, &expr);
                 }
             }
             Stmt::Print { args, no_newline } => {
@@ -10232,16 +10215,8 @@ impl Codegen {
                 // print at positions explicitly; newline at row 24 would scroll the screen.
             }
             Stmt::If(cond, then_body, else_body) => {
-                self.eval_expr(cond);
-                self.emit(0xC9);
-                self.emit(0x00); // CMP #0  (nonzero = true)
-                // BNE +3 skip the JMP → execute then_body
-                // JMP else/end (absolute, no branch distance limit)
-                self.emit(0xD0);
-                self.emit(0x03); // BNE +3
-                self.emit(0x4C); // JMP skip
-                let skip_patch = self.code.len();
-                self.emit16(0x0000);
+                // Jump to else/end when the condition is false (nonzero = true)
+                let skip_patches = self.gen_cond_jump(cond, false, Truth::NonZero, Target::Forward);
 
                 self.gen_stmts(then_body);
 
@@ -10251,15 +10226,18 @@ impl Codegen {
                     self.emit16(0x0000);
 
                     let else_start = self.current_addr();
-                    self.patch_abs(skip_patch, else_start);
+                    for pos in skip_patches {
+                        self.patch_abs(pos, else_start);
+                    }
 
                     self.gen_stmts(eb);
                     let end = self.current_addr();
-                    self.code[patch_else] = end as u8;
-                    self.code[patch_else + 1] = (end >> 8) as u8;
+                    self.patch_abs(patch_else, end);
                 } else {
                     let end = self.current_addr();
-                    self.patch_abs(skip_patch, end);
+                    for pos in skip_patches {
+                        self.patch_abs(pos, end);
+                    }
                 }
             }
             Stmt::Loop(count, body) => {
@@ -10314,15 +10292,6 @@ impl Codegen {
                 step,
                 body,
             } => {
-                let zp = self.alloc_var(var);
-
-                // Determine direction from compile-time constant step (if any).
-                // Negative i16 constant → counting down; otherwise → counting up.
-                let step_down = match step {
-                    Some(Expr::Number(n)) => *n < 0,
-                    _ => false,
-                };
-
                 // Sanity check: default step (+1) but from>to constant → would loop 0 times silently.
                 if step.is_none() {
                     if let (Expr::Number(f), Expr::Number(t)) = (from, to) {
@@ -10335,164 +10304,37 @@ impl Codegen {
                     }
                 }
 
-                // eval from → var
-                self.eval_expr(from);
-                self.emit(0x85);
-                self.emit(zp);
-
-                // eval 'to' once into a permanent ZP temp (must survive loop body resets)
-                let zp_to = self.perm_zp;
-                self.perm_zp += 1;
-                self.eval_expr(to);
-                self.emit(0x85);
-                self.emit(zp_to);
-
-                // eval 'step' once into a permanent ZP temp (default 1)
-                let zp_step = self.perm_zp;
-                self.perm_zp += 1;
-                match step {
-                    Some(expr) => {
-                        self.eval_expr(expr);
-                    }
-                    None => {
-                        self.emit(0xA9);
-                        self.emit(0x01);
-                    }
-                }
-                self.emit(0x85);
-                self.emit(zp_step);
-
-                self.break_patches.push(vec![]);
-                self.continue_patches.push(vec![]);
-                let loop_top = self.current_addr();
-
-                // Counting UP  (step_down == false): exit when var > to.
-                //   LDA var; CMP zp_to; BCC body; BEQ body; JMP exit
-                // Counting DOWN (step_down == true):  exit when var < to.
-                //   LDA var; CMP zp_to; BCS body; JMP exit   (BCS = var>=to)
-                self.emit(0xA5);
-                self.emit(zp);
-                self.emit(0xC5);
-                self.emit(zp_to); // CMP zp_to
-
-                let (bcc_pos, beq_pos) = if step_down {
-                    // BCS → body (var >= to)
-                    self.emit(0xB0);
-                    let pos = self.code.len();
-                    self.emit(0x00);
-                    (pos, None)
-                } else {
-                    self.emit(0x90); // BCC → body (var < to)
-                    let bcc = self.code.len();
-                    self.emit(0x00);
-                    self.emit(0xF0); // BEQ → body (var == to)
-                    let beq = self.code.len();
-                    self.emit(0x00);
-                    (bcc, Some(beq))
-                };
-                // fall-through → exit
-                self.emit(0x4C);
-                let exit_pos = self.code.len();
-                self.emit16(0x0000);
-
-                let body_start = self.current_addr();
-                self.patch_bxx(bcc_pos, body_start);
-                if let Some(beq) = beq_pos {
-                    self.patch_bxx(beq, body_start);
-                }
-
-                self.gen_stmts(body);
-
-                // continue target: var += step (skip body tail, redo increment+check)
-                let continue_target = self.current_addr();
-                let conts = self.continue_patches.pop().unwrap_or_default();
-                for pos in conts {
-                    self.patch_abs(pos, continue_target);
-                }
-
-                // var += step
-                self.emit(0xA5);
-                self.emit(zp);
-                self.emit(0x18);
-                self.emit(0x75);
-                self.emit(zp_step); // ADC zp_step (BUG: indexed, should be 0x65)
-                // Fix: undo last 5 bytes (2+1+2) and redo correctly
-                let len = self.code.len();
-                self.code.truncate(len - 5);
-                self.emit(0xA5);
-                self.emit(zp);
-                self.emit(0x18);
-                self.emit(0x65);
-                self.emit(zp_step); // ADC zp_step
-                self.emit(0x85);
-                self.emit(zp);
-
-                // Second exit point: for step_down, if ADC underflowed (C=0)
-                // then `var` wrapped past 0 back up to 254/255-ish. Unsigned
-                // CMP at loop_top would then always take the body branch →
-                // infinite loop (e.g. `for i = 20 to 0 step -2`). Detect the
-                // underflow here and exit instead of re-entering the loop.
-                //
-                // For step_up, ADC C=1 similarly means wrap past 255, but the
-                // top-of-loop `var > to` check catches all normal terminations,
-                // so we leave the plain JMP loop_top in place.
-                let exit_pos2 = if step_down {
-                    // BCS loop_top ; JMP exit
-                    self.emit(0xB0); // BCS
-                    let bcs_pos = self.code.len();
-                    self.emit(0x00);
-                    self.patch_bxx(bcs_pos, loop_top);
-                    self.emit(0x4C); // JMP exit (patched below)
-                    let p = self.code.len();
-                    self.emit16(0x0000);
-                    Some(p)
-                } else {
-                    self.emit(0x4C);
-                    self.emit16(loop_top);
-                    None
-                };
-
-                let loop_end = self.current_addr();
-                self.patch_abs(exit_pos, loop_end);
-                if let Some(p) = exit_pos2 {
-                    self.patch_abs(p, loop_end);
-                }
-                let breaks = self.break_patches.pop().unwrap_or_default();
-                for pos in breaks {
-                    self.patch_abs(pos, loop_end);
-                }
-                // The limit/step temps are dead once the loop is done: hand their two
-                // permanent ZP bytes back so sequential loops share them. Only safe when
-                // the body declared no new variables above them.
-                if self.perm_zp == zp_step + 1 {
-                    self.perm_zp = zp_to;
-                }
+                let var = var.clone();
+                let from = from.clone();
+                let to = to.clone();
+                let step = step.clone();
+                let body = body.clone();
+                self.gen_for_loop(&var, &from, &to, step.as_ref(), &body);
             }
             Stmt::WhileLoop(cond, body) => {
                 self.break_patches.push(vec![]);
                 self.continue_patches.push(vec![]);
-                let loop_top = self.current_addr();
-                self.eval_expr(cond);
-                self.emit(0xC9);
-                self.emit(0x01); // CMP #1
-                // BEQ continue → skip JMP exit (3 bytes)
-                // JMP exit (absolute, no distance limit for large bodies)
-                self.emit(0xF0);
-                self.emit(0x03); // BEQ +3
-                self.emit(0x4C); // JMP exit
-                let exit_patch = self.code.len();
+                // Rotated loop: the condition sits at the bottom and branches
+                // back to the body, so each iteration costs one branch instead
+                // of a conditional exit plus a JMP back.
+                //       JMP cond
+                // body: ...
+                // cond: <jump to body when true>
+                self.emit(0x4C); // JMP cond
+                let entry_patch = self.code.len();
                 self.emit16(0x0000);
-                // continue:
+                let body_top = self.current_addr();
                 self.gen_stmts(body);
-                // patch continues to loop_top (re-evaluate condition)
+                let cond_addr = self.current_addr();
+                self.patch_abs(entry_patch, cond_addr);
+                // patch continues to the condition
                 let conts = self.continue_patches.pop().unwrap_or_default();
                 for pos in conts {
-                    self.patch_abs(pos, loop_top);
+                    self.patch_abs(pos, cond_addr);
                 }
-                self.emit(0x4C);
-                self.emit16(loop_top);
+                self.tmp_zp = TMP_BASE;
+                self.gen_cond_jump(cond, true, Truth::EqualsOne, Target::Back(body_top));
                 let loop_end = self.current_addr();
-                self.patch_abs(exit_patch, loop_end);
                 let breaks = self.break_patches.pop().unwrap_or_default();
                 for pos in breaks {
                     self.patch_abs(pos, loop_end);
@@ -10522,34 +10364,42 @@ impl Codegen {
                 let expr = expr.clone();
                 let cases = cases.clone();
                 let else_body = else_body.clone();
-                // Store select value in permanent ZP (survives across body codegen which resets tmp_zp)
-                let tmp_select = self.perm_zp;
-                self.perm_zp += 1;
-                self.eval_expr(&expr);
-                self.emit(0x85);
-                self.emit(tmp_select); // STA tmp_select
+                // Case tests run before any case body, so a plain byte variable
+                // can be compared in place; anything else is stored once in
+                // permanent ZP (it must survive the tmp_zp resets of the bodies).
+                let all_vals_pure = cases.iter().all(|(v, _)| Self::is_pure(v));
+                let select_zp = match self.simple_operand(&expr) {
+                    Some(opt::Operand::Zp(zp)) if all_vals_pure => zp,
+                    _ => {
+                        let tmp_select = self.perm_zp;
+                        self.perm_zp += 1;
+                        self.eval_expr(&expr);
+                        self.emit(0x85);
+                        self.emit(tmp_select); // STA tmp_select
+                        tmp_select
+                    }
+                };
 
                 let mut end_patches: Vec<usize> = vec![];
 
                 for (val, body) in &cases {
                     let val = val.clone();
                     let body = body.clone();
-                    // Allocate scratch slot for this case's value (used before gen_stmts clobbers tmp_zp)
-                    let tmp_val = self.tmp_zp;
-                    self.tmp_zp += 1;
-                    self.eval_expr(&val);
-                    self.emit(0x85);
-                    self.emit(tmp_val); // STA tmp_val
-                    self.emit(0xA5);
-                    self.emit(tmp_select); // LDA tmp_select
-                    self.emit(0xC5);
-                    self.emit(tmp_val); // CMP tmp_val
-                    // BEQ +3 → match (skip JMP next_case); JMP next_case
-                    self.emit(0xF0);
-                    self.emit(0x03); // BEQ +3
-                    self.emit(0x4C);
-                    let next_patch = self.code.len();
-                    self.emit16(0x0000);
+                    match self.simple_operand(&val) {
+                        Some(op) => {
+                            self.emit(0xA5);
+                            self.emit(select_zp); // LDA select
+                            self.emit_alu(0xC9, op); // CMP #n / CMP zp
+                        }
+                        None => {
+                            self.eval_expr(&val);
+                            self.emit(0xC5);
+                            self.emit(select_zp); // CMP select (equality is symmetric)
+                        }
+                    }
+                    // not equal → next case
+                    let next_patch = self.emit_jump_on(Pred::Ne, Target::Forward)[0];
+                    self.tmp_zp = TMP_BASE;
 
                     self.gen_stmts(&body);
 
@@ -11237,65 +11087,21 @@ impl Codegen {
                                 self.emit16(addr.wrapping_add(1)); // STA base+n*2+1
                             }
                             _ => {
-                                let ptr = self.tmp_zp;
-                                self.tmp_zp += 2;
-                                self.emit(0xA9);
-                                self.emit(base as u8);
-                                self.emit(0x85);
-                                self.emit(ptr);
-                                self.emit(0xA9);
-                                self.emit((base >> 8) as u8);
-                                self.emit(0x85);
-                                self.emit(ptr + 1);
-                                self.eval_expr(&idx); // index → A
-                                self.emit(0x0A); // ASL A (×2 for word stride)
-                                self.emit(0xA8); // TAY
+                                self.emit_index_to_y(&idx, true); // Y = idx*2
                                 self.emit(0xA5);
                                 self.emit(tmp_lo); // LDA lo
-                                self.emit(0x91);
-                                self.emit(ptr); // STA (ptr),Y
-                                self.emit(0xC8); // INY
+                                self.emit(0x99);
+                                self.emit16(base); // STA base,Y
                                 self.emit(0xA5);
                                 self.emit(tmp_hi); // LDA hi
-                                self.emit(0x91);
-                                self.emit(ptr); // STA (ptr),Y
+                                self.emit(0x99);
+                                self.emit16(base.wrapping_add(1)); // STA base+1,Y
                             }
                         }
                     } else {
                         let val = val_expr.clone();
                         let idx = idx_expr.clone();
-                        self.eval_expr(&val);
-                        let tmp = self.tmp_zp;
-                        self.tmp_zp += 1;
-                        self.emit(0x85);
-                        self.emit(tmp); // STA tmp (value)
-                        match &idx {
-                            Expr::Number(n) => {
-                                let addr = base.wrapping_add(*n as u16);
-                                self.emit(0xA5);
-                                self.emit(tmp); // LDA tmp
-                                self.emit(0x8D);
-                                self.emit16(addr); // STA base+n
-                            }
-                            _ => {
-                                let ptr = self.tmp_zp;
-                                self.tmp_zp += 2;
-                                self.emit(0xA9);
-                                self.emit(base as u8);
-                                self.emit(0x85);
-                                self.emit(ptr);
-                                self.emit(0xA9);
-                                self.emit((base >> 8) as u8);
-                                self.emit(0x85);
-                                self.emit(ptr + 1);
-                                self.eval_expr(&idx); // index → A
-                                self.emit(0xA8); // TAY
-                                self.emit(0xA5);
-                                self.emit(tmp); // LDA tmp (value)
-                                self.emit(0x91);
-                                self.emit(ptr); // STA (ptr),Y
-                            }
-                        }
+                        self.emit_byte_array_store(base, &idx, &val);
                     }
                 } // end string else
             }
@@ -13781,15 +13587,9 @@ impl Codegen {
                 for pos in conts {
                     self.patch_abs(pos, continue_target);
                 }
-                // Evaluate until-condition: non-zero (1) = true → exit loop
-                self.eval_expr(&cond);
-                self.emit(0xC9);
-                self.emit(0x01); // CMP #1
-                // BEQ +3: if cond==1 (true) → skip JMP back → exit loop
-                self.emit(0xF0);
-                self.emit(0x03); // BEQ +3
-                self.emit(0x4C);
-                self.emit16(loop_top); // JMP loop_top (loop again)
+                // until-condition: loop again while it is false (1 = true → exit)
+                self.tmp_zp = TMP_BASE;
+                self.gen_cond_jump(&cond, false, Truth::EqualsOne, Target::Back(loop_top));
                 let loop_end = self.current_addr();
                 let breaks = self.break_patches.pop().unwrap_or_default();
                 for pos in breaks {
@@ -14223,30 +14023,40 @@ impl Codegen {
             Stmt::Poke(addr, val) => {
                 let val = val.clone();
                 let addr = addr.clone();
+                let word_var_addr = match &addr {
+                    Expr::Var(v) if matches!(self.var_types.get(v), Some(VarType::Word)) => {
+                        self.var_addr(v)
+                    }
+                    _ => None,
+                };
+                if let Expr::Number(n) = &addr {
+                    // Constant address: value straight into memory
+                    self.eval_expr(&val);
+                    if (0..=255).contains(n) {
+                        self.emit(0x85);
+                        self.emit(*n as u8); // STA zp
+                    } else {
+                        self.emit(0x8D);
+                        self.emit16(*n as u16); // STA abs
+                    }
+                    return;
+                }
+                if let Some(zp) = word_var_addr {
+                    // Word var already holds the 16-bit address → STA (zp),Y
+                    self.eval_expr(&val);
+                    self.emit(0xA0);
+                    self.emit(0x00); // LDY #0 (A untouched)
+                    self.emit(0x91);
+                    self.emit(zp); // STA (zp),Y
+                    return;
+                }
                 self.eval_expr(&val);
                 let tmp_val = self.tmp_zp;
                 self.tmp_zp += 1;
                 self.emit(0x85);
                 self.emit(tmp_val); // STA tmp_val
-                if let Expr::Number(n) = &addr {
-                    // Constant address: direct STA abs
-                    self.emit(0xA5);
-                    self.emit(tmp_val); // LDA tmp_val
-                    self.emit(0x8D);
-                    self.emit(*n as u8);
-                    self.emit((n >> 8) as u8);
-                } else if let Expr::Var(ref vname) = addr {
-                    if matches!(self.var_types.get(vname), Some(VarType::Word)) {
-                        // Word var already holds 16-bit address in ZP pair → STA (zp),Y
-                        if let Some(zp) = self.var_addr(vname) {
-                            self.emit(0xA0);
-                            self.emit(0x00); // LDY #0
-                            self.emit(0xA5);
-                            self.emit(tmp_val); // LDA tmp_val
-                            self.emit(0x91);
-                            self.emit(zp); // STA (zp),Y
-                        }
-                    } else {
+                if let Expr::Var(_) = addr {
+                    {
                         // 8-bit var used as lo-byte address (rare but valid)
                         let ptr = self.tmp_zp;
                         self.tmp_zp += 2;
