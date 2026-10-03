@@ -1,4 +1,4 @@
-# Ultimate Basic v1.5.9 — Language Manual
+# Ultimate Basic v1.6.0 — Language Manual
 
 Complete language and CLI reference for Ultimate Basic, a BASIC-like language that
 compiles directly to 6502 machine code for the Commodore 64. Output: `.prg` files
@@ -157,6 +157,12 @@ b = bnot x               # bitwise NOT: x XOR 255 (complement all 8 bits)
 
 Comparisons: `==`  `!=`  `<`  `>`  `<=`  `>=`  (return 1/0)
 
+Arithmetic code (1.6.0): `*` by a constant compiles to shifts / shift-add (`x * 8` → 3× `ASL`),
+otherwise to a shift-add loop of at most 8 rounds. `/` and `mod` by a power of two are `LSR` /
+`AND #(n-1)`, otherwise an 8-round shift-subtract loop whose run time no longer depends on the
+quotient. Division by zero is defined: `x / 0 = 255`, `x mod 0 = x` (before 1.6.0 it hung).
+`x = x + 1` / `x = x - 1` (and ±2) compile to `INC` / `DEC`.
+
 ### Increment / Decrement
 
 ```basic
@@ -287,13 +293,16 @@ until x == 100       # exits when condition is true
 | `for i = 1 to 10` (default `step +1`, `from ≤ to`) | counts up, standard |
 | `for i = 0 to 20 step 2` (positive step, `from ≤ to`) | counts up by 2 |
 | `for i = 10 to 1 step -1` (negative constant step) | counts down; body runs for i = 10, 9, ..., 1 |
-| `for i = 20 to 0 step -2` (down to zero) | terminates at i = 0 by detecting the ADC underflow (C=0) after the decrement; no infinite loop |
+| `for i = 20 to 0 step -2` (down to zero) | terminates at i = 0 by detecting the wrap-around below 0 after the decrement; no infinite loop |
 | `for i = 10 to 1` (no step, `from > to`) | **compile-time error**: `for-loop: from (10) > to (1) with default step +1 loops 0 times — use 'step -1' to count down` |
 
-The compiler picks the exit-branch encoding at compile time based on the sign of a constant `step`:
-
-- Positive step (or default `+1`) → exit when `var > to` (unsigned `CMP` + `BCC`/`BEQ` fall-through to `JMP exit`).
-- Negative constant step → exit when `var < to` (unsigned `CMP` + `BCS` to body), **plus** a post-increment `BCS loop_top ; JMP exit` that catches the wrap when `var` underflows below 0. That extra pair of instructions is what keeps `for i = N to 0 step -k` finite.
+Code shape (1.6.0): the loop is *rotated* — `JMP test` (omitted when constant bounds guarantee a
+first pass), the body, `var += step`, then the test at the bottom branching back to the body, so
+there is no extra `JMP` per iteration. The step detects 8-bit wrap-around in both directions
+(`INC`/`BEQ` or `ADC`/`BCS` counting up, `BEQ`/`DEC` or `SBC`/`BCC` counting down), so
+`for i = 0 to 255` runs 256 times and stops, and `for i = N to 0 step -k` is always finite.
+Constant limits and steps are used as immediates (no zero page); a non-constant limit or step is
+evaluated once and kept in permanent zero page.
 
 Non-constant `step` values (e.g. from a variable or expression) are treated as positive at compile time; if you need count-down with a runtime step value, split the loop or use a `while` construct.
 
@@ -1804,6 +1813,21 @@ demo.ub → demo.prg  (386 bytes)
 ```
 
 With `-v` the output additionally shows the internal ZP allocations and a full hex dump.
+
+### Generated code (optimised in 1.6.0)
+
+The code generator emits tighter 6502 for the common cases; programs need no changes:
+
+- Conditions in `if` / `while` / `until` / `select` are a `CMP` plus a branch (no 0/1 value is
+  built and re-tested). `x > n` is compiled as `x >= n+1`; `and` / `or` of comparisons
+  short-circuit when the right side has no side effects; `while` tests at the bottom of the loop.
+- Constants and byte variables are direct operands (`ADC #n`, `CMP zp`); `poke` to a constant or
+  `word` address stores directly.
+- Arrays with a variable index use `base,Y` addressing instead of a zero-page pointer.
+- When a statement starts by loading the variable the previous statement just stored, the
+  redundant `LDA` is skipped.
+
+Use `--asm` to see the generated code for your own program.
 
 ## Known limitations
 
