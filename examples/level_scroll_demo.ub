@@ -39,8 +39,10 @@ end
 
 const MAX_CX = 40      # map width - 40 (80 - 40)
 const MAX_CY = 100     # map height - 25 (125 - 25)
+const SCROLL_SPEED = 2 # pixels per frame (1-7)
 
 var j = 0
+var k = 0
 var cx = 0             # char cell of the view
 var cy = 0
 var fx = 0             # pixel inside the cell (0..7)
@@ -48,7 +50,7 @@ var fy = 0
 var px: word = 0       # pixel position for map view
 var py: word = 0
 
-color border 0
+color border 6
 sprite 0, 172, 150     # the player stays in the middle of the screen
 sprite color 0, 7
 sprite on 0
@@ -57,44 +59,46 @@ loop
   map view px, py
   j = joy(2) or joy(1)
 
-  if j and 8 then                  # right
-    if cx < MAX_CX then
-      inc fx
-      if fx == 8 then
-        fx = 0
-        inc cx
+  for k = 1 to SCROLL_SPEED         # one-pixel steps per frame, so the edges stay exact
+    if j and 8 then                  # right
+      if cx < MAX_CX then
+        inc fx
+        if fx == 8 then
+          fx = 0
+          inc cx
+        end
       end
     end
-  end
-  if j and 4 then                  # left
-    if fx > 0 then
-      dec fx
-    else
-      if cx > 0 then
-        fx = 7
-        dec cx
+    if j and 4 then                  # left
+      if fx > 0 then
+        dec fx
+      else
+        if cx > 0 then
+          fx = 7
+          dec cx
+        end
       end
     end
-  end
-  if j and 2 then                  # down
-    if cy < MAX_CY then
-      inc fy
-      if fy == 8 then
-        fy = 0
-        inc cy
+    if j and 2 then                  # down
+      if cy < MAX_CY then
+        inc fy
+        if fy == 8 then
+          fy = 0
+          inc cy
+        end
       end
     end
-  end
-  if j and 1 then                  # up
-    if fy > 0 then
-      dec fy
-    else
-      if cy > 0 then
-        fy = 7
-        dec cy
+    if j and 1 then                  # up
+      if fy > 0 then
+        dec fy
+      else
+        if cy > 0 then
+          fy = 7
+          dec cy
+        end
       end
     end
-  end
+  next
   px = cx * 8 + fx
   py = cy * 8 + fy
 

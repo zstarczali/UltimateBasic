@@ -1,6 +1,6 @@
 # NUltimate Basic
 
-Current version: **1.6.1** (1.6.1 = `map view` smooth scrolling, `compiler/map_view.rs`, `map load` of Level Editor projects and to an address; 1.6.0 = optimised 6502 codegen, `codegen/opt.rs`; release notes in `whatnews.txt`, user docs in `README.md` / `MANUAL.md`).
+Current version: **1.6.2** (1.6.2 = `tune` instrument modulation: `imod` / `ifilt` / `igate` / `itab`, frame-based player in `compiler/tune.rs`; 1.6.1 = `map view` smooth scrolling, `compiler/map_view.rs`, `map load` of Level Editor projects and to an address; 1.6.0 = optimised 6502 codegen, `codegen/opt.rs`; release notes in `whatnews.txt`, user docs in `README.md` / `MANUAL.md`).
 
 A custom BASIC-like language compiler targeting the Commodore 64 and Commodore 64 Ultimate. Produces `.prg` files runnable in VICE or on real hardware.
 
