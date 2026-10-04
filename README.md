@@ -2,7 +2,7 @@
 
 <img src="assets/logo.png" alt="Ultimate Basic C64 banner" width="30%">
 
-Current version: **1.6.1**
+Current version: **1.6.2**
 
 A modern BASIC-like language that compiles directly to 6502 machine code for the
 **Commodore 64** and **Commodore 64 Ultimate**. It produces `.prg` files that run in
@@ -81,6 +81,25 @@ bytes. Compiler-generated helper routines are included in the same listing.
 The output uses KickAssembler syntax and can be assembled again. Known data regions—such
 as `data`, maps, sprite/character definitions, lookup tables, SID/Koala payloads, and
 `incbin` content—are emitted as `.byte` blocks instead of being mistaken for instructions.
+
+## What's new in 1.6.2
+
+Richer `tune` instruments — the same features as the Visual Assembler SID editor:
+
+- **`imod id, vibdelay, vibspeed, vibdepth, pwmspeed, pwmmin, pwmmax`** — instrument vibrato
+  (a delayed triangle LFO scaled to the note's semitone) and pulse width modulation bouncing
+  between two widths.
+- **`ifilt id, cutend, sweep, pingpong`** — filter cutoff sweep toward `cutend`, optionally back
+  and forth: resonant filter sweeps. The voice that starts a filter-routed instrument owns the
+  filter; routing is per voice now.
+- **`igate id, gatetimer, hardrestart, firstwave`** — gate timer and hard restart before the next
+  note, and the waveform of a note's first frame (e.g. `$09`).
+- **`itab id, speed, loop, "41 +4", ".. +7", "81 =60"`** — wave / arpeggio tables for chords,
+  drums and waveform sequences.
+- Ring modulation and sync bits in `inst` ctrl, 3 OFF in `modevol` bit 7.
+
+The player runs these every frame and is checked frame by frame against the SID editor's
+engine (`tests/tune_player.rs`).
 
 ## What's new in 1.6.1
 

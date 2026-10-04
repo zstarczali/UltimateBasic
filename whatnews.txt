@@ -1,5 +1,30 @@
-Ultimate Basic v1.6.1 – Release Notes
+Ultimate Basic v1.6.2 – Release Notes
 ======================================
+
+2026-10-04 – Release 1.6.2: tracker instruments
+------------------------------------------------------------------
+  New (tune ... end)
+  - imod id, vibdelay, vibspeed, vibdepth, pwmspeed, pwmmin, pwmmax:
+    instrument vibrato (triangle LFO after a delay, depth scaled to the
+    note's semitone) and pulse width modulation between min and max.
+  - ifilt id, cutend, sweep, pingpong: filter cutoff sweep from the inst
+    cutoff toward cutend, sweep per frame, optionally back and forth.
+  - igate id, gatetimer, hardrestart, firstwave: gate released gatetimer
+    frames before the next note, hard restart also zeroes ADSR, firstwave
+    is written on a note's first frame ($09 = test + gate).
+  - itab id, speed, loop, "WW +n" / ".. -n" / "WW =n": wave / arpeggio
+    table (up to 32 steps), one step every speed frames, loop step or 255.
+  - inst ctrl may carry ring modulation ($04) / sync ($02); modevol bit 7
+    = voice 3 off.
+  Changed
+  - The player now works every frame (tables, vibrato, PWM, gate timer,
+    filter sweep). Filter routing is per voice: the voice that starts a
+    filter-routed instrument owns cutoff / resonance / mode, $D417 routes
+    every voice whose instrument is filter-routed. A tune blob is about
+    2.5 KB of player code plus its data.
+  - Same algorithm as the Visual Assembler SID editor's player; the new
+    tests/tune_player.rs compares the SID registers frame by frame with
+    a trace of the editor's engine.
 
 2026-10-03 – Release 1.6.1: smooth scrolling maps
 ------------------------------------------------------------------

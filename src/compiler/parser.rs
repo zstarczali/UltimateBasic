@@ -343,24 +343,72 @@ impl Parser {
                         ok = false;
                     }
                 }
-                "inst" => {
-                    if nums.len() != 8 {
-                        self.errors.push("tune: 'inst' needs id, ctrl, ad, sr, pw, cutoff, resfilt, modevol".to_string());
+                "inst" | "imod" | "ifilt" | "igate" | "itab" => {
+                    let (need, usage) = match word.as_str() {
+                        "inst" => (8, "'inst' needs id, ctrl, ad, sr, pw, cutoff, resfilt, modevol"),
+                        "imod" => (7, "'imod' needs id, vibdelay, vibspeed, vibdepth, pwmspeed, pwmmin, pwmmax"),
+                        "ifilt" => (4, "'ifilt' needs id, cutend, sweep, pingpong"),
+                        "igate" => (4, "'igate' needs id, gatetimer, hardrestart, firstwave"),
+                        _ => (3, "'itab' needs id, speed, loop (255 = none), then step strings like \"41 +4\""),
+                    };
+                    let count_ok = if word == "itab" { nums.len() == need } else { nums.len() == need && cells.is_empty() };
+                    if !count_ok || nums[0] > 255 {
+                        self.errors.push(format!("tune: {}", usage));
                         ok = false;
-                    } else {
-                        let id = nums[0] as usize;
-                        if def.insts.len() <= id {
-                            def.insts.resize(id + 1, Instrument::default());
+                        continue;
+                    }
+                    let id = nums[0] as usize;
+                    if def.insts.len() <= id {
+                        def.insts.resize(id + 1, Instrument::default());
+                    }
+                    let ins = &mut def.insts[id];
+                    match word.as_str() {
+                        "inst" => {
+                            ins.ctrl = nums[1] as u8;
+                            ins.ad = nums[2] as u8;
+                            ins.sr = nums[3] as u8;
+                            ins.pw = nums[4];
+                            ins.cutoff = nums[5];
+                            ins.res_filt = nums[6] as u8;
+                            ins.mode_vol = nums[7] as u8;
                         }
-                        def.insts[id] = Instrument {
-                            ctrl: nums[1] as u8,
-                            ad: nums[2] as u8,
-                            sr: nums[3] as u8,
-                            pw: nums[4],
-                            cutoff: nums[5],
-                            res_filt: nums[6] as u8,
-                            mode_vol: nums[7] as u8,
-                        };
+                        "imod" => {
+                            ins.vib_delay = nums[1].min(255) as u8;
+                            ins.vib_speed = nums[2].min(15) as u8;
+                            ins.vib_depth = nums[3].min(15) as u8;
+                            ins.pwm_speed = nums[4].min(255) as u8;
+                            ins.pwm_min = nums[5].min(4095);
+                            ins.pwm_max = nums[6].min(4095);
+                        }
+                        "ifilt" => {
+                            ins.cut_end = Some(nums[1].min(2047));
+                            ins.cut_speed = nums[2].min(127) as u8;
+                            ins.cut_ping = nums[3] != 0;
+                        }
+                        "igate" => {
+                            ins.gate_timer = nums[1].min(15) as u8;
+                            ins.hard_restart = nums[2] != 0;
+                            ins.first_wave = nums[3] as u8;
+                        }
+                        _ => {
+                            if cells.len() > tune::MAX_TABLE_STEPS {
+                                self.errors.push(format!("tune: a table has at most {} steps", tune::MAX_TABLE_STEPS));
+                                ok = false;
+                                continue;
+                            }
+                            ins.table_speed = nums[1].clamp(1, 15) as u8;
+                            ins.table_loop = nums[2].min(255) as u8;
+                            ins.table.clear();
+                            for text in &cells {
+                                match tune::parse_table_step(text) {
+                                    Ok(step) => ins.table.push(step),
+                                    Err(e) => {
+                                        self.errors.push(format!("tune: instrument {} table: {}", id, e));
+                                        ok = false;
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 "order" => def.order.extend(nums.iter().map(|&n| n as u8)),
@@ -391,7 +439,10 @@ impl Parser {
                     }
                 }
                 other => {
-                    self.errors.push(format!("tune: unknown line '{}' (use speed, inst, order, pat)", other));
+                    self.errors.push(format!(
+                        "tune: unknown line '{}' (use speed, inst, imod, ifilt, igate, itab, order, pat)",
+                        other
+                    ));
                     ok = false;
                 }
             }
