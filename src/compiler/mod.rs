@@ -145,12 +145,16 @@ pub fn compile_with_path(
     if opts.explicit {
         parser.set_explicit(true);
     }
-    let ast = parser.parse();
+    let mut ast = ast::flatten_blocks(parser.parse());
+    parser.check_recursion();
+    let mut signed = ast::SignedNames::default();
+    ast::extract_signed(&mut ast, &mut signed);
     let source_lines = parser.take_statement_lines();
     let mut errors = lex_errors;
     errors.extend(parser.errors().iter().cloned());
     let mut cg = Codegen::new(load_addr);
     cg.set_source_lines(source_lines);
+    cg.set_signed(signed);
     let raw = cg.compile(&ast);
     errors.extend(cg.errors());
     let map = cg.memory_map();

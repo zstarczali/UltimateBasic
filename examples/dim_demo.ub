@@ -1,0 +1,48 @@
+# dim_demo.ub — BASIC-style typed declarations (DIM ... AS ...)
+#
+#   AS BYTE / INT            → int    (8-bit, 0-255)
+#   AS INTEGER / WORD        → word   (16-bit, 0-65535)
+#   AS SINGLE / DOUBLE/FLOAT → float  (Q8.8 fixed point, 0-255.99)
+#   AS STRING                → string
+#
+# Without "= value" numbers start at 0 and strings at "".
+
+DIM kor AS INTEGER
+DIM nev AS STRING
+DIM fizetes AS DOUBLE
+
+DIM x, y AS BYTE                     # both are BYTE
+DIM pont AS INTEGER = 1000, cim AS STRING = "C64"
+
+cls
+input "NEV: ", nev
+input "KOR: ", kor
+
+fizetes = 12.5
+fizetes = fizetes + 0.25
+pont = pont + kor * 10
+
+print "NEV:     " + nev
+print "KOR:     ", kor
+print "FIZETES: ", fizetes
+print "PONT:    ", pont
+print "GEP:     " + cim
+
+# --- Arrays: DIM name(highest index, ...) AS type --------------------------
+DIM tabla(2, 3) AS INTEGER          # 3 x 4 elements
+DIM nevek(2) AS STRING
+DIM arak(2) AS DOUBLE
+var r = 0
+var c = 0
+
+for r = 0 to 2
+  for c = 0 to 3
+    tabla(r, c) = r * 100 + c
+  next
+next
+nevek(0) = "ANNA" : nevek(1) = "BELA" : nevek(2) = "CILI"
+arak(0) = 1.5 : arak(1) = 2.25 : arak(2) = arak(0) + arak(1)
+
+for r = 0 to 2
+  print nevek(r); ": "; tabla(r, 3); "  "; arak(r)
+next

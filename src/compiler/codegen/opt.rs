@@ -160,7 +160,10 @@ impl Codegen {
 
     /// True when both sides of a comparison are 8-bit.
     fn is_byte_compare(&self, l: &Expr, r: &Expr) -> bool {
-        !self.can_be_word_result(l) && !self.can_be_word_result(r)
+        !self.can_be_word_result(l)
+            && !self.can_be_word_result(r)
+            && !self.is_string_expr(l)
+            && !self.is_string_expr(r)
     }
 
     // ── arrays ──────────────────────────────────────────────────────────────
@@ -477,6 +480,150 @@ impl Codegen {
         }
     }
 
+    /// `for` with a 16-bit (`word` / `integer`) counter. Same rotated shape as
+    /// the 8-bit loop: body, `var += step` (exit on unsigned carry, or signed
+    /// overflow for signed counters), then a 16-bit `var <= limit` (`>=` when
+    /// counting down) test that jumps back to the body.
+    pub(super) fn gen_for_loop_word(
+        &mut self,
+        var: &str,
+        from: &Expr,
+        to: &Expr,
+        step: Option<&Expr>,
+        body: &[crate::compiler::ast::Stmt],
+        signed: bool,
+    ) {
+        let zp = self.alloc_var(var);
+        let perm_before = self.perm_zp;
+        let mut temps = 0u8;
+
+        // from → var (16-bit)
+        if !self.gen_word_assign(zp, from) {
+            self.eval_expr(from);
+            self.emit(0x85);
+            self.emit(zp);
+            self.emit(0xA9);
+            self.emit(0x00);
+            self.emit(0x85);
+            self.emit(zp + 1);
+        }
+        // a 16-bit operand: constant or a 2-byte snapshot in permanent ZP
+        #[derive(Clone, Copy)]
+        enum W {
+            Imm(u16),
+            Zp(u8),
+        }
+        let mut snapshot = |this: &mut Self, e: &Expr| -> W {
+            if let Expr::Number(n) = e {
+                return W::Imm(*n as u16);
+            }
+            let z = this.perm_zp;
+            this.perm_zp += 2;
+            temps += 2;
+            if !this.gen_word_assign(z, e) {
+                this.eval_expr_word(e, z, z + 1);
+            }
+            W::Zp(z)
+        };
+        let limit = snapshot(self, to);
+        let (step_op, down) = match step {
+            None => (W::Imm(1), false),
+            Some(Expr::Number(n)) if *n < 0 => (W::Imm(n.unsigned_abs()), true),
+            Some(e) => (snapshot(self, e), false),
+        };
+        let lo = |w: W| match w {
+            W::Imm(v) => Operand::Imm(v as u8),
+            W::Zp(z) => Operand::Zp(z),
+        };
+        let hi = |w: W| match w {
+            W::Imm(v) => Operand::Imm((v >> 8) as u8),
+            W::Zp(z) => Operand::Zp(z + 1),
+        };
+
+        self.emit(JMP); // JMP test
+        let entry = self.code.len();
+        self.emit16(0);
+
+        self.break_patches.push(vec![]);
+        self.continue_patches.push(vec![]);
+        let body_top = self.current_addr();
+        self.gen_stmts(body);
+        self.tmp_zp = super::TMP_BASE;
+
+        let cont = self.current_addr();
+        for pos in self.continue_patches.pop().unwrap_or_default() {
+            self.patch_abs(pos, cont);
+        }
+        // var ± step; leave on wrap-around (carry / borrow, or V when signed)
+        let (prefix, alu) = if down { (0x38u8, 0xE9u8) } else { (0x18, 0x69) };
+        self.emit(prefix);
+        self.emit(0xA5);
+        self.emit(zp);
+        self.emit_alu(alu, lo(step_op));
+        self.emit(0x85);
+        self.emit(zp);
+        self.emit(0xA5);
+        self.emit(zp + 1);
+        self.emit_alu(alu, hi(step_op));
+        self.emit(0x85);
+        self.emit(zp + 1);
+        let exit_op = if signed { 0x70 } else if down { BCC } else { BCS }; // BVS / BCC / BCS
+        self.emit(exit_op);
+        let exit_branch = self.code.len();
+        self.emit(0);
+
+        // test: continue while var <= limit (up) / var >= limit (down)
+        let test = self.current_addr();
+        self.patch_abs(entry, test);
+        let t = self.alloc_tmp();
+        // big - small, no borrow (C = 1) ⇒ continue
+        let (big_is_var, small) = if down { (true, limit) } else { (false, limit) };
+        // hi byte of the subtrahend (flipped for a signed compare) → t
+        if big_is_var {
+            self.emit_alu(0xA9, hi(small)); // LDA limit_hi
+        } else {
+            self.emit(0xA5);
+            self.emit(zp + 1); // LDA var_hi
+        }
+        if signed {
+            self.emit_alu(0x49, Operand::Imm(0x80)); // EOR #$80
+        }
+        self.emit(0x85);
+        self.emit(t);
+        self.emit(0x38); // SEC
+        if big_is_var {
+            self.emit(0xA5);
+            self.emit(zp); // LDA var_lo
+            self.emit_alu(0xE9, lo(small)); // SBC limit_lo
+            self.emit(0xA5);
+            self.emit(zp + 1); // LDA var_hi
+        } else {
+            self.emit_alu(0xA9, lo(small)); // LDA limit_lo
+            self.emit(0xE5);
+            self.emit(zp); // SBC var_lo
+            self.emit_alu(0xA9, hi(small)); // LDA limit_hi
+        }
+        if signed {
+            self.emit_alu(0x49, Operand::Imm(0x80)); // EOR #$80
+        }
+        self.emit(0xE5);
+        self.emit(t); // SBC t
+        // BCC +3 (skip the JMP when the test fails); JMP body_top
+        self.emit(BCC);
+        self.emit(3);
+        self.emit(JMP);
+        self.emit16(body_top);
+
+        let loop_end = self.current_addr();
+        self.patch_bxx(exit_branch, loop_end);
+        for pos in self.break_patches.pop().unwrap_or_default() {
+            self.patch_abs(pos, loop_end);
+        }
+        if self.perm_zp == perm_before + temps {
+            self.perm_zp = perm_before;
+        }
+    }
+
     // ── increments ──────────────────────────────────────────────────────────
 
     /// Recognise `x = x + c`, `x = c + x`, `x = x - c` where the constant step
@@ -587,7 +734,7 @@ impl Codegen {
     }
 
     /// Evaluate `e` into a fresh scratch byte (`LDA …; STA tmp`).
-    fn eval_to_tmp(&mut self, e: &Expr) -> u8 {
+    pub(super) fn eval_to_tmp(&mut self, e: &Expr) -> u8 {
         self.eval_expr(e);
         let t = self.alloc_tmp();
         self.emit(0x85);

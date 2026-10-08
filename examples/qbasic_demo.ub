@@ -1,0 +1,80 @@
+# qbasic_demo.ub — QBasic-style FUNCTION / SUB / DIM
+#
+# FUNCTION name(p AS type, ...) AS type ... END FUNCTION
+#   - return a value by assigning to the function name (Negyzet = ...)
+#   - EXIT FUNCTION returns early with the value assigned so far
+# SUB name(p AS type, ...) ... END SUB
+#   - call as  Koszont "Zsolt"   or  Koszont("Zsolt")   or  CALL Koszont("Zsolt")
+# PRINT a; b; c   — ';' joins items, a trailing ';' keeps the cursor on the line
+# Accented letters (á é ö ü ő ű ...) print as their base letter (no accents on the C64).
+# 1.6.3 also: IF x = 1 / <> / ELSEIF / single-line IF, DO … LOOP, WHILE … WEND,
+# SELECT CASE (lists, TO, IS), EXIT DO/FOR, END, string functions and signed INTEGER.
+
+FUNCTION Negyzet (szam AS INTEGER) AS INTEGER
+    Negyzet = szam * szam
+END FUNCTION
+
+FUNCTION Nagyobb (a AS BYTE, b AS BYTE) AS BYTE
+    Nagyobb = a
+    IF b > a THEN
+        Nagyobb = b
+        EXIT FUNCTION
+    END IF
+END FUNCTION
+
+SUB Koszont (nev AS STRING)
+    PRINT "Üdvözöllek, "; nev; "!"
+END SUB
+
+DIM n AS INTEGER
+DIM nev AS STRING
+
+cls
+Koszont "Zsolt"
+n = Negyzet(30)
+PRINT "30 negyzete: "; n
+PRINT "nagyobb(3, 9): "; Nagyobb(3, 9)
+
+input "Neved: ", nev
+Koszont nev
+
+' --- strings -------------------------------------------------------------
+DIM teljes AS STRING
+teljes = "Szia, " + nev + "! Hossz: " + LEN(nev)
+PRINT teljes
+PRINT LEFT$(nev, 1); "."; MID$(nev, 2, 2); "."; RIGHT$(nev, 1)
+IF nev = "ZSOLT" THEN PRINT "Ismerlek!" ELSE PRINT "Uj ismeros."
+
+' --- signed INTEGER, DO … LOOP, SELECT CASE ------------------------------
+DIM i AS INTEGER
+DIM osszeg AS INTEGER
+i = 5
+DO WHILE i >= -3
+    osszeg = osszeg + i * 100
+    i = i - 1
+LOOP
+PRINT "Osszeg: "; osszeg
+
+FOR i = -2 TO 2
+    SELECT CASE i
+        CASE IS < 0
+            PRINT i; " negativ"
+        CASE 0
+            PRINT i; " nulla"
+        CASE 1, 2
+            PRINT i; " pozitiv"
+    END SELECT
+NEXT
+
+DIM n AS INTEGER = 0
+WHILE n <> 3
+    n = n + 1
+WEND
+IF n = 1 THEN
+    PRINT "egy"
+ELSEIF n = 3 THEN
+    PRINT "harom"
+ELSE
+    PRINT "sok"
+END IF
+END

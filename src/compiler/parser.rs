@@ -101,6 +101,24 @@ pub struct Parser {
     /// `explicit` directive is active — every var / sub-param / fn-param must
     /// declare its type. Set by a pre-scan that looks for the `explicit` token.
     explicit_types: bool,
+    /// Names of every `sub` / `fn` (pre-scanned), for QBasic-style bare calls
+    /// (`koszont "zsolt"`) and for telling `;` print separators from statements.
+    sub_names: std::collections::HashSet<String>,
+    fn_names: std::collections::HashSet<String>,
+    /// While parsing a `fn` body: (fn name, hidden result var, result used).
+    /// QBasic returns a value by assigning to the function name.
+    fn_result: Option<(String, String, bool)>,
+    /// Arrays that may be indexed QBasic-style with parentheses: `tabla(1, 2)`.
+    array_names: std::collections::HashSet<String>,
+    /// Element type of each array (`input t(i)` reads into one of these).
+    array_elem_types: std::collections::HashMap<String, VarType>,
+    /// sub/fn name → names of the subs/fns its body calls (for the recursion check).
+    call_graph: std::collections::HashMap<String, std::collections::BTreeSet<String>>,
+    /// Parsing a condition (`if`/`elseif`/`while`/`until`/`loop until`): a
+    /// single `=` is a comparison there, as in BASIC.
+    in_condition: bool,
+    /// Nesting depth of QBasic `select case` (names its hidden selector var).
+    select_depth: usize,
 }
 
 impl Parser {
@@ -119,6 +137,14 @@ impl Parser {
             skip_var_check: false,
             statement_lines: vec![],
             explicit_types: false,
+            sub_names: std::collections::HashSet::new(),
+            fn_names: std::collections::HashSet::new(),
+            fn_result: None,
+            array_names: std::collections::HashSet::new(),
+            array_elem_types: std::collections::HashMap::new(),
+            call_graph: std::collections::HashMap::new(),
+            in_condition: false,
+            select_depth: 0,
         }
     }
 
@@ -137,6 +163,14 @@ impl Parser {
             skip_var_check: false,
             statement_lines: vec![],
             explicit_types: false,
+            sub_names: std::collections::HashSet::new(),
+            fn_names: std::collections::HashSet::new(),
+            fn_result: None,
+            array_names: std::collections::HashSet::new(),
+            array_elem_types: std::collections::HashMap::new(),
+            call_graph: std::collections::HashMap::new(),
+            in_condition: false,
+            select_depth: 0,
         }
     }
 
@@ -158,6 +192,14 @@ impl Parser {
             skip_var_check: false,
             statement_lines: vec![],
             explicit_types: false,
+            sub_names: std::collections::HashSet::new(),
+            fn_names: std::collections::HashSet::new(),
+            fn_result: None,
+            array_names: std::collections::HashSet::new(),
+            array_elem_types: std::collections::HashMap::new(),
+            call_graph: std::collections::HashMap::new(),
+            in_condition: false,
+            select_depth: 0,
         }
     }
 
@@ -180,6 +222,14 @@ impl Parser {
             skip_var_check: false,
             statement_lines: vec![],
             explicit_types: false,
+            sub_names: std::collections::HashSet::new(),
+            fn_names: std::collections::HashSet::new(),
+            fn_result: None,
+            array_names: std::collections::HashSet::new(),
+            array_elem_types: std::collections::HashMap::new(),
+            call_graph: std::collections::HashMap::new(),
+            in_condition: false,
+            select_depth: 0,
         }
     }
 
@@ -794,6 +844,15 @@ impl Parser {
                             }
                             _ => None,
                         }
+                    } else if self.peek_is_as() {
+                        self.advance(); // 'as'
+                        match self.parse_type_name() {
+                            Ok(vt) => Some(vt),
+                            Err(msg) => {
+                                self.errors.push(format!("line {}: parameter '{}': {}", self.line, p, msg));
+                                None
+                            }
+                        }
                     } else {
                         None
                     };
@@ -816,6 +875,665 @@ impl Parser {
             } // )
         }
         params
+    }
+
+    /// Next token is the context word `as` (`dim x as …`, `(p as …)`, `) as …`).
+    fn peek_is_as(&self) -> bool {
+        matches!(self.peek(), Token::Ident(a) if a == "as")
+    }
+
+    /// Type name after `as`: byte/int → int, integer/word → word,
+    /// single/double/float → float (Q8.8), string → string. Consumes it on success.
+    fn parse_type_name(&mut self) -> Result<VarType, String> {
+        let vt = match self.peek().clone() {
+            Token::Int => VarType::Int,
+            Token::Word => VarType::Word,
+            Token::Float => VarType::Float,
+            Token::Str => VarType::Str,
+            Token::Ident(tn) => match tn.as_str() {
+                "byte" => VarType::Int,
+                "integer" => VarType::Int16, // signed 16-bit (QBasic INTEGER)
+                "single" | "double" => VarType::Float,
+                "long" => {
+                    return Err(
+                        "'as long' (32-bit) is not supported — use 'as integer' (16-bit word)".into(),
+                    )
+                }
+                _ if self.types.contains_key(&tn) => {
+                    return Err(format!(
+                        "'as {}': struct types need an array — use 'var name: {} = array(N)'",
+                        tn, tn
+                    ))
+                }
+                _ => {
+                    return Err(format!(
+                        "unknown type '{}' after 'as' — use byte|integer|word|single|double|string",
+                        tn
+                    ))
+                }
+            },
+            _ => return Err("expected type name after 'as'".into()),
+        };
+        self.advance();
+        Ok(vt)
+    }
+
+    /// Inside `print`: does the `;` at the current position separate two print
+    /// items (`print "A"; x; "B"`) rather than end the statement (`print x; y = 1`)?
+    /// A trailing `;` (end of line) is the no-newline modifier, not a separator.
+    fn semicolon_continues_print(&self) -> bool {
+        let at = |k: usize| self.tokens.get(self.pos + k).cloned().unwrap_or(Token::Eof);
+        let next = at(1);
+        let after = at(2);
+        match next {
+            Token::StringLit(_)
+            | Token::Number(_)
+            | Token::Addr(_)
+            | Token::LParen
+            | Token::Minus
+            | Token::Not => true,
+            Token::Ident(n) => {
+                if self.sub_names.contains(&n) && !self.is_declared(&n) {
+                    false // `print "x"; koszont "y"` — a sub call statement
+                } else {
+                    !matches!(
+                        after,
+                        Token::Assign
+                            | Token::PlusEq
+                            | Token::MinusEq
+                            | Token::MulEq
+                            | Token::DivEq
+                    )
+                }
+            }
+            // builtin functions: chr$(…), peek(…), dec(…), getch() …
+            _ => after == Token::LParen,
+        }
+    }
+
+    /// `dim name(u1 [, u2 …]) [as byte|integer]` — BASIC array: every bound is
+    /// the **highest index**, so `dim t(2, 3)` is 3 × 4 elements (0..2, 0..3).
+    /// Lowered to `var name = array(…)` / `array_word(…)`. Called with the name
+    /// consumed and the current token on `(`.
+    fn parse_dim_array(&mut self, name: String) -> Option<Stmt> {
+        self.advance(); // (
+        let mut dims: Vec<u16> = vec![];
+        loop {
+            match fold_const_expr(self.parse_expr()) {
+                Expr::Number(n) if n >= 0 => dims.push(n as u16 + 1),
+                _ => {
+                    return self.reject_stmt(&format!(
+                        "'dim {}(…)': array bounds must be non-negative compile-time constants",
+                        name
+                    ))
+                }
+            }
+            if self.peek() == &Token::Comma {
+                self.advance();
+                continue;
+            }
+            break;
+        }
+        if self.peek() != &Token::RParen {
+            return self.reject_stmt(&format!("'dim {}(…)': expected ')'", name));
+        }
+        self.advance(); // )
+        let vtype = if self.peek_is_as() {
+            self.advance(); // as
+            match self.parse_type_name() {
+                Ok(VarType::Int) => VarType::Array,
+                Ok(VarType::Word) => VarType::WordArray,
+                Ok(VarType::Int16) => VarType::Int16Array,
+                Ok(VarType::Float) => VarType::FloatArray,
+                Ok(VarType::Str) => VarType::StrArray,
+                Ok(_) => VarType::Array,
+                Err(msg) => return self.reject_stmt(&msg),
+            }
+        } else {
+            if self.explicit_types {
+                self.errors.push(format!(
+                    "line {}: 'explicit' mode: 'dim {}(…)' has no type — use 'as byte|integer'",
+                    self.line, name
+                ));
+            }
+            VarType::Array
+        };
+        if self.peek() == &Token::Assign {
+            return self.reject_stmt(&format!(
+                "'dim {}(…)': arrays cannot have an initializer — use 'data {}: …'",
+                name, name
+            ));
+        }
+        let total: u32 = dims.iter().map(|&d| d as u32).product();
+        let bytes = if vtype == VarType::Array { total } else { total * 2 }; // all others: 2 bytes
+        if bytes > 0x1000 {
+            return self.reject_stmt(&format!(
+                "'dim {}(…)': {} bytes — arrays live in $C000-$CFFF (4096 bytes)",
+                name, bytes
+            ));
+        }
+        if dims.len() > 1 {
+            self.array_dims.insert(name.clone(), dims);
+        }
+        self.declared_vars.insert(name.clone());
+        self.array_names.insert(name.clone());
+        let elem = match vtype {
+            VarType::WordArray => VarType::Word,
+            VarType::Int16Array => VarType::Int16,
+            VarType::FloatArray => VarType::Float,
+            VarType::StrArray => VarType::Str,
+            _ => VarType::Int,
+        };
+        self.array_elem_types.insert(name.clone(), elem);
+        // `dim a(3) as byte, b as integer` — next declaration follows
+        if self.peek() == &Token::Comma {
+            self.tokens[self.pos] = Token::Dim;
+        }
+        self.expect_newline();
+        Some(Stmt::VarDecl {
+            name,
+            vtype: Some(vtype),
+            expr: Expr::Number(total as i16),
+        })
+    }
+
+    /// QBasic-style array access `name(i, j)`: if `name` is an array and the
+    /// current token is `(`, turn that `(` and its matching `)` into `[` `]`
+    /// so the normal `name[i, j]` code path handles it.
+    fn paren_index_to_brackets(&mut self, name: &str) {
+        if self.peek() != &Token::LParen || !self.array_names.contains(name) {
+            return;
+        }
+        let start = self.pos;
+        let mut depth = 0i32;
+        let mut k = start;
+        while k < self.tokens.len() {
+            match self.tokens[k] {
+                Token::LParen => depth += 1,
+                Token::RParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        self.tokens[start] = Token::LBracket;
+                        self.tokens[k] = Token::RBracket;
+                        return;
+                    }
+                }
+                Token::Newline | Token::Eof => return,
+                _ => {}
+            }
+            k += 1;
+        }
+    }
+
+    /// Record which subs/fns are called between token positions `from..to`
+    /// (the body of `name`). An identifier counts as a call when it names a
+    /// sub/fn, except `f = …` inside `f` itself (QBasic return-by-name) and the
+    /// handler operand of `irq` / `nmi` / `cia_timer` (not a call).
+    fn record_calls(&mut self, name: &str, from: usize, to: usize) {
+        let mut callees = std::collections::BTreeSet::new();
+        let to = to.min(self.tokens.len());
+        for k in from..to {
+            let Token::Ident(n) = &self.tokens[k] else { continue };
+            if !(self.sub_names.contains(n) || self.fn_names.contains(n)) {
+                continue;
+            }
+            if n == name && matches!(self.tokens.get(k + 1), Some(Token::Assign)) {
+                continue;
+            }
+            if k > 0 && matches!(self.tokens[k - 1], Token::Irq | Token::Nmi | Token::CiaTimer) {
+                continue;
+            }
+            callees.insert(n.clone());
+        }
+        self.call_graph.insert(name.to_string(), callees);
+    }
+
+    /// Subs/fns keep parameters and locals in fixed zero-page slots, so a
+    /// (direct or indirect) recursive call overwrites the caller's values and
+    /// returns wrong results. Report every call cycle as a compile error.
+    pub fn check_recursion(&mut self) {
+        let mut reported: std::collections::BTreeSet<Vec<String>> = Default::default();
+        let mut names: Vec<&String> = self.call_graph.keys().collect();
+        names.sort();
+        let mut errors = vec![];
+        for start in names {
+            // DFS for a path start → … → start
+            let mut stack: Vec<(String, Vec<String>)> = vec![(start.clone(), vec![start.clone()])];
+            let mut seen = std::collections::HashSet::new();
+            while let Some((cur, path)) = stack.pop() {
+                let Some(next) = self.call_graph.get(&cur) else { continue };
+                for n in next {
+                    if n == start {
+                        let mut cycle = path.clone();
+                        // canonical form: rotate so the smallest name is first
+                        let min = cycle.iter().enumerate().min_by_key(|(_, s)| (*s).clone()).map(|(i, _)| i).unwrap_or(0);
+                        cycle.rotate_left(min);
+                        if reported.insert(cycle.clone()) {
+                            let mut shown = cycle.clone();
+                            shown.push(cycle[0].clone());
+                            errors.push(format!(
+                                "recursion is not supported: {} (parameters and local variables live in fixed zero-page slots — rewrite it as a loop)",
+                                shown.join(" → ")
+                            ));
+                        }
+                    } else if seen.insert(n.clone()) {
+                        let mut p = path.clone();
+                        p.push(n.clone());
+                        stack.push((n.clone(), p));
+                    }
+                }
+            }
+        }
+        self.errors.extend(errors);
+    }
+
+    /// Skip `:` / `;` statement separators (not newlines).
+    fn skip_separators(&mut self) {
+        while matches!(self.peek(), Token::Colon | Token::Semicolon) {
+            self.advance();
+        }
+    }
+
+    /// A condition: like `parse_expr`, but a single `=` compares (BASIC).
+    fn parse_condition(&mut self) -> Expr {
+        let outer = std::mem::replace(&mut self.in_condition, true);
+        let e = self.parse_expr();
+        self.in_condition = outer;
+        e
+    }
+
+    /// After `if <cond>`: `[then] body [elseif <cond> [then] body]… [else body] end`.
+    /// Each `elseif` becomes a nested `if` in the else branch; the single
+    /// closing `end` (`end if`) is consumed by the innermost one.
+    fn parse_if_rest(&mut self, cond: Expr) -> Stmt {
+        if self.peek() == &Token::Then {
+            self.advance();
+        }
+        self.skip_separators();
+        // Statement on the THEN line: single-line IF (QBasic). It ends with the
+        // line, or with an `end` on the same line (`if c then x = 1 end`), and
+        // may have a same-line `else`.
+        if !matches!(self.peek(), Token::Newline | Token::Eof) {
+            let start_line = self.line;
+            let same_line = |this: &mut Self| {
+                let mut body = vec![];
+                loop {
+                    this.skip_separators();
+                    if this.line != start_line
+                        || matches!(this.peek(), Token::End | Token::Else | Token::ElseIf | Token::Eof | Token::Newline)
+                    {
+                        break;
+                    }
+                    if let Some(s) = this.parse_stmt() {
+                        body.push(s);
+                    }
+                }
+                body
+            };
+            let then_body = same_line(self);
+            if self.line != start_line || matches!(self.peek(), Token::Newline | Token::Eof) {
+                self.expect_newline();
+                return Stmt::If(cond, then_body, None);
+            }
+            match self.peek() {
+                Token::End => {
+                    self.advance();
+                    self.expect_newline();
+                    return Stmt::If(cond, then_body, None);
+                }
+                Token::Else => {
+                    self.advance();
+                    let else_body = same_line(self);
+                    if self.line == start_line && self.peek() == &Token::End {
+                        self.advance();
+                    }
+                    self.expect_newline();
+                    return Stmt::If(cond, then_body, Some(else_body));
+                }
+                _ => {
+                    // `elseif` after a same-line statement: continue as a block if
+                    let c = {
+                        self.advance();
+                        self.statement_lines.push(self.line);
+                        self.parse_condition()
+                    };
+                    let nested = self.parse_if_rest(c);
+                    return Stmt::If(cond, then_body, Some(vec![nested]));
+                }
+            }
+        }
+        self.expect_newline();
+        let mut then_body = vec![];
+        loop {
+            self.skip_newlines();
+            if matches!(self.peek(), Token::End | Token::Else | Token::ElseIf | Token::Eof) {
+                break;
+            }
+            if let Some(s) = self.parse_stmt() {
+                then_body.push(s);
+            }
+        }
+        if self.peek() == &Token::ElseIf {
+            self.advance();
+            // the nested `if` is one more statement for codegen's line map
+            self.statement_lines.push(self.line);
+            let c = self.parse_condition();
+            let nested = self.parse_if_rest(c);
+            return Stmt::If(cond, then_body, Some(vec![nested]));
+        }
+        let mut else_body = None;
+        if self.peek() == &Token::Else {
+            self.advance();
+            self.expect_newline();
+            let mut eb = vec![];
+            loop {
+                self.skip_newlines();
+                if matches!(self.peek(), Token::End | Token::Eof) {
+                    break;
+                }
+                if let Some(s) = self.parse_stmt() {
+                    eb.push(s);
+                }
+            }
+            else_body = Some(eb);
+        }
+        if self.peek() == &Token::End {
+            self.advance();
+        }
+        self.expect_newline();
+        Stmt::If(cond, then_body, else_body)
+    }
+
+    /// `do [while|until c] … loop [while|until c]` (QBasic). Inside a `do`
+    /// body a `loop` that ends the line (or is followed by while/until)
+    /// closes the `do`; `loop N … end` / `loop i = …` still start loops.
+    fn parse_do_loop(&mut self) -> Option<Stmt> {
+        let pre = match self.peek() {
+            Token::While | Token::Until => {
+                let is_while = self.peek() == &Token::While;
+                self.advance();
+                Some((is_while, self.parse_condition()))
+            }
+            _ => None,
+        };
+        self.expect_newline();
+        let mut body = vec![];
+        loop {
+            self.skip_newlines();
+            if self.peek() == &Token::Eof {
+                self.errors.push(format!("line {}: 'do' without 'loop'", self.line));
+                break;
+            }
+            if self.peek() == &Token::Loop
+                && matches!(
+                    self.peek2(),
+                    Token::Newline
+                        | Token::Eof
+                        | Token::While
+                        | Token::Until
+                        | Token::Colon
+                        | Token::Semicolon
+                )
+            {
+                break;
+            }
+            if let Some(s) = self.parse_stmt() {
+                body.push(s);
+            }
+        }
+        if self.peek() == &Token::Loop {
+            self.advance();
+        }
+        let post = match self.peek() {
+            Token::While | Token::Until => {
+                let is_while = self.peek() == &Token::While;
+                self.advance();
+                Some((is_while, self.parse_condition()))
+            }
+            _ => None,
+        };
+        self.expect_newline();
+        let not = |e: Expr| Expr::Not(Box::new(e));
+        Some(match (pre, post) {
+            (Some(_), Some(_)) => {
+                self.errors.push(format!(
+                    "line {}: 'do' loop with a condition at both ends",
+                    self.line
+                ));
+                Stmt::Loop(0, body)
+            }
+            (Some((true, c)), None) => Stmt::WhileLoop(c, body),
+            (Some((false, c)), None) => Stmt::WhileLoop(not(c), body),
+            (None, Some((false, c))) => Stmt::RepeatLoop(body, c),
+            (None, Some((true, c))) => Stmt::RepeatLoop(body, not(c)),
+            (None, None) => Stmt::Loop(0, body),
+        })
+    }
+
+    /// QBasic `select case <expr>` with `case a, b`, `case lo to hi`,
+    /// `case is > n` and `case else`, closed by `end select`. Lowered to a
+    /// hidden selector variable plus an `if` / `elseif` chain.
+    fn parse_select_case(&mut self) -> Option<Stmt> {
+        let sel_expr = self.parse_expr();
+        self.expect_newline();
+        self.select_depth += 1;
+        let sel = format!("select__{}", self.select_depth);
+        self.declared_vars.insert(sel.clone());
+        let sel_var = || Expr::Var(sel.clone());
+        let mut arms: Vec<(Expr, Vec<Stmt>)> = vec![];
+        let mut else_body: Option<Vec<Stmt>> = None;
+        loop {
+            self.skip_newlines();
+            match self.peek().clone() {
+                Token::Case => {
+                    self.advance();
+                    if self.peek() == &Token::Else {
+                        self.advance();
+                        if self.peek() == &Token::Colon {
+                            self.advance();
+                        }
+                        else_body = Some(self.parse_select_body());
+                        continue;
+                    }
+                    let mut cond: Option<Expr> = None;
+                    loop {
+                        let test = if matches!(self.peek(), Token::Ident(w) if w == "is") {
+                            self.advance();
+                            let op = match self.advance() {
+                                Token::Eq | Token::Assign => BinOp::Eq,
+                                Token::NotEq => BinOp::NotEq,
+                                Token::Lt => BinOp::Lt,
+                                Token::Gt => BinOp::Gt,
+                                Token::LtEq => BinOp::LtEq,
+                                Token::GtEq => BinOp::GtEq,
+                                t => {
+                                    self.errors.push(format!(
+                                        "line {}: 'case is' needs a comparison, got {}",
+                                        self.line,
+                                        token_label(&t)
+                                    ));
+                                    BinOp::Eq
+                                }
+                            };
+                            let v = self.parse_expr();
+                            Expr::BinOp(Box::new(sel_var()), op, Box::new(v))
+                        } else {
+                            let lo = self.parse_expr();
+                            if self.peek() == &Token::To {
+                                self.advance();
+                                let hi = self.parse_expr();
+                                Expr::BinOp(
+                                    Box::new(Expr::BinOp(Box::new(sel_var()), BinOp::GtEq, Box::new(lo))),
+                                    BinOp::And,
+                                    Box::new(Expr::BinOp(Box::new(sel_var()), BinOp::LtEq, Box::new(hi))),
+                                )
+                            } else {
+                                Expr::BinOp(Box::new(sel_var()), BinOp::Eq, Box::new(lo))
+                            }
+                        };
+                        cond = Some(match cond {
+                            None => test,
+                            Some(c) => Expr::BinOp(Box::new(c), BinOp::Or, Box::new(test)),
+                        });
+                        if self.peek() == &Token::Comma {
+                            self.advance();
+                            continue;
+                        }
+                        break;
+                    }
+                    if self.peek() == &Token::Colon {
+                        self.advance();
+                    }
+                    // each arm becomes an `if` statement (line map entry)
+                    self.statement_lines.push(self.line);
+                    let body = self.parse_select_body();
+                    arms.push((cond.unwrap_or(Expr::Number(0)), body));
+                }
+                Token::End => {
+                    self.advance();
+                    break;
+                }
+                Token::Eof => {
+                    self.errors.push(format!("line {}: 'select case' without 'end select'", self.line));
+                    break;
+                }
+                t => {
+                    self.errors.push(format!(
+                        "line {}: expected 'case' or 'end select', got {}",
+                        self.line,
+                        token_label(&t)
+                    ));
+                    while !matches!(self.peek(), Token::Newline | Token::Eof) {
+                        self.advance();
+                    }
+                }
+            }
+        }
+        self.expect_newline();
+        self.select_depth -= 1;
+        // build the chain from the last arm backwards
+        let mut tail = else_body;
+        for (cond, body) in arms.into_iter().rev() {
+            tail = Some(vec![Stmt::If(cond, body, tail)]);
+        }
+        let mut stmts = vec![Stmt::VarDecl { name: sel, vtype: None, expr: sel_expr }];
+        if let Some(t) = tail {
+            stmts.extend(t);
+        }
+        Some(Stmt::Block(stmts))
+    }
+
+    /// `dim name [, name …] [as type] [= expr] [, name as type …]`
+    ///
+    /// BASIC-style typed declaration, lowered to the same `Stmt::VarDecl` as
+    /// `var name: type = expr`. Type names (`as` is a context keyword, so it
+    /// stays usable as an identifier elsewhere):
+    ///
+    /// | `as …`                     | UB type  |
+    /// |----------------------------|----------|
+    /// | `byte`, `int`              | `int`    (8-bit)  |
+    /// | `integer`, `word`          | `word`   (16-bit) |
+    /// | `single`, `double`, `float`| `float`  (Q8.8)   |
+    /// | `string`                   | `string` |
+    ///
+    /// Without an initializer numbers start at 0 and strings at `""`.
+    /// `dim a, b as integer` gives both names the type (VB.NET semantics).
+    /// One `dim` yields one statement; extra names are handled by splicing
+    /// synthetic `dim` tokens back into the stream, so every enclosing block
+    /// parser sees them as ordinary follow-up statements.
+    fn parse_dim(&mut self) -> Option<Stmt> {
+        self.advance(); // 'dim'
+        let mut names: Vec<String> = vec![];
+        loop {
+            match self.peek().clone() {
+                Token::Ident(n) if n != "as" => {
+                    self.advance();
+                    if self.peek() == &Token::LParen {
+                        if !names.is_empty() {
+                            return self.reject_stmt(&format!(
+                                "'dim …, {}(…)': give an array its own 'as' — 'dim a as integer, {}(…) as integer'",
+                                n, n
+                            ));
+                        }
+                        return self.parse_dim_array(n);
+                    }
+                    self.declared_vars.insert(n.clone());
+                    names.push(n);
+                }
+                _ => return self.reject_stmt("expected variable name after 'dim'"),
+            }
+            if self.peek() == &Token::Comma {
+                self.advance();
+                continue;
+            }
+            break;
+        }
+
+        // Optional `as <type>`
+        let mut type_tok: Option<Token> = None;
+        let vtype = if self.peek_is_as() {
+            self.advance(); // 'as'
+            let t = self.peek().clone();
+            match self.parse_type_name() {
+                Ok(vt) => {
+                    type_tok = Some(t);
+                    Some(vt)
+                }
+                Err(msg) => return self.reject_stmt(&msg),
+            }
+        } else {
+            None
+        };
+
+        // Optional `= expr` (only for a single name)
+        let expr = if self.peek() == &Token::Assign {
+            if names.len() > 1 {
+                return self.reject_stmt(&format!(
+                    "'dim {}': only a single variable can be initialized in a 'dim' list",
+                    names.join(", ")
+                ));
+            }
+            self.advance();
+            self.parse_expr()
+        } else if vtype == Some(VarType::Str) {
+            Expr::StringLit(String::new())
+        } else {
+            Expr::Number(0)
+        };
+
+        if self.explicit_types && vtype.is_none() {
+            self.errors.push(format!(
+                "line {}: 'explicit' mode: 'dim {}' has no type — use 'dim {} as byte|integer|single|double|string'",
+                self.line, names[0], names[0]
+            ));
+        }
+
+        // `dim a as integer, b as string` — turn the trailing comma into a
+        // `dim` so the rest parses as the next statement.
+        if self.peek() == &Token::Comma {
+            self.tokens[self.pos] = Token::Dim;
+        }
+        // `dim a, b, c as integer` — re-emit `dim b as integer dim c as integer`.
+        let mut extra: Vec<Token> = vec![];
+        for n in names.iter().skip(1) {
+            extra.push(Token::Dim);
+            extra.push(Token::Ident(n.clone()));
+            if let Some(t) = &type_tok {
+                extra.push(Token::Ident("as".into()));
+                extra.push(t.clone());
+            }
+        }
+        if !extra.is_empty() {
+            let at = self.pos.min(self.tokens.len());
+            self.tokens.splice(at..at, extra);
+        }
+
+        self.expect_newline();
+        Some(Stmt::VarDecl {
+            name: names.swap_remove(0),
+            vtype,
+            expr,
+        })
     }
 
     fn reject_stmt(&mut self, message: &str) -> Option<Stmt> {
@@ -856,11 +1574,64 @@ impl Parser {
                         );
                         sub.pre_scan_var_decls();
                         self.declared_vars.extend(sub.declared_vars);
+                        self.sub_names.extend(sub.sub_names);
+                        self.fn_names.extend(sub.fn_names);
+                        self.array_names.extend(sub.array_names);
+                        self.array_elem_types.extend(sub.array_elem_types);
+                    }
+                }
+            } else if matches!(self.peek(), Token::Sub | Token::Fn) {
+                let is_sub = self.peek() == &Token::Sub;
+                self.advance();
+                if let Token::Ident(n) = self.peek().clone() {
+                    self.advance();
+                    if is_sub {
+                        self.sub_names.insert(n);
+                    } else {
+                        self.fn_names.insert(n);
+                    }
+                }
+            } else if self.peek() == &Token::Dim {
+                // `dim a, b as integer, c as string = "x"` — every name that
+                // starts the statement or follows a top-level comma is declared.
+                // Stops at a following `dim`/`var` so several declarations on
+                // one line are all registered.
+                self.advance(); // 'dim'
+                let mut depth = 0i32;
+                let mut expect_name = true;
+                while !matches!(
+                    self.peek(),
+                    Token::Newline | Token::Eof | Token::Dim | Token::Var
+                ) {
+                    match self.advance() {
+                        Token::Ident(n) if expect_name && depth == 0 => {
+                            if self.peek() == &Token::LParen {
+                                self.array_names.insert(n.clone());
+                            }
+                            self.declared_vars.insert(n);
+                            expect_name = false;
+                        }
+                        Token::LParen => depth += 1,
+                        Token::RParen => depth -= 1,
+                        Token::Comma if depth == 0 => expect_name = true,
+                        _ => expect_name = false,
                     }
                 }
             } else if self.peek() == &Token::Var {
                 self.advance(); // 'var'
                 if let Token::Ident(name) = self.advance() {
+                    // `var a = array(…)` / `var a: T = array(…)` — allow `a(i)` indexing too
+                    let mut k = self.pos;
+                    while let Some(t) = self.tokens.get(k) {
+                        match t {
+                            Token::Array | Token::ArrayWord => {
+                                self.array_names.insert(name.clone());
+                                break;
+                            }
+                            Token::Newline | Token::Eof => break,
+                            _ => k += 1,
+                        }
+                    }
                     self.declared_vars.insert(name);
                 }
                 // skip rest of line
@@ -1046,11 +1817,16 @@ impl Parser {
                             let mut sub = Parser::new_with_consts_and_base(toks, consts, sub_base);
                             sub.declared_vars = decl_vars;
                             sub.array_dims = self.array_dims.clone();
+                            sub.sub_names = self.sub_names.clone();
+                            sub.fn_names = self.fn_names.clone();
+                            sub.array_names = self.array_names.clone();
+                            sub.array_elem_types = self.array_elem_types.clone();
                             let sub_stmts = sub.parse();
                             self.statement_lines.extend(sub.take_statement_lines());
                             self.consts.extend(sub.consts.into_iter());
                             self.declared_vars.extend(sub.declared_vars);
                             self.array_dims.extend(sub.array_dims);
+                            self.call_graph.extend(sub.call_graph);
                             self.errors.extend(sub.errors);
                             stmts.extend(sub_stmts);
                         }
@@ -1290,6 +2066,7 @@ impl Parser {
                     color_expr,
                 })
             }
+            Token::Dim => self.parse_dim(),
             Token::Var => {
                 self.advance();
                 let name = if let Token::Ident(n) = self.advance() {
@@ -1375,6 +2152,7 @@ impl Parser {
                 }
                 // array(N) or array(R, C, ...) initializer
                 if matches!(self.peek(), Token::Array) {
+                    self.array_elem_types.insert(name.clone(), VarType::Int);
                     self.advance(); // consume 'array'
                     let (size, dims) = self.parse_array_dims();
                     if dims.len() > 1 {
@@ -1389,6 +2167,7 @@ impl Parser {
                 }
                 // array_word(N) or array_word(R, C, ...) — word (16-bit) element array
                 if matches!(self.peek(), Token::ArrayWord) {
+                    self.array_elem_types.insert(name.clone(), VarType::Word);
                     self.advance(); // consume 'array_word'
                     let (size, dims) = self.parse_array_dims();
                     if dims.len() > 1 {
@@ -1413,8 +2192,44 @@ impl Parser {
             }
             Token::Ident(name) => {
                 self.advance();
-                // Skip var-decl check for sub/fn calls: name(...)
-                if self.peek() != &Token::LParen && !self.is_declared(&name) {
+                self.paren_index_to_brackets(&name);
+                // QBasic return-by-name: `negyzet = szam * szam` inside fn negyzet
+                let next_is_assign = self.peek() == &Token::Assign;
+                let name = match &mut self.fn_result {
+                    Some((f, hidden, used)) if *f == name && next_is_assign => {
+                        *used = true;
+                        hidden.clone()
+                    }
+                    _ => name,
+                };
+                // QBasic-style call without parentheses: `koszont "zsolt"`, `rajzol x, y`
+                if (self.sub_names.contains(&name) || self.fn_names.contains(&name))
+                    && !self.is_declared(&name)
+                    && !matches!(
+                        self.peek(),
+                        Token::LParen
+                            | Token::Assign
+                            | Token::LBracket
+                            | Token::Newline
+                            | Token::Eof
+                            | Token::Colon
+                            | Token::Semicolon
+                    )
+                {
+                    let mut args = vec![self.parse_expr()];
+                    while self.peek() == &Token::Comma {
+                        self.advance();
+                        args.push(self.parse_expr());
+                    }
+                    self.expect_newline();
+                    return Some(Stmt::Call(name, args, self.line));
+                }
+                // Skip var-decl check for sub/fn calls: name(...) or bare `name`
+                if self.peek() != &Token::LParen
+                    && !self.is_declared(&name)
+                    && !self.sub_names.contains(&name)
+                    && !self.fn_names.contains(&name)
+                {
                     self.errors.push(format!(
                         "line {}: variable '{}' is not declared (use 'var {}' first)",
                         self.line, name, name
@@ -1604,7 +2419,10 @@ impl Parser {
                     Token::Newline | Token::Eof | Token::Colon | Token::Semicolon
                 ) {
                     args.push(self.parse_expr());
-                    while self.peek() == &Token::Comma {
+                    // `,` or a QBasic-style `;` between items (`print "A"; x; "B"`)
+                    while self.peek() == &Token::Comma
+                        || (self.peek() == &Token::Semicolon && self.semicolon_continues_print())
+                    {
                         self.advance();
                         if !matches!(
                             self.peek(),
@@ -1626,43 +2444,8 @@ impl Parser {
             }
             Token::If => {
                 self.advance();
-                let cond = self.parse_expr();
-                // consume 'then' if present
-                if self.peek() == &Token::Then {
-                    self.advance();
-                }
-                self.expect_newline();
-                let mut then_body = vec![];
-                let mut else_body: Option<Vec<Stmt>> = None;
-                loop {
-                    self.skip_newlines();
-                    if matches!(self.peek(), Token::End | Token::Else | Token::Eof) {
-                        break;
-                    }
-                    if let Some(s) = self.parse_stmt() {
-                        then_body.push(s);
-                    }
-                }
-                if self.peek() == &Token::Else {
-                    self.advance();
-                    self.expect_newline();
-                    let mut eb = vec![];
-                    loop {
-                        self.skip_newlines();
-                        if matches!(self.peek(), Token::End | Token::Eof) {
-                            break;
-                        }
-                        if let Some(s) = self.parse_stmt() {
-                            eb.push(s);
-                        }
-                    }
-                    else_body = Some(eb);
-                }
-                if self.peek() == &Token::End {
-                    self.advance();
-                }
-                self.expect_newline();
-                Some(Stmt::If(cond, then_body, else_body))
+                let cond = self.parse_condition();
+                Some(self.parse_if_rest(cond))
             }
             Token::For => {
                 // for i = expr to expr [step expr]
@@ -1754,7 +2537,7 @@ impl Parser {
             }
             Token::While => {
                 self.advance();
-                let cond = self.parse_expr();
+                let cond = self.parse_condition();
                 self.expect_newline();
                 let body = self.parse_body();
                 Some(Stmt::WhileLoop(cond, body))
@@ -1777,10 +2560,25 @@ impl Parser {
                 self.expect_newline();
                 Some(Stmt::Break)
             }
+            Token::Do => {
+                self.advance();
+                self.parse_do_loop()
+            }
+            // An `end` no block is waiting for: QBasic program end.
+            Token::End => {
+                self.advance();
+                self.expect_newline();
+                Some(Stmt::EndProgram)
+            }
             Token::Continue => {
                 self.advance();
                 self.expect_newline();
                 Some(Stmt::Continue)
+            }
+            Token::Select if matches!(self.peek2(), Token::Case) => {
+                self.advance(); // select
+                self.advance(); // case
+                self.parse_select_case()
             }
             Token::Select => {
                 self.advance();
@@ -2005,6 +2803,7 @@ impl Parser {
                     self.declared_vars.insert(p.clone());
                 }
                 self.expect_newline();
+                let body_start = self.pos;
                 let mut body = vec![];
                 loop {
                     self.skip_newlines();
@@ -2015,6 +2814,7 @@ impl Parser {
                         body.push(s);
                     }
                 }
+                self.record_calls(&name, body_start, self.pos);
                 if self.peek() == &Token::End {
                     self.advance();
                 }
@@ -2056,10 +2856,27 @@ impl Parser {
                         }
                         _ => None,
                     }
+                } else if self.peek_is_as() {
+                    // QBasic: `function f(x as integer) as integer`
+                    self.advance(); // 'as'
+                    match self.parse_type_name() {
+                        Ok(vt) => Some(vt),
+                        Err(msg) => {
+                            self.errors.push(format!("line {}: function '{}': {}", self.line, name, msg));
+                            None
+                        }
+                    }
                 } else {
                     None
                 };
                 self.expect_newline();
+                // QBasic return-by-name: `f = expr` inside the body stores into a
+                // hidden result variable; `exit function` / falling off the end
+                // returns it.
+                let hidden = format!("{}__result", name);
+                self.declared_vars.insert(hidden.clone());
+                let outer_fn = self.fn_result.replace((name.clone(), hidden.clone(), false));
+                let body_start = self.pos;
                 let mut body = vec![];
                 loop {
                     self.skip_newlines();
@@ -2069,6 +2886,24 @@ impl Parser {
                     if let Some(s) = self.parse_stmt() {
                         body.push(s);
                     }
+                }
+                self.record_calls(&name, body_start, self.pos);
+                let (_, _, used) = std::mem::replace(&mut self.fn_result, outer_fn).unwrap();
+                if used {
+                    let init = if ret_type == Some(VarType::Str) {
+                        Expr::StringLit(String::new())
+                    } else {
+                        Expr::Number(0)
+                    };
+                    body.insert(
+                        0,
+                        Stmt::VarDecl {
+                            name: hidden.clone(),
+                            vtype: ret_type.clone(),
+                            expr: init,
+                        },
+                    );
+                    body.push(Stmt::Return(Some(Expr::Var(hidden))));
                 }
                 if self.peek() == &Token::End {
                     self.advance();
@@ -2087,6 +2922,14 @@ impl Parser {
                     Some(self.parse_expr())
                 };
                 self.expect_newline();
+                // `exit function` (→ bare return) inside a fn returns its result var
+                let expr = match (expr, &mut self.fn_result) {
+                    (None, Some((_, hidden, used))) => {
+                        *used = true;
+                        Some(Expr::Var(hidden.clone()))
+                    }
+                    (e, _) => e,
+                };
                 Some(Stmt::Return(expr))
             }
             Token::Const => {
@@ -3005,7 +3848,7 @@ impl Parser {
                 if matches!(self.peek(), Token::Until) {
                     self.advance();
                 }
-                let cond = self.parse_expr();
+                let cond = self.parse_condition();
                 self.expect_newline();
                 Some(Stmt::RepeatLoop(body, cond))
             }
@@ -3014,7 +3857,8 @@ impl Parser {
                 // optional string prompt followed by comma
                 let prompt = if let Token::StringLit(s) = self.peek().clone() {
                     self.advance();
-                    if self.peek() == &Token::Comma {
+                    // `input "prompt", x` or QBasic `input "prompt"; x`
+                    if matches!(self.peek(), Token::Comma | Token::Semicolon) {
                         self.advance();
                     }
                     Some(s)
@@ -3033,6 +3877,37 @@ impl Parser {
                 } else {
                     String::new()
                 };
+                // `input t(i)` / `input t[i, j]`: read into a hidden variable of
+                // the element type, then store it into the element
+                self.paren_index_to_brackets(&var);
+                if self.peek() == &LBracket {
+                    self.advance();
+                    let indices = self.parse_index_exprs();
+                    let idx = self.fold_flat_index(&var, indices);
+                    self.expect_newline();
+                    let Some(elem) = self.array_elem_types.get(&var).cloned() else {
+                        self.errors.push(format!(
+                            "line {}: 'input {}(…)': not an array of numbers or strings",
+                            self.line, var
+                        ));
+                        return None;
+                    };
+                    let hidden = format!("input__{}", var);
+                    self.declared_vars.insert(hidden.clone());
+                    let init = if elem == VarType::Str {
+                        Expr::StringLit(String::new())
+                    } else {
+                        Expr::Number(0)
+                    };
+                    // three statements for codegen's line map (parse_stmt pushed one)
+                    self.statement_lines.push(self.line);
+                    self.statement_lines.push(self.line);
+                    return Some(Stmt::Block(vec![
+                        Stmt::VarDecl { name: hidden.clone(), vtype: Some(elem), expr: init },
+                        Stmt::Input { prompt, var: hidden.clone() },
+                        Stmt::ArraySet(var, idx, Expr::Var(hidden)),
+                    ]));
+                }
                 self.expect_newline();
                 Some(Stmt::Input { prompt, var })
             }
@@ -3654,6 +4529,7 @@ impl Parser {
         loop {
             let op = match self.peek() {
                 Token::Eq => BinOp::Eq,
+                Token::Assign if self.in_condition => BinOp::Eq, // BASIC `if x = 3`
                 Token::NotEq => BinOp::NotEq,
                 Token::Lt => BinOp::Lt,
                 Token::Gt => BinOp::Gt,
@@ -3706,6 +4582,11 @@ impl Parser {
 
     fn parse_primary(&mut self) -> Expr {
         match self.advance() {
+            // unary minus after an operator: `a < -10`, `x * -2`
+            Token::Minus => match self.parse_primary() {
+                Expr::Number(n) => Expr::Number(n.wrapping_neg()),
+                inner => Expr::BinOp(Box::new(Expr::Number(0)), BinOp::Sub, Box::new(inner)),
+            },
             Token::Number(n) => Expr::Number(n),
             Token::Addr(a) => Expr::Number(a as i16),
             Token::FixedLit(v) => Expr::FixedLit(v),
@@ -3724,6 +4605,7 @@ impl Parser {
                 }
             }
             Token::Ident(n) => {
+                self.paren_index_to_brackets(&n);
                 if let Some(&v) = self.consts.get(&n) {
                     Expr::Number(v)
                 } else if self.peek() == &LBracket {
@@ -4122,6 +5004,34 @@ impl Parser {
                     self.advance();
                 }
                 Expr::ChrStr(Box::new(arg))
+            }
+            Token::StrFn(f) => {
+                // left$(s, n) / right$(s, n) / mid$(s, start [, len])
+                let mut args = vec![];
+                if self.peek() == &Token::LParen {
+                    self.advance();
+                    while !matches!(self.peek(), Token::RParen | Token::Eof | Token::Newline) {
+                        args.push(self.parse_expr());
+                        if self.peek() == &Token::Comma {
+                            self.advance();
+                        } else {
+                            break;
+                        }
+                    }
+                    if self.peek() == &Token::RParen {
+                        self.advance();
+                    }
+                }
+                let want = if f == "mid$" { 2..=3 } else { 2..=2 };
+                if !want.contains(&args.len()) {
+                    self.errors.push(format!(
+                        "line {}: {}(…) takes {} arguments",
+                        self.line,
+                        f,
+                        if f == "mid$" { "2 or 3" } else { "2" }
+                    ));
+                }
+                Expr::FnCall(f, args)
             }
             Token::StrN => {
                 if self.peek() == &Token::LParen {

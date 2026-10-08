@@ -105,6 +105,15 @@ pub enum VarType {
     Word,
     Array,
     WordArray,
+    /// `dim a(n) as single|double` — 2-byte Q8.8 elements (stored like WordArray)
+    FloatArray,
+    /// `dim a(n) as string` — 2-byte string pointers (stored like WordArray)
+    StrArray,
+    /// `as integer` — signed 16-bit. Only produced by the parser; turned into
+    /// `Word` + a signed-name list by `extract_signed` before codegen.
+    Int16,
+    /// `dim a(n) as integer` — signed 16-bit elements (→ `WordArray`).
+    Int16Array,
     /// Array-of-struct: elements are instances of a user-defined `Type`.
     /// The type name is looked up in the parser's type table for field offsets.
     StructArray(String),
@@ -309,6 +318,10 @@ pub enum Stmt {
     }, // line xor x1,y1,x2,y2 — Bresenham line (toggle pixels, EOR mask)
     Gcls,                   // gcls — clear bitmap screen
     Bye,                    // bye/exit — cls then RTS back to BASIC
+    /// QBasic `end` at program level: back to BASIC like `bye`, screen kept.
+    EndProgram,
+    /// Several statements produced from one source statement (parser lowering).
+    Block(Vec<Stmt>),
     Incbin {
         path: String,
         data: Vec<u8>,
@@ -569,4 +582,107 @@ pub enum Stmt {
     Lowercase,
     /// `uppercase` — switch to uppercase/graphics charset via CHR$(142) → CHROUT ($FFD2)
     Uppercase,
+}
+
+/// Splice every `Stmt::Block` into the statement list that contains it, at any
+/// depth. The parser uses `Block` to lower one source statement into several
+/// (e.g. `select case`); codegen and its pre-scans then only see plain lists.
+pub fn flatten_blocks(stmts: Vec<Stmt>) -> Vec<Stmt> {
+    let mut out = Vec::with_capacity(stmts.len());
+    for s in stmts {
+        match s {
+            Stmt::Block(inner) => out.extend(flatten_blocks(inner)),
+            Stmt::If(c, t, e) => out.push(Stmt::If(c, flatten_blocks(t), e.map(flatten_blocks))),
+            Stmt::Loop(n, b) => out.push(Stmt::Loop(n, flatten_blocks(b))),
+            Stmt::ForLoop { var, from, to, step, body } => out.push(Stmt::ForLoop {
+                var,
+                from,
+                to,
+                step,
+                body: flatten_blocks(body),
+            }),
+            Stmt::WhileLoop(c, b) => out.push(Stmt::WhileLoop(c, flatten_blocks(b))),
+            Stmt::RepeatLoop(b, c) => out.push(Stmt::RepeatLoop(flatten_blocks(b), c)),
+            Stmt::Select { expr, cases, else_body } => out.push(Stmt::Select {
+                expr,
+                cases: cases.into_iter().map(|(v, b)| (v, flatten_blocks(b))).collect(),
+                else_body: else_body.map(flatten_blocks),
+            }),
+            Stmt::SubDef(n, p, b) => out.push(Stmt::SubDef(n, p, flatten_blocks(b))),
+            Stmt::FnDef(n, p, r, b) => out.push(Stmt::FnDef(n, p, r, flatten_blocks(b))),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Names declared signed (`as integer`): variables / arrays / parameters, and
+/// functions with a signed return type.
+#[derive(Default, Debug)]
+pub struct SignedNames {
+    pub vars: std::collections::HashSet<String>,
+    pub fns: std::collections::HashSet<String>,
+}
+
+/// Replace the parser-only `Int16` / `Int16Array` types by their storage types
+/// (`Word` / `WordArray`) and collect the signed names for codegen.
+pub fn extract_signed(stmts: &mut [Stmt], out: &mut SignedNames) {
+    fn fix(t: &mut Option<VarType>, name: &str, out: &mut SignedNames) {
+        match t {
+            Some(VarType::Int16) => {
+                *t = Some(VarType::Word);
+                out.vars.insert(name.to_string());
+            }
+            Some(VarType::Int16Array) => {
+                *t = Some(VarType::WordArray);
+                out.vars.insert(name.to_string());
+            }
+            _ => {}
+        }
+    }
+    for s in stmts.iter_mut() {
+        match s {
+            Stmt::VarDecl { name, vtype, .. } => {
+                let n = name.clone();
+                fix(vtype, &n, out)
+            }
+            Stmt::If(_, t, e) => {
+                extract_signed(t, out);
+                if let Some(e) = e {
+                    extract_signed(e, out);
+                }
+            }
+            Stmt::Loop(_, b) | Stmt::WhileLoop(_, b) | Stmt::RepeatLoop(b, _) | Stmt::Block(b) => {
+                extract_signed(b, out)
+            }
+            Stmt::ForLoop { body, .. } => extract_signed(body, out),
+            Stmt::Select { cases, else_body, .. } => {
+                for (_, b) in cases.iter_mut() {
+                    extract_signed(b, out);
+                }
+                if let Some(e) = else_body {
+                    extract_signed(e, out);
+                }
+            }
+            Stmt::SubDef(_, params, body) => {
+                for (pn, pt) in params.iter_mut() {
+                    let n = pn.clone();
+                    fix(pt, &n, out);
+                }
+                extract_signed(body, out);
+            }
+            Stmt::FnDef(name, params, ret, body) => {
+                for (pn, pt) in params.iter_mut() {
+                    let n = pn.clone();
+                    fix(pt, &n, out);
+                }
+                if matches!(ret, Some(VarType::Int16)) {
+                    *ret = Some(VarType::Word);
+                    out.fns.insert(name.clone());
+                }
+                extract_signed(body, out);
+            }
+            _ => {}
+        }
+    }
 }
