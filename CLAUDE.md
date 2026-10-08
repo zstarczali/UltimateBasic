@@ -1,6 +1,6 @@
 # NUltimate Basic
 
-Current version: **1.6.2** (1.6.2 = `tune` instrument modulation: `imod` / `ifilt` / `igate` / `itab`, frame-based player in `compiler/tune.rs`; 1.6.1 = `map view` smooth scrolling, `compiler/map_view.rs`, `map load` of Level Editor projects and to an address; 1.6.0 = optimised 6502 codegen, `codegen/opt.rs`; release notes in `whatnews.txt`, user docs in `README.md` / `MANUAL.md`).
+Current version: **1.6.3** (1.6.3 = QBasic-style syntax: `dim … as …` scalars and arrays of every type, `function`/`sub` with `as` types, return-by-name, `end sub`/`end if`, bare sub calls, `print a; b`, ELSEIF / DO-LOOP / WHILE-WEND / SELECT CASE, runtime strings (`codegen/strings.rs`), signed INTEGER, 16-bit for loops, recursion check; deferred work in `ROADMAP.md`; 1.6.2 = `tune` instrument modulation: `imod` / `ifilt` / `igate` / `itab`, frame-based player in `compiler/tune.rs`; 1.6.1 = `map view` smooth scrolling, `compiler/map_view.rs`, `map load` of Level Editor projects and to an address; 1.6.0 = optimised 6502 codegen, `codegen/opt.rs`; release notes in `whatnews.txt`, user docs in `README.md` / `MANUAL.md`).
 
 A custom BASIC-like language compiler targeting the Commodore 64 and Commodore 64 Ultimate. Produces `.prg` files runnable in VICE or on real hardware.
 
@@ -30,6 +30,7 @@ src/
     ast.rs             – Expr, Stmt, BinOp, ColorTarget, VarType enums
     codegen.rs         – 6502 code generator (Codegen)
     codegen/opt.rs     – optimised paths: conditions, operands, mul/div, arrays, for, A-reuse
+    codegen/strings.rs – runtime strings: concat, left$/right$/mid$, number↔text, compare, input conversion
 examples/
   features.ub          – original feature demo
   new_features.ub      – arrays, word vars, sub params, string vars demo
@@ -50,6 +51,8 @@ examples/
   text_scroll_demo.ub – hardware horizontal fine scroll text scroller
   fn_demo.ub          – text scroller rewritten with fn + typed string params
   function_demo.ub    – fn return value demo (square, add, max, clamp)
+  dim_demo.ub         – DIM … AS … scalars and arrays (integer, string, double)
+  qbasic_demo.ub      – QBasic-style FUNCTION / SUB / IF-ELSEIF / DO-LOOP / SELECT CASE / strings / signed INTEGER
 ```
 
 ## Architecture
@@ -157,6 +160,80 @@ as that keyword — use non-keyword names like `SCRADDR`, `BORDER_ADDR`.
 | `array_word(N)` | N×2 bytes | word (16-bit) elements; lives at `$C000+`, not ZP |
 | `array(R, C, …)` | ∏dims bytes | multi-dimensional (row-major); index `arr[r, c]` |
 | `array_word(R, C, …)` | ∏dims×2 bytes | multi-dimensional word array (row-major) |
+
+#### BASIC-style declarations: `dim … as …`
+
+`dim name as type` is an alternative spelling of `var name: type` — same storage, same code:
+
+```basic
+DIM kor AS INTEGER          # signed 16-bit, starts at 0
+DIM nev AS STRING           # string, starts as ""
+DIM fizetes AS DOUBLE       # Q8.8 fixed point, starts at 0.00
+DIM x, y AS BYTE            # several names, all get the type
+DIM pont AS INTEGER = 1000, cim AS STRING = "C64"   # initializers, mixed types
+```
+
+| `as …` | Ultimate Basic type |
+|---|---|
+| `byte`, `int` | `int` (8-bit, 0–255) |
+| `integer` | signed 16-bit (−32768 … 32767) — QBasic INTEGER |
+| `word` | `word` (unsigned 16-bit, 0–65535) |
+| `single`, `double`, `float` | `float` (Q8.8 — 0–255.99, **not** IEEE floating point) |
+| `string` | `string` |
+
+- Without `= value`, numbers start at 0 and strings at `""`.
+- `dim a, b as integer` gives **both** names the type (VB.NET style, not QBasic).
+  Only a single name may have an initializer.
+- `as` and the BASIC type names are context words, not reserved — they remain usable as names.
+- Not supported: `as long`, struct types (use `var name: TName = array(N)`) —
+  compile-time errors.
+- With `--explicit`, a `dim` without `as` is an error.
+- String assignment has value semantics: `s = "TEXT"` points at the literal, `t = s` and
+  computed values are copied into `t`'s own buffer (see *Strings at runtime*). Before
+  1.6.3, `s = "TEXT"` after the declaration stored a garbage byte into the pointer.
+
+#### Arrays with `dim`: `dim name(u1, u2, …) as type`
+
+```basic
+DIM tabla(2, 3) AS INTEGER     ' 3 × 4 elements: tabla(0..2, 0..3)
+DIM kocka(1, 2, 3) AS BYTE     ' any number of dimensions
+DIM ar(9) AS DOUBLE            ' 10 Q8.8 values
+DIM nevek(4) AS STRING         ' 5 strings, all start as ""
+DIM v(9)                       ' no AS → byte array
+
+tabla(2, 3) = 999              ' QBasic-style index with ( )
+tabla[2, 3] = 999              ' … or the usual [ ]
+nevek(0) = "ZSOLT"
+PRINT tabla(2, 3); " "; nevek(0); " "; ar(1)
+```
+
+- Every bound is the **highest index** (BASIC rule): `dim t(2, 3)` has 3 × 4 elements.
+  (`var t = array(3, 4)` takes element counts — same array.)
+- Element types: `byte`/`int` → 1 byte, `integer` (signed) / `word` → 2 bytes,
+  `single`/`double`/`float` → 2-byte Q8.8, `string` → 2-byte pointer. Bounds must be
+  compile-time constants; arrays live in `$C000-$CFFF` (4096 bytes, checked).
+- String-array elements start as `""`; `nevek(i) = "TEXT"` / `= s` / `= a + b`,
+  `n = nevek(i)`, printing, `+`, passing to a `string` parameter and `input nevek(i)` all
+  work (non-literal values are copied into a 31-character slot per element).
+- `name(i)` indexing also works for arrays declared with `var a = array(…)`.
+- One array per `dim` group: `dim a(3) as byte, n as integer` is fine,
+  `dim n, a(3) as integer` is an error. No initializer — use `data name: …`.
+
+Implementation: `Parser::parse_dim_array` (bounds + 1 → `array_dims`, size check) lowers to
+`VarDecl` with `Array` / `WordArray` / `FloatArray` / `StrArray`; `paren_index_to_brackets`
+rewrites `name(` … `)` to `[` … `]` for names in `array_names` (pre-scanned from `dim x(` and
+`var x = array…`). Codegen keeps float/string arrays as word arrays (`word_arrays`) plus
+`float_arrays` / `str_arrays`: print (`print_fixed` / `print_str_via_ptr`), int-literal →
+Q8.8 promotion, string literal → `emit_inline_string` address, `emit_str_array_fill` points all
+elements at a shared `""`. Word-array elements now print as 16-bit and load both bytes in
+`eval_expr_word` (both broken before). Tests: `dim_arrays_all_types`,
+`word_array_print_and_arithmetic`, `string_array_elements_as_values`.
+
+Implementation: `Token::Dim` (lexer); `Parser::parse_dim` lowers to `Stmt::VarDecl`. Extra
+names are handled by splicing synthetic `dim` tokens back into the token stream (`dim a, b as T`
+→ `dim a as T dim b as T`; a trailing `, c as U` comma is rewritten to `dim`), so every block
+parser sees ordinary statements. `pre_scan_var_decls` registers every name after `dim` / a
+top-level comma. Tests: `dim_*` and `string_var_reassignment` in `tests/codegen_semantics.rs`.
 
 ### Arithmetic & Bitwise
 
@@ -356,7 +433,8 @@ add(10, 20)
 ```
 
 Parameters are passed via dedicated zero-page slots (allocated in pre-scan).
-Recursion is **not** supported (ZP slots are static).
+Recursion is **not** supported (ZP slots are static) — since 1.6.3 `Parser::check_recursion`
+reports any call cycle as a compile error.
 
 Typed parameters are preserved end-to-end:
 ```basic
@@ -393,6 +471,168 @@ before RTS. The caller reads from that pair after JSR.
 
 `fn` is emitted in pass 2 (same as `sub`), so function bodies are never executed
 at startup. Forward references are fully supported.
+
+
+#### QBasic-style `FUNCTION` / `SUB`
+
+```basic
+FUNCTION Negyzet (szam AS INTEGER) AS INTEGER
+    Negyzet = szam * szam          ' return value = assign to the function name
+END FUNCTION
+
+FUNCTION Nagyobb (a AS BYTE, b AS BYTE) AS BYTE
+    Nagyobb = a
+    IF b > a THEN
+        Nagyobb = b
+        EXIT FUNCTION              ' return now, with the value assigned so far
+    END IF
+END FUNCTION
+
+SUB Koszont (nev AS STRING)
+    PRINT "Üdvözöllek, "; nev; "!"
+END SUB
+
+n = Negyzet(30)
+Koszont "Zsolt"                    ' call without parentheses
+Koszont("Zsolt")                   ' ... or with them
+CALL Koszont("Zsolt")
+```
+
+- `function` is a synonym for `fn`; `p AS type` works in parameter lists and `AS type`
+  after `)` gives the return type (same type names as `dim`). `: type` still works.
+- Assigning to the function name stores into a hidden `<name>__result` variable that is
+  returned at `END FUNCTION` / `EXIT FUNCTION`; `return expr` still works too.
+- `END SUB`, `END FUNCTION`, `END IF`, `END SELECT` are accepted (the second word is
+  optional); `EXIT SUB` / `EXIT FUNCTION` return (plain `exit` is still `bye`).
+- A sub/fn can be called without parentheses: `Koszont "Zsolt"`, `Rajzol x, y`.
+- `PRINT a; b; c` — `;` joins items without spaces; a trailing `;` suppresses the newline.
+  A `;` followed by a statement (`print x; y = 1`) still separates statements.
+- Accented letters in string literals print as their base letter (`ü` → `u`, `ő` → `o`);
+  the C64 charset has no accents.
+- Word/float parameters now receive both bytes, and a string literal passed to a
+  `string` parameter works (before, only the lo byte / a string variable worked).
+- No recursion (parameters live in static zero-page slots); since 1.6.3 a recursive call
+  is a compile error instead of silently wrong results.
+
+Implementation: lexer `"function" => Token::Fn`; `normalize_basic_block_words` (end of
+`tokenize`) drops `sub|fn|if|select` right after `end` and turns `exit sub|fn` into
+`return`. Parser: `peek_is_as` / `parse_type_name` (shared with `dim`), `fn_result`
+(name, hidden var, used) while parsing a fn body — `name = expr` becomes an assign to
+the hidden var, a bare `return` returns it, and if used the body gets a leading
+`VarDecl` and a trailing `Return`. `sub_names` / `fn_names` (pre-scanned) drive bare calls
+and `semicolon_continues_print`. Codegen: `emit_param_stores` (shared by `Stmt::Call` and
+both `Expr::FnCall` paths), `ascii_to_petscii` folds accents. Tests: `qbasic_*`,
+`word_and_string_literal_params`, `print_semicolon_forms`.
+
+
+#### More QBasic syntax (1.6.3)
+
+The QBasic forms below compile next to the original syntax (`==`, `end`, `loop`, `#`
+comments all keep working).
+
+```basic
+' comment (QBasic style, like #)
+IF x = 3 THEN PRINT "three"            ' single-line IF: no END IF needed
+IF x <> 3 THEN PRINT "no" ELSE PRINT "yes"
+IF n < 0 THEN
+    PRINT "negative"
+ELSEIF n = 0 THEN
+    PRINT "zero"
+ELSE
+    PRINT "positive"
+END IF
+
+DO WHILE i < 10 : i = i + 1 : LOOP     ' also DO UNTIL c … LOOP,
+DO : i = i - 1 : LOOP UNTIL i = 0      ' DO … LOOP WHILE c, DO … LOOP (endless)
+WHILE k <> 5 : k = k + 1 : WEND
+FOR i = 1 TO 100
+    IF i = 12 THEN EXIT FOR             ' EXIT DO / EXIT FOR / EXIT WHILE
+NEXT
+
+SELECT CASE n
+    CASE 1, 2, 3       : PRINT "small"
+    CASE 10 TO 20      : PRINT "teen"
+    CASE IS > 1000     : PRINT "big"
+    CASE ELSE          : PRINT "other"
+END SELECT
+
+END                                     ' ends the program (screen is kept)
+```
+
+- **Conditions:** inside `IF` / `ELSEIF` / `WHILE` / `UNTIL` / `LOOP WHILE|UNTIL`, a single `=`
+  compares. `<>` means not equal everywhere (same as `!=`).
+- **Single-line IF:** a statement right after `THEN` makes a single-line IF that ends with
+  the line, or with an `end` on the same line (`if c then x = 1 end`, as before). A
+  multi-line IF needs a line break after `THEN`. As in QBasic, everything after `THEN` on
+  that line belongs to the IF (`… THEN EXIT FOR : NEXT` would swallow the `NEXT`).
+- **`END` on its own:** an `END` that does not close a block ends the program, like
+  QBasic. A surplus `end` therefore no longer shows up as an error.
+- **`DO` blocks:** inside a `DO`, a `LOOP` at the end of a line closes it (the original
+  `loop N … end` / `loop i = … end` loops still work inside).
+- **`SELECT CASE`:** the old `select x` / `case n:` form is unchanged. `SELECT CASE` is
+  lowered to an IF chain over a hidden `select__N` variable.
+
+#### Strings at runtime (1.6.3)
+
+```basic
+DIM s AS STRING, t AS STRING
+s = "Pont: " + pont + "!"            ' numbers become text (16-bit, signed for INTEGER)
+t = s                                ' a copy: changing s later does not change t
+s = s + "?"
+PRINT LEFT$(s, 4); RIGHT$(s, 2); MID$(s, 7, 3); MID$(s, 7)
+PRINT LEN(s + t), VAL("1234") + 1, STR$(pont)
+IF s = "ABC" OR t <> "" THEN PRINT "compare with = / <>"
+```
+
+- **Buffers:** a string variable that gets a computed value (`+`, `left$`, `right$`, `mid$`,
+  numbers, another variable) owns an 80-character buffer; longer results are cut at 80.
+  Assigning a literal still just points at it.
+- **String arrays:** elements that get a non-literal value (or `input`) get their own
+  32-byte slot (31 characters), so `input nevek(i)` in a loop keeps every name.
+- **`STR$` / `VAL`:** `STR$` of a 16-bit or signed value has no leading zeros (`"-42"`). For
+  compatibility, `STR$` of a byte keeps the 3-digit form (`"007"`). `VAL` reads 16-bit
+  signed numbers (`VAL("1234") + 1` = 1235).
+- **Comparison:** only `=` / `<>` (and `==` / `!=`); there is no `<` / `>` ordering of
+  strings.
+
+#### Signed INTEGER, INPUT, DOUBLE (1.6.3)
+
+- **INTEGER is signed:** `DIM x AS INTEGER` is signed 16-bit (−32768 … 32767, like QBasic):
+  printing, `<` `>` comparisons, `/` (truncates toward zero), `ABS`, text conversion,
+  `INPUT` and `FOR` loops through zero (`FOR i = 3 TO -3 STEP -2`) all follow the sign.
+  `WORD` stays unsigned 0 … 65535. Unary minus works anywhere (`a < -10`, `x * -2`).
+- **`FOR` with a 16-bit counter** (`INTEGER` / `WORD`) is a real 16-bit loop. It used
+  to wrap at 256, so `FOR k = 0 TO 300` ran 45 times.
+- **`INPUT`:** into an INTEGER / WORD reads up to 6 characters (with `-` for INTEGER), into
+  a DOUBLE accepts `12.5` (two decimals). `INPUT t(i)` reads into an array element, and
+  `INPUT "prompt"; x` works too.
+- **DOUBLE ÷ DOUBLE** is exact now (`7.5 / 2.5 = 3.00`); before, only the divisor's integer
+  part was used. DOUBLE × DOUBLE was already supported.
+- **Arrays over 256 bytes** (`DIM t(200) AS INTEGER`, `DIM g(19, 19)`) work with variable
+  indices; the index used to wrap at 256 and write into the wrong element.
+- **Recursion** (a sub/function calling itself, directly or through others) is a compile
+  error. It used to compile and return wrong results, because parameters live in fixed
+  zero-page slots.
+
+Implementation (1.6.3 round 2): lexer `'` comments, `<>` → `NotEq`, `elseif`/`do`/`wend`(→`End`)
+tokens, `exit do|for|while` → `Break`, `StrFn("left$"|"right$"|"mid$")` → `Expr::FnCall`.
+Parser: `parse_condition` (`in_condition` makes `Assign` an `Eq`), `parse_if_rest`
+(single-line IF, ELSEIF chain; extra `statement_lines` entries keep codegen's line map in
+step), `parse_do_loop`, `parse_select_case` (hidden `select__N` + IF chain in a
+`Stmt::Block`), stray `End` → `Stmt::EndProgram`, `input arr(i)` → `Block[VarDecl hidden,
+Input, ArraySet]`, `record_calls` / `check_recursion` (call graph, run from `compile()`).
+`ast::flatten_blocks` splices every `Block` away before codegen; `ast::extract_signed`
+turns `Int16`/`Int16Array` into `Word`/`WordArray` and fills `Codegen::signed_vars` /
+`signed_fns`. Codegen: `codegen/strings.rs` (runtime string engine: ZP block `str_zp`, routines
+emitted once inline behind a JMP — append, skip, len, utoa/itoa, atoi, compare; per-var
+80-char buffers, per-depth scratch buffers, per-param buffers, 32-byte string-array slots;
+`emit_input_number` for 16-bit / Q8.8 input), `gen_for_loop_word` (opt.rs),
+`emit_big_array_ptr` for arrays > 256 bytes, exact Q8.8 ÷ Q8.8 in `eval_expr_word`, signed
+compare (EOR #$80 on both high bytes), signed print/division/abs. `patch_bxx`
+debug-asserts the branch range. Test harness: `run_src_with_input` feeds BASIN ($FFCF).
+Tests: `word_for_loops`, `big_arrays_with_variable_index`, `recursion_is_a_compile_error`,
+`qbasic_control_structures`, `single_line_if_forms`, `end_statement_ends_program`,
+`runtime_strings`, `input_kinds`, `signed_integers`, `float_mul_div`, `qbasic_demo_runs`.
 
 ### Arrays
 
@@ -899,7 +1139,7 @@ print f                  # prints as "N.DD" (always 2 fractional digits)
 - `int(f)` emits `LDA zp+1` (hi byte)
 - `print f` calls `print_fixed(zp)`: prints hi via `print_decimal`, then `.`, then `(lo*100)>>8` as 2-digit zero-padded decimal via Russian Peasant multiply
 - Arithmetic uses the same 16-bit path as `word` vars (`eval_expr_word` / `gen_word_assign`)
-- No float multiplication or division between two float vars (not implemented)
+- float × float (16×16 shift-add) and exact float ÷ float (24÷16, since 1.6.3) are supported
 - `print` of an arithmetic expression involving a float (`print a / 10`) goes through `eval_expr_word` + `print_fixed`, so it prints `N.DD` (it printed the raw Q8.8 integer before 1.5.7). The fraction is truncated, not rounded (`1/10` → `0.09`)
 
 ### Math Functions
@@ -1101,6 +1341,8 @@ input "Score: ", score   # prompt + int input
 
 `input` uses KERNAL BASIN (`$FFCF`) for blocking, echoed line input with DEL support.
 - **Int var**: accepts only `0`–`9`, max 3 chars; converts digit string → 8-bit value on CR.
+- **Word / signed / float var** (1.6.3): 6 chars (`-` if signed, `.` if float), converted by
+  `emit_input_number` (atoi helper; Q8.8 fraction via a 100-entry round-up table).
 - **String var**: accepts up to 30 chars; stores as null-terminated string in inline buffer; pointer stored in the string var's ZP pair.
 
 ### Memory Utilities
@@ -1573,11 +1815,10 @@ labels. The `.dbg` format does not yet include instruction-to-source-line mappin
 
 | Feature | Limitation |
 |---|---|
-| Integer arithmetic | 8-bit unsigned (0–255); `word` vars hold 16-bit values |
+| Integer arithmetic | `var`/`byte` 8-bit unsigned, wraps silently (`var c = a + b` stays a byte by design — see `can_be_word_result`); `integer` signed 16-bit (`signed_vars`), `word` unsigned 16-bit |
 | Zero page budget | Permanent ZP is `$02–$4F` (78 bytes): every variable and sub/fn parameter takes 2 bytes, every running `for` loop 2 more (freed when the loop ends, if its body declared no variables). Exceeding it is a compile-time error ("out of zero page"). Reuse variables in big programs |
 | Subroutines | No recursion — ZP parameter slots are statically allocated |
-| String vars | Read-only after init; assignment replaces the pointer, not the data |
-| String concat runtime | `s1 + s2` prints sequentially — no heap allocation or length tracking |
+| String vars | Computed values: 80-char buffer per variable (cut at 80); string-array element values: 31-char slots; no `<`/`>` ordering of strings |
 | `rnd()` | Simple LCG, not cryptographic; period = 256 |
 | `abs()` / `sgn()` / `min()` / `max()` | 8-bit values only; `abs`/`sgn` treat values as signed (bit 7 = negative → `abs` two's-complements, `sgn` returns `$FF`); `min`/`max` are unsigned (0–255) |
 | `plot` | Out-of-range pixels are silently clipped (CheckPlot: Y ≥ 200 or X ≥ 320 → skip) |
@@ -1589,5 +1830,5 @@ labels. The `.dbg` format does not yet include instruction-to-source-line mappin
 | `music play` | Requires `load sid`; emits one shared wrapper (last `music play` wins if called multiple times) |
 | Error reporting | Compile-time only; `onerr goto` handles KERNAL I/O errors at runtime |
 | `poke`/`peek` with offset | `poke ptr + i, val` truncates `ptr+i` to 8 bits when `i` is a variable; use `msg[i]` for 16-bit-safe indexed access |
-| `fn` return values | 8-bit return works in all expression contexts; `: word` return works for `var w: word = fn()` but 16-bit fn calls in 8-bit contexts read only the lo byte |
+| `fn` return values | 16-bit (`: word` / `as integer`) and float returns are word results everywhere since 1.6.3 (`can_be_word_result` knows `fn_ret_types`); a 16-bit result in a pure 8-bit expression still uses the lo byte |
 | `fn` bodies inside `sub` | Not scanned recursively by pre_scan helpers (has_plot_stmt, etc.) — any required ZP helpers must be detected at the top level |

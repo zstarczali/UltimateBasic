@@ -1,5 +1,57 @@
-Ultimate Basic v1.6.2 – Release Notes
+Ultimate Basic v1.6.3 – Release Notes
 ======================================
+
+2026-10-08 – Release 1.6.3: QBasic-style DIM, arrays, FUNCTION / SUB
+------------------------------------------------------------------
+  New
+  - dim name as type [= value] [, name as type ...]: BASIC-style typed
+    declaration, same as var name: type. Types: byte/int (8-bit),
+    integer/word (16-bit), single/double/float (Q8.8), string.
+    Numbers start at 0, strings at "". dim a, b as integer types both.
+    See examples/dim_demo.ub.
+  - QBasic-style FUNCTION name(p AS type) AS type ... END FUNCTION and
+    SUB name(p AS type) ... END SUB. Return a value by assigning to the
+    function name; EXIT FUNCTION / EXIT SUB return early. END IF and
+    END SELECT are accepted too. function = fn.
+  - Subs can be called without parentheses: Koszont "Zsolt".
+  - PRINT a; b; c joins items with ';' (trailing ';' = no newline).
+  - Accented letters in strings print as the base letter (ü -> u).
+    See examples/qbasic_demo.ub.
+  - dim name(u1, u2, ...) as type: arrays for every type (byte, integer,
+    single/double, string), any number of dimensions, bounds = highest
+    index (dim t(2, 3) = 3 x 4). Index with t(i, j) or t[i, j].
+  - QBasic control flow: IF x = 3 and <> in conditions, single-line
+    IF ... THEN ... ELSE ..., ELSEIF, DO [WHILE|UNTIL c] ... LOOP [WHILE|
+    UNTIL c], WHILE ... WEND, SELECT CASE (a, b / lo TO hi / IS > n /
+    CASE ELSE), EXIT DO / EXIT FOR / EXIT WHILE, END ends the program,
+    ' comments.
+  - Runtime strings: s = a + b (+ numbers), value copies (t = s),
+    LEFT$ / RIGHT$ / MID$, LEN of any string expression, string = / <>,
+    16-bit STR$ (no leading zeros) and VAL. 80-char buffer per variable,
+    31-char slot per string-array element.
+  - INTEGER is signed 16-bit (-32768..32767): print, compare, divide,
+    ABS, FOR through zero, unary minus anywhere. WORD stays unsigned.
+  - INPUT into INTEGER / WORD (16-bit), DOUBLE ("12.5"), array elements;
+    INPUT "prompt"; x.
+  - DOUBLE / DOUBLE is exact (the divisor's fraction was ignored).
+  - Recursive subs / functions are a compile error (they compiled and
+    returned wrong values: parameters live in fixed zero-page slots).
+  - ROADMAP.md: deferred work (ROM floating point, variables in RAM,
+    more array space).
+  Fixed
+  - for loops with a 16-bit counter wrapped at 256 (for x = 0 to 319 ran
+    64 times; wide_x_demo never drew past x = 255).
+  - arrays over 256 bytes with a variable index wrote the wrong element.
+  - print of a 16-bit function result printed only the low byte.
+  - word x word multiplied by the right operand's low byte only
+    (300 * 300 gave 13200); now a full 16x16 multiply (low 16 bits).
+  - map_view unit test: u16 overflow in debug builds.
+  - print of a word-array element printed 0; word-array elements in
+    16-bit arithmetic (w = t[i] + 5) used only the low byte.
+  - word / float sub and fn parameters received only the low byte.
+  - a string literal passed to a string parameter arrived as garbage.
+  - s = "TEXT" and s = t on a string variable repoint the string; the
+    assignment used to write one garbage byte into the pointer.
 
 2026-10-04 – Release 1.6.2: tracker instruments
 ------------------------------------------------------------------

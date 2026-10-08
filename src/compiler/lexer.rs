@@ -7,6 +7,7 @@ pub enum Token {
 
     // Keywords
     Var,
+    Dim, // `dim name as type` — BASIC-style typed declaration
     Sub,
     Fn,
     TypeKw,   // `type` — begin a struct-type definition block
@@ -16,6 +17,8 @@ pub enum Token {
     If,
     Then,
     Else,
+    ElseIf, // QBasic `elseif`
+    Do,     // QBasic `do … loop [until|while]`
     Loop,
     While,
     To,
@@ -85,6 +88,7 @@ pub enum Token {
     Pause,       // pause — sub-keyword for music pause
     Resume,      // resume — sub-keyword for music resume
     OnErr,       // onerr goto label — install KERNAL IERROR handler ($0300/$0301)
+    StrFn(String), // left$ / right$ / mid$
     StrN,        // str$(n) — convert 8-bit integer to 3-digit decimal string pointer
     Int,
     Str,
@@ -263,7 +267,8 @@ impl Lexer {
                     tokens.push(Token::Newline);
                     self.line += 1;
                 }
-                Some('#') => {
+                // `#` and QBasic `'` start a comment to the end of the line
+                Some('#') | Some('\'') => {
                     while !matches!(self.peek(), None | Some('\n')) {
                         self.advance();
                     }
@@ -357,6 +362,9 @@ impl Lexer {
                     if self.peek() == Some('=') {
                         self.advance();
                         tokens.push(Token::LtEq);
+                    } else if self.peek() == Some('>') {
+                        self.advance();
+                        tokens.push(Token::NotEq); // BASIC `<>`
                     } else {
                         tokens.push(Token::Lt);
                     }
@@ -408,7 +416,7 @@ impl Lexer {
                 }
             }
         }
-        tokens
+        normalize_basic_block_words(tokens)
     }
 
     fn read_string(&mut self) -> Token {
@@ -486,6 +494,11 @@ impl Lexer {
             self.advance();
             return Token::StrN;
         }
+        // left$ / right$ / mid$ — string functions (parsed as built-in calls)
+        if matches!(sl.as_str(), "left" | "right" | "mid") && self.peek() == Some('$') {
+            self.advance();
+            return Token::StrFn(format!("{}$", sl));
+        }
         match sl.as_str() {
             "print" => {
                 // print# (file print) — consume '#' immediately following with no space
@@ -496,14 +509,19 @@ impl Lexer {
                 Token::Print
             }
             "var" => Token::Var,
+            "dim" => Token::Dim,
             "sub" => Token::Sub,
             "fn" => Token::Fn,
+            "function" => Token::Fn, // QBasic spelling
             "type" => Token::TypeKw,
             "endtype" => Token::EndType,
             "end" => Token::End,
             "if" => Token::If,
             "then" => Token::Then,
             "else" => Token::Else,
+            "elseif" => Token::ElseIf,
+            "do" => Token::Do,
+            "wend" => Token::End, // QBasic `while … wend` = `while … end`
             "loop" => Token::Loop,
             "while" => Token::While,
             "to" => Token::To,
@@ -703,6 +721,31 @@ impl Lexer {
     }
 }
 
+/// QBasic-style two-word block keywords:
+/// - `end sub` / `end function` / `end if` / `end select` → plain `end`
+///   (the word after `end` is dropped, every block already closes on `end`)
+/// - `exit sub` / `exit function` → `return` (`exit` alone is still `bye`)
+/// - `exit do` / `exit for` / `exit while` → `break`
+fn normalize_basic_block_words(tokens: Vec<Token>) -> Vec<Token> {
+    let mut out: Vec<Token> = Vec::with_capacity(tokens.len());
+    for t in tokens {
+        match (out.last(), &t) {
+            (Some(Token::End), Token::Sub | Token::Fn | Token::If | Token::Select) => continue,
+            (Some(Token::Bye), Token::Sub | Token::Fn) => {
+                *out.last_mut().unwrap() = Token::Return;
+                continue;
+            }
+            // `exit do` / `exit for` / `exit while` → `break`
+            (Some(Token::Bye), Token::Do | Token::For | Token::While) => {
+                *out.last_mut().unwrap() = Token::Break;
+                continue;
+            }
+            _ => out.push(t),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -802,6 +845,23 @@ mod tests {
     #[test]
     fn kw_var() {
         assert_eq!(tokenize("var")[0], Token::Var);
+        assert_eq!(tokenize("DIM")[0], Token::Dim);
+        assert_eq!(tokenize("FUNCTION")[0], Token::Fn);
+        assert_eq!(tokenize("end sub"), vec![Token::End, Token::Eof]);
+        assert_eq!(tokenize("END FUNCTION"), vec![Token::End, Token::Eof]);
+        assert_eq!(tokenize("end if"), vec![Token::End, Token::Eof]);
+        assert_eq!(tokenize("exit sub"), vec![Token::Return, Token::Eof]);
+        assert_eq!(tokenize("exit function"), vec![Token::Return, Token::Eof]);
+        assert_eq!(tokenize("exit")[0], Token::Bye);
+        assert_eq!(tokenize("exit do"), vec![Token::Break, Token::Eof]);
+        assert_eq!(tokenize("exit for"), vec![Token::Break, Token::Eof]);
+        assert_eq!(tokenize("a <> b")[1], Token::NotEq);
+        assert_eq!(tokenize("wend")[0], Token::End);
+        assert_eq!(tokenize("elseif")[0], Token::ElseIf);
+        assert_eq!(tokenize("x = 1 ' comment"), tokenize("x = 1"));
+        // `as` and BASIC type names stay identifiers (context keywords)
+        assert_eq!(tokenize("as")[0], Token::Ident("as".into()));
+        assert_eq!(tokenize("INTEGER")[0], Token::Ident("integer".into()));
     }
     #[test]
     fn kw_sub() {

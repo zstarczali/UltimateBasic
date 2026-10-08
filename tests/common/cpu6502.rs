@@ -11,6 +11,7 @@ use ultimate_basic::compiler::{compile, CompileOptions, CompileResult};
 
 pub const CHROUT: u16 = 0xFFD2;
 pub const GETIN: u16 = 0xFFE4;
+pub const BASIN: u16 = 0xFFCF;
 
 pub struct Cpu {
     pub mem: Vec<u8>,
@@ -28,6 +29,8 @@ pub struct Cpu {
     pub cycles: u64,
     pub steps: u64,
     pub output: Vec<u8>,
+    /// Keys returned by BASIN ($FFCF), in order; CR once empty.
+    pub input: std::collections::VecDeque<u8>,
     call_depth: usize,
 }
 
@@ -55,6 +58,7 @@ impl Cpu {
             cycles: 0,
             steps: 0,
             output: Vec::new(),
+            input: std::collections::VecDeque::new(),
             call_depth: 0,
         }
     }
@@ -83,6 +87,12 @@ impl Cpu {
             GETIN => {
                 self.a = 0;
                 self.set_zn(0);
+            }
+            BASIN => {
+                let k = self.input.pop_front().unwrap_or(0x0D);
+                self.output.push(k); // BASIN echoes
+                self.a = k;
+                self.set_zn(k);
             }
             _ => {}
         }
@@ -573,6 +583,18 @@ pub fn run_src_budget(src: &str, max_steps: u64) -> Run {
     let res = compile_src(src);
     let mut cpu = Cpu::new(&res.prg);
     cpu.run(max_steps);
+    Run { res, cpu }
+}
+
+/// Run with keyboard input for `input` (each line ends with CR).
+pub fn run_src_with_input(src: &str, lines: &[&str]) -> Run {
+    let res = compile_src(src);
+    let mut cpu = Cpu::new(&res.prg);
+    for l in lines {
+        cpu.input.extend(l.bytes());
+        cpu.input.push_back(0x0D);
+    }
+    cpu.run(5_000_000);
     Run { res, cpu }
 }
 

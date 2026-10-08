@@ -2,7 +2,7 @@
 
 <img src="assets/logo.png" alt="Ultimate Basic C64 banner" width="30%">
 
-Current version: **1.6.2**
+Current version: **1.6.3**
 
 A modern BASIC-like language that compiles directly to 6502 machine code for the
 **Commodore 64** and **Commodore 64 Ultimate**. It produces `.prg` files that run in
@@ -81,6 +81,49 @@ bytes. Compiler-generated helper routines are included in the same listing.
 The output uses KickAssembler syntax and can be assembled again. Known data regions—such
 as `data`, maps, sprite/character definitions, lookup tables, SID/Koala payloads, and
 `incbin` content—are emitted as `.byte` blocks instead of being mistaken for instructions.
+
+## What's new in 1.6.3
+
+QBasic-style syntax — programs written the way BASIC books show them now compile. The
+existing `var` / `sub` / `fn` / `end` syntax is unchanged, and the two styles can be mixed.
+
+- **`DIM name AS type [= value]`** — `BYTE` (8-bit), `INTEGER` (16-bit), `SINGLE` / `DOUBLE`
+  (Q8.8 fixed point), `STRING`; several names (`DIM a, b AS INTEGER`) and mixed lists
+  (`DIM n AS INTEGER = 1000, s AS STRING = "C64"`). Numbers start at 0, strings at `""`.
+- **`DIM name(u1, u2, …) AS type`** — arrays of every type with any number of dimensions;
+  each bound is the highest index (`DIM tabla(2, 3) AS INTEGER` is 3 × 4). Index with
+  `tabla(r, c)` or `tabla[r, c]`. String arrays start with `""` elements.
+- **`FUNCTION Negyzet(szam AS INTEGER) AS INTEGER … END FUNCTION`** — return a value by
+  assigning to the function name; `EXIT FUNCTION` returns early.
+- **`SUB Koszont(nev AS STRING) … END SUB`**, `EXIT SUB`; call it as `Koszont "Zsolt"`,
+  `Koszont("Zsolt")` or `CALL Koszont("Zsolt")`.
+- **`END IF`**, **`END SELECT`** accepted; **`PRINT a; b; c`** joins items (trailing `;` = no
+  newline); `:` separates statements as before.
+- Accented letters in strings print as their base letter (`Üdvözöllek` → `Udvozollek`) —
+  the C64 charset has no accents.
+- **More QBasic:** `IF x = 3` / `<>`, single-line `IF … THEN … ELSE …`, `ELSEIF`,
+  `DO … LOOP` (WHILE / UNTIL at either end), `WHILE … WEND`, `SELECT CASE` with lists,
+  `TO` ranges, `IS > n` and `CASE ELSE`, `EXIT DO / FOR`, `END`, and `'` comments.
+- **Real runtime strings:** `s = "Pont: " + n + "!"`, `t = s` copies, `LEFT$`, `RIGHT$`,
+  `MID$`, `LEN` of any string expression, string `=` / `<>`, 16-bit `STR$` / `VAL`.
+- **Signed `INTEGER`** (−32768 … 32767): printing, comparisons, division, `ABS`, loops through
+  zero, negative literals anywhere (`a < -10`). `WORD` stays unsigned.
+- **`INPUT`** into INTEGER / WORD (16-bit), DOUBLE (`12.5`), array elements, and
+  `INPUT "prompt"; x`.
+- **Exact `DOUBLE ÷ DOUBLE`**; recursive subs/functions are now a compile error instead of
+  silently wrong.
+- New examples: `examples/dim_demo.ub`, `examples/qbasic_demo.ub`. Deferred larger work
+  (ROM floating point, more variables, more array space) is described in `ROADMAP.md`.
+
+Fixes: `s = "TEXT"` on a string variable, a string literal passed to a `string` parameter,
+both bytes of `word` / `float` parameters, and printing / 16-bit arithmetic with `word`-array
+elements (`print t[i]` printed 0, `w = t[i] + 5` used only the low byte). Also:
+- a `for` loop with a 16-bit counter wrapped at 256 (`for x = 0 to 319` never got past 255,
+  e.g. in `wide_x_demo.ub`);
+- arrays larger than 256 bytes indexed by a variable wrote into the wrong element;
+- `print f(30)` of a 16-bit function printed only the low byte;
+- `a * b` of two 16-bit values used only the low byte of `b` (300 * 300 gave 13200);
+- the `map_view` unit test overflowed in debug builds.
 
 ## What's new in 1.6.2
 
@@ -392,4 +435,5 @@ Release history is in [whatnews.txt](whatnews.txt).
 
 Ready-to-build demos are in [`examples/`](examples/) — bitmap and block graphics, sprite
 multiplexing, plasma and orbit effects, a flicker-free double-buffered 3D cube
-(`cube_demo.ub`), REU stash/fetch, SID music playback, scrollers, and more.
+(`cube_demo.ub`), REU stash/fetch, SID music playback, scrollers, QBasic-style
+`DIM` / `FUNCTION` / `SUB` (`dim_demo.ub`, `qbasic_demo.ub`), and more.

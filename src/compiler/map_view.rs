@@ -674,7 +674,8 @@ mod tests {
     fn params(width: u8, height: u8, colors: bool) -> MapViewParams {
         MapViewParams {
             chars: 0x4000,
-            colors: colors.then_some(0x4000 + width as u16 * height as u16),
+            // 255×255 chars + colors exceed 64 KB; only the assembler is under test here
+            colors: colors.then_some(0x4000u16.wrapping_add(width as u16 * height as u16)),
             width,
             height,
             param_zp: 0x50,

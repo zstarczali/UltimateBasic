@@ -702,3 +702,449 @@ var b = cy * 8
 ");
     assert_eq!(r.byte("b"), (40u16 * 8) as u8);
 }
+
+/// `dim name as type` is a BASIC-style alias for `var name: type`.
+#[test]
+fn dim_as_type_declarations() {
+    let r = run_src(
+        "DIM kor AS INTEGER DIM nev AS STRING DIM fizetes AS DOUBLE\n\
+         DIM b AS BYTE\n\
+         DIM w1, w2 AS INTEGER\n\
+         DIM x AS BYTE = 7, y AS INTEGER = 1000\n\
+         kor = 300\n\
+         nev = \"ZSOLT\"\n\
+         fizetes = 3\n\
+         b = 200\n\
+         w1 = 500\n\
+         w2 = w1 + kor\n\
+         print nev\n\
+         print fizetes\n",
+    );
+    assert_eq!(r.word("kor"), 300, "INTEGER is 16-bit");
+    assert_eq!(r.word("fizetes"), 3 << 8, "DOUBLE is Q8.8 float");
+    assert_eq!(r.byte("b"), 200);
+    assert_eq!(r.word("w1"), 500);
+    assert_eq!(r.word("w2"), 800, "dim a, b as integer types both names");
+    assert_eq!(r.byte("x"), 7);
+    assert_eq!(r.word("y"), 1000);
+    let out = r.output();
+    assert!(out.contains("ZSOLT"), "{out:?}");
+    assert!(out.contains("3.00"), "{out:?}");
+}
+
+/// Uninitialized `dim` vars start at zero / empty string.
+#[test]
+fn dim_defaults_are_zero_and_empty() {
+    let r = run_src(
+        "DIM n AS INTEGER\n\
+         DIM s AS STRING\n\
+         DIM f AS SINGLE\n\
+         print \"<\" + s + \">\"\n",
+    );
+    assert_eq!(r.word("n"), 0);
+    assert_eq!(r.word("f"), 0);
+    let out = r.output();
+    assert!(out.contains("<>"), "empty string prints nothing: {out:?}");
+}
+
+/// Bad `dim` forms are compile errors, not silent miscompiles.
+#[test]
+fn dim_rejects_unsupported_forms() {
+    for src in [
+        "dim a as long\n",
+        "dim a as banana\n",
+        "dim a(10) as long\n",
+        "dim a(n)\n",
+        "dim a(10) = 5\n",
+        "dim a(4000) as integer\n",
+        "dim a, b as integer = 5\n",
+    ] {
+        let toks = ultimate_basic::compiler::lexer::Lexer::new(src).tokenize();
+        let mut p = ultimate_basic::compiler::parser::Parser::new(toks);
+        let _ = p.parse();
+        assert!(!p.errors().is_empty(), "expected error for {src:?}");
+    }
+}
+
+/// `s = "literal"` / `s = t` after declaration repoint the string (it used to
+/// store one garbage byte into the pointer's lo byte).
+#[test]
+fn string_var_reassignment() {
+    let r = run_src(
+        "var a = \"A\"\n\
+         var b: string = \"\"\n\
+         a = \"ZSOLT\"\n\
+         print a\n\
+         b = a\n\
+         a = \"X\"\n\
+         print b + a\n",
+    );
+    let out = r.output();
+    assert!(out.contains("ZSOLT\r"), "{out:?}");
+    assert!(out.contains("ZSOLTX"), "{out:?}");
+}
+
+
+/// QBasic-style FUNCTION / SUB: `AS` types, return by assigning the function
+/// name, `END FUNCTION` / `END SUB`, calls with and without parentheses,
+/// `;` print separators, accented letters folded to ASCII.
+#[test]
+fn qbasic_function_and_sub() {
+    let r = run_src(
+        "FUNCTION Negyzet (szam AS INTEGER) AS INTEGER Negyzet = szam * szam END FUNCTION\n\
+         SUB Koszont (nev AS STRING) PRINT \"Üdvözöllek, \"; nev; \"!\" END SUB\n\
+         DIM n AS INTEGER\n\
+         n = Negyzet(30)\n\
+         Koszont \"Zsolt\"\n\
+         CALL Koszont(\"Anna\")\n\
+         Koszont(\"Bela\")\n",
+    );
+    assert_eq!(r.word("n"), 900);
+    let out = r.output();
+    assert!(out.contains("Udvozollek, Zsolt!\r"), "{out:?}");
+    assert!(out.contains("Udvozollek, Anna!\r"), "{out:?}");
+    assert!(out.contains("Udvozollek, Bela!\r"), "{out:?}");
+}
+
+/// `EXIT FUNCTION` returns the value assigned so far; `END IF` closes an if.
+#[test]
+fn qbasic_exit_function_and_end_if() {
+    let r = run_src(
+        "FUNCTION Max2(a AS BYTE, b AS BYTE) AS BYTE\n\
+           Max2 = a\n\
+           IF b > a THEN\n\
+             Max2 = b\n\
+             EXIT FUNCTION\n\
+           END IF\n\
+         END FUNCTION\n\
+         var p = Max2(3, 9)\n\
+         var q = Max2(7, 2)\n",
+    );
+    assert_eq!(r.byte("p"), 9);
+    assert_eq!(r.byte("q"), 7);
+}
+
+/// Word parameters receive both bytes; string literals reach string params.
+#[test]
+fn word_and_string_literal_params() {
+    let r = run_src(
+        "fn dupla(x: word): word\n  return x + x\nend\n\
+         sub k(nev: string)\n  print nev\nend\n\
+         var a: word = 0\nvar b: word = 0\n\
+         a = dupla(300)\nb = dupla(5)\nk(\"ZSOLT\")\n",
+    );
+    assert_eq!(r.word("a"), 600);
+    assert_eq!(r.word("b"), 10, "hi byte of the param must not stay from the previous call");
+    assert!(r.output().contains("ZSOLT\r"), "{:?}", r.output());
+}
+
+/// `;` separates print items, a trailing `;` suppresses the newline, and a
+/// `;` before an assignment is still a statement separator.
+#[test]
+fn print_semicolon_forms() {
+    let r = run_src("var x = 5\nvar y = 1\nprint \"A\"; x; \"B\"\nprint x;\nprint x; y = 7\nprint y\n");
+    assert_eq!(r.byte("y"), 7);
+    assert_eq!(r.output(), "A5B\r557\r");
+}
+
+/// `:` separates statements, also next to `: type` annotations and the
+/// QBasic-style DIM / FUNCTION / SUB / END IF forms.
+#[test]
+fn colon_statement_separator() {
+    let r = run_src(
+        "var x: int = 5 : DIM n AS INTEGER : n = 300\n\
+         FUNCTION Negyzet(szam AS INTEGER) AS INTEGER : Negyzet = szam * szam : END FUNCTION\n\
+         SUB Koszont(nev AS STRING) : PRINT \"HELLO, \"; nev; \"!\" : END SUB\n\
+         DIM q AS INTEGER : q = Negyzet(20)\n\
+         IF x == 5 THEN : PRINT \"A\" : END IF : PRINT \"B\"\n\
+         Koszont \"ZSOLT\" : Koszont \"ANNA\"\n",
+    );
+    assert_eq!(r.byte("x"), 5);
+    assert_eq!(r.word("n"), 300);
+    assert_eq!(r.word("q"), 400);
+    assert_eq!(r.output(), "A\rB\rHELLO, ZSOLT!\rHELLO, ANNA!\r");
+}
+
+/// `dim name(u1, u2, …) as type` — BASIC arrays (bounds = highest index) for
+/// every type, indexed with `name(i, j)` or `name[i, j]`.
+#[test]
+fn dim_arrays_all_types() {
+    let r = run_src(
+        "DIM tabla(2, 3) AS INTEGER, k(1) AS BYTE\n\
+         var r = 0\nvar c = 0\n\
+         for r = 0 to 2\n for c = 0 to 3\n  tabla(r, c) = r * 100 + c\n next\nnext\n\
+         k(1) = 7\n\
+         DIM kocka(1, 2, 3) AS BYTE\nkocka(1, 2, 3) = 77\n\
+         DIM ar(3) AS DOUBLE\nar(0) = 3\nar(1) = 2.5\nar(2) = ar(1) + 1.25\n\
+         DIM nevek(2) AS STRING\nnevek(0) = \"ZSOLT\"\nnevek(2) = \"ANNA\"\n\
+         DIM n AS STRING\nn = nevek(2)\n\
+         var w: word = 0\nw = tabla(2, 3) + 5\n\
+         print tabla(2, 3); \" \"; tabla(1, 0); \" \"; tabla[0, 2]\n\
+         print ar(0); \" \"; ar(1); \" \"; ar(2); \" \"; ar(3)\n\
+         print \"<\"; nevek(0); \".\"; nevek(1); \".\"; n; \">\"\n",
+    );
+    assert_eq!(r.word("w"), 208);
+    assert_eq!(
+        r.output(),
+        "203 100 2\r3.00 2.50 3.75 0.00\r<ZSOLT..ANNA>\r"
+    );
+}
+
+/// Word-array elements print as 16-bit values and take part in 16-bit
+/// arithmetic (both read back as 0 / lo byte only before).
+#[test]
+fn word_array_print_and_arithmetic() {
+    let r = run_src(
+        "var t = array_word(4)\nvar w: word = 0\nt[1] = 300\nw = t[1] + 5\nprint t[1]\n",
+    );
+    assert_eq!(r.word("w"), 305);
+    assert_eq!(r.output(), "300\r");
+}
+
+/// String-array elements can be passed to string params and concatenated.
+#[test]
+fn string_array_elements_as_values() {
+    let r = run_src(
+        "SUB K(x AS STRING) : PRINT \"HI \"; x : END SUB\n\
+         DIM t(1, 1) AS STRING\nt(1, 1) = \"EVA\"\nK t(1, 1)\nprint \"A\" + t(1, 1)\n\
+         DIM big(200) AS STRING\nbig(200) = \"END\"\nprint \"<\"; big(150); \">\"; big(200)\n",
+    );
+    assert_eq!(r.output(), "HI EVA\rAEVA\r<>END\r");
+}
+
+
+
+
+/// Arrays over 256 bytes with a variable index (8-bit `base,Y` wrapped and
+/// wrote into the wrong element before).
+#[test]
+fn big_arrays_with_variable_index() {
+    let r = run_src(
+        "DIM t(200) AS INTEGER\nvar i = 150\nt(i) = 1234\nvar a: word = 0\nvar b: word = 0\na = t(150)\nb = t(i)\n\
+         DIM g(19, 19) AS BYTE\nvar r = 15\nvar c = 3\ng(r, c) = 99\nvar x = g(15, 3)\nvar y = g(r, c)\n\
+         DIM s(300) AS BYTE\nvar k: word = 0\nfor k = 0 to 300\n s(k) = k and 255\nnext\nvar z = s(290)\nvar z0 = s(34)\n",
+    );
+    assert_eq!(r.word("a"), 1234);
+    assert_eq!(r.word("b"), 1234);
+    assert_eq!(r.byte("x"), 99);
+    assert_eq!(r.byte("y"), 99);
+    assert_eq!(r.byte("z"), 290u16 as u8);
+    assert_eq!(r.byte("z0"), 34);
+}
+
+/// `for` with a 16-bit counter (the 8-bit loop wrapped at 256: `to 300` ran 45 times).
+#[test]
+fn word_for_loops() {
+    let cases: &[(&str, u16, u16)] = &[
+        ("for k = 0 to 300\n n = n + 1\nnext", 301, 301),
+        ("for k = 1000 to 990 step -1\n n = n + 1\nnext", 11, 989),
+        ("for k = 0 to 1000 step 250\n n = n + 1\nnext", 5, 1250),
+        ("for k = 65530 to 65535\n n = n + 1\nnext", 6, 0),
+        ("for k = 5 to 0 step -1\n n = n + 1\nnext", 6, 65535), // = -1, like QBasic
+        ("lim = 5\nfor k = 10 to lim\n n = n + 1\nnext", 0, 10),
+        ("lim = 700\nfor k = 600 to lim\n n = n + 1\nnext", 101, 701),
+        ("for k = 0 to 500\n if k == 300 then break end\n n = n + 1\nnext", 300, 300),
+        ("for k = 0 to 500\n if k < 400 then continue end\n n = n + 1\nnext", 101, 501),
+    ];
+    for (body, n, k) in cases {
+        let src = format!("var k: word = 0\nvar n: word = 0\nvar lim: word = 0\n{body}\n");
+        let r = run_src(&src);
+        assert_eq!(r.word("n"), *n, "iterations: {body}");
+        assert_eq!(r.word("k"), *k, "final k: {body}");
+    }
+}
+
+/// Recursive subs/fns are compile errors (they silently returned garbage).
+#[test]
+fn recursion_is_a_compile_error() {
+    use ultimate_basic::compiler::{compile, CompileOptions};
+    let opts = CompileOptions { basic_stub: false, explicit: false };
+    let direct = compile("fn fact(n)\n if n <= 1 then return 1 end\n return n * fact(n - 1)\nend\nprint fact(5)\n", &opts);
+    assert!(direct.errors.iter().any(|e| e.contains("recursion") && e.contains("fact → fact")), "{:?}", direct.errors);
+    let mutual = compile("sub a()\n b()\nend\nsub b()\n a()\nend\na()\n", &opts);
+    assert!(mutual.errors.iter().any(|e| e.contains("a → b → a")), "{:?}", mutual.errors);
+    assert_eq!(mutual.errors.iter().filter(|e| e.contains("recursion")).count(), 1);
+    // return-by-name and plain calls are not recursion
+    let ok = compile("FUNCTION F(x AS BYTE) AS BYTE\n F = x + 1\nEND FUNCTION\nsub s()\n print F(1)\nend\ns()\n", &opts);
+    assert!(ok.errors.is_empty(), "{:?}", ok.errors);
+}
+
+/// QBasic control structures: `=` / `<>` in conditions, ELSEIF, DO … LOOP,
+/// WHILE … WEND, SELECT CASE (lists, ranges, IS, CASE ELSE), EXIT DO / FOR.
+#[test]
+fn qbasic_control_structures() {
+    let grade = |x: u8| {
+        let r = run_src(&format!(
+            "var x = {x}\nvar g = 0\n\
+             IF x = 1 THEN\n g = 10\nELSEIF x < 5 THEN\n g = 20\nELSEIF x <> 9 THEN\n g = 30\nELSE\n g = 40\nEND IF\n"
+        ));
+        r.byte("g")
+    };
+    assert_eq!((grade(1), grade(3), grade(7), grade(9)), (10, 20, 30, 40));
+
+    let r = run_src(
+        "var a = 0\nvar b = 0\nvar c = 0\nvar d = 0\nvar e = 0\nvar f = 0\nvar i = 0\n\
+         DO WHILE a < 5\n a = a + 1\nLOOP\n\
+         DO UNTIL b = 7\n b = b + 1\nLOOP\n\
+         DO\n c = c + 1\nLOOP UNTIL c >= 3\n\
+         DO\n d = d + 1\nLOOP WHILE d < 4\n\
+         DO\n e = e + 1\n IF e = 6 THEN EXIT DO\nLOOP\n\
+         WHILE f <> 8\n f = f + 1\nWEND\n\
+         for i = 1 to 100\n IF i = 12 THEN EXIT FOR\nnext\n",
+    );
+    assert_eq!(
+        [r.byte("a"), r.byte("b"), r.byte("c"), r.byte("d"), r.byte("e"), r.byte("f"), r.byte("i")],
+        [5, 7, 3, 4, 6, 8, 12]
+    );
+
+    let sel = |x: u16| {
+        let r = run_src(&format!(
+            "DIM x AS INTEGER = {x}\nvar k = 0\n\
+             SELECT CASE x\n CASE 1, 2, 3\n  k = 1\n CASE 10 TO 20\n  k = 2\n CASE IS > 1000\n  k = 3\n CASE ELSE\n  k = 4\nEND SELECT\n"
+        ));
+        r.byte("k")
+    };
+    assert_eq!((sel(2), sel(15), sel(5000), sel(50)), (1, 2, 3, 4));
+}
+
+/// `END` on its own ends the program (it was an "unexpected 'end'" error).
+#[test]
+fn end_statement_ends_program() {
+    let r = run_src("var x = 7\ngosub kiir\nprint \"VEGE\"\nEND\nlabel kiir\nprint x\nreturn\n");
+    assert!(r.output().contains("7\rVEGE\r"), "{:?}", r.output());
+}
+
+/// Single-line IF: ends with the line (QBasic), or with a same-line `end`;
+/// optional same-line ELSE.
+#[test]
+fn single_line_if_forms() {
+    let r = run_src(
+        "var x = 3\nvar a = 0\nvar b = 0\nvar c = 0\nvar d = 0\n\
+         IF x = 3 THEN a = 1\n\
+         if x == 4 then b = 1 end\n\
+         IF x = 4 THEN c = 1 ELSE c = 2\n\
+         if x == 3 then d = 5 : d = d + 1 end\n",
+    );
+    assert_eq!([r.byte("a"), r.byte("b"), r.byte("c"), r.byte("d")], [1, 0, 2, 6]);
+}
+
+/// Runtime strings: concatenation into variables (value semantics), numbers
+/// in concatenation, left$/right$/mid$, 16-bit str$/val, string = and <>,
+/// len() of expressions, computed string arguments, Q8.8 text.
+#[test]
+fn runtime_strings() {
+    let cases: &[(&str, &str)] = &[
+        ("DIM s AS STRING\nDIM t AS STRING\ns = \"AB\"\nt = s + \"CD\"\nprint t\n", "ABCD\r"),
+        ("DIM s AS STRING\ns = \"X\"\ns = s + \"Y\"\ns = \"<\" + s + \">\"\nprint s\n", "<XY>\r"),
+        ("var s = \"HELLO WORLD\"\nprint left$(s, 5); \".\"; right$(s, 5); \".\"; mid$(s, 7, 3); \".\"; mid$(s, 7)\n", "HELLO.WORLD.WOR.WORLD\r"),
+        ("DIM n AS INTEGER = 1234\nDIM s AS STRING\ns = \"PONT: \" + n + \"!\"\nprint s\n", "PONT: 1234!\r"),
+        ("DIM w AS INTEGER = 0\nprint str$(w); \" \"; str$(w + 300)\n", "0 300\r"),
+        ("var s = \"ABC\"\nDIM t AS STRING\nt = s\ns = \"ZZZ\"\nprint t; s\n", "ABCZZZ\r"),
+        ("var s = \"ZSOLT\"\nif s = \"ZSOLT\" then print \"EQ\" end\nif s <> \"ANNA\" then print \"NE\" end\nif s == \"X\" then print \"BAD\" end\n", "EQ\rNE\r"),
+        ("var s = \"12345\"\nDIM n AS INTEGER\nn = val(s)\nprint n; \" \"; val(\"42\") + 1\n", "12345 43\r"),
+        ("var s = \"HELLO\"\nprint len(s + \"XY\"); \" \"; len(left$(s, 2))\n", "7 2\r"),
+        ("SUB K(x AS STRING) : print \"[\"; x; \"]\" : END SUB\nvar s = \"AB\"\nK s + \"C\"\nK left$(\"XYZ\", 2) + s\n", "[ABC]\r[XYAB]\r"),
+        ("DIM f AS DOUBLE = 3.75\nDIM s AS STRING\ns = \"F=\" + f\nprint s\n", "F=3.75\r"),
+        ("var s = \"ABCDEFGHIJ\"\nDIM t AS STRING\nt = left$(s + s, 15)\nprint t; \" \"; len(t)\n", "ABCDEFGHIJABCDE 15\r"),
+        ("DIM s AS STRING\ns = \"HI\" + chr$(33)\nprint s\n", "HI!\r"),
+        ("var s = \"ABC\"\nprint right$(s, 10); \".\"; left$(s, 0); \".\"; mid$(s, 9); \".\"\n", "ABC...\r"),
+    ];
+    for (src, want) in cases {
+        assert_eq!(run_src(src).output(), *want, "{src}");
+    }
+    // 80-character cap: longer results are cut, nothing is overwritten
+    let r = run_src("DIM s AS STRING\nvar i = 0\nfor i = 1 to 30\n s = s + \"ABC\"\nnext\nprint len(s)\n");
+    assert_eq!(r.output(), "80\r");
+}
+
+/// `input` into INTEGER (16-bit, signed with '-'), DOUBLE ("12.5"), array
+/// elements (string arrays get one slot per element), QBasic `input "p"; x`.
+#[test]
+fn input_kinds() {
+    let cases: &[(&str, &[&str], &str)] = &[
+        ("var b = 0\ninput b\nprint \"=\"; b\n", &["42"], "=42\r"),
+        ("DIM n AS INTEGER\ninput \"N\"; n\nprint \"=\"; n\n", &["12345"], "=12345\r"),
+        ("DIM f AS DOUBLE\ninput f\nprint \"=\"; f\n", &["12.5"], "=12.50\r"),
+        ("DIM f AS DOUBLE\ninput f\nprint \"=\"; f\n", &["3.07"], "=3.07\r"),
+        ("DIM f AS DOUBLE\ninput f\nprint \"=\"; f\n", &["7"], "=7.00\r"),
+        ("DIM t(2) AS INTEGER\nvar i = 0\nfor i = 0 to 2\n input t(i)\nnext\nprint \"=\"; t(0); \",\"; t(1); \",\"; t(2)\n", &["100", "2000", "30000"], "=100,2000,30000\r"),
+        ("DIM nev(2) AS STRING\nvar i = 0\nfor i = 0 to 2\n input nev(i)\nnext\nprint \"=\"; nev(0); \",\"; nev(1); \",\"; nev(2)\n", &["ANNA", "BELA", "CILI"], "=ANNA,BELA,CILI\r"),
+        ("DIM nev(1) AS STRING\nDIM s AS STRING\ns = \"X\"\nnev(0) = s\ns = \"Y\"\nnev(1) = s + \"Z\"\nprint \"=\"; nev(0); nev(1)\n", &[], "=XYZ\r"),
+    ];
+    for (src, keys, want) in cases {
+        let out = run_src_with_input(src, keys).output();
+        assert!(out.ends_with(want), "{src}\n got {out:?}");
+    }
+}
+
+/// `as integer` is signed 16-bit (QBasic INTEGER): printing, comparisons,
+/// division, abs, loops through zero, arrays, functions, select case, val/str$.
+#[test]
+fn signed_integers() {
+    let cases: &[(&str, &str)] = &[
+        ("DIM n AS INTEGER\nn = 10 - 20\nprint n\n", "-10\r"),
+        ("DIM a AS INTEGER = -5\nDIM b AS INTEGER = 3\nif a < b then print \"LT\" end\nif a > b then print \"GT\" end\nif a < -10 then print \"BAD\" end\nif a >= -5 then print \"GE\" end\n", "LT\rGE\r"),
+        ("DIM a AS INTEGER = -100\nprint a / 7; \" \"; abs(a); \" \"; a * 3\n", "-14 100 -300\r"),
+        ("DIM i AS INTEGER\nfor i = 3 to -3 step -2\n print i; \" \";\nnext\nprint\n", "3 1 -1 -3 \r"),
+        ("DIM i AS INTEGER\nfor i = -2 to 2\n print i; \" \";\nnext\nprint\n", "-2 -1 0 1 2 \r"),
+        ("DIM w AS WORD = 40000\nDIM n AS INTEGER = 30000\nprint w; \" \"; n + 2767; \" \"; n + 2768\n", "40000 32767 -32768\r"),
+        ("DIM t(2) AS INTEGER\nt(1) = -1234\nprint t(1)\nDIM s AS STRING\ns = \"V\" + t(1)\nprint s\n", "-1234\rV-1234\r"),
+        ("FUNCTION Neg(x AS INTEGER) AS INTEGER\n Neg = 0 - x\nEND FUNCTION\nprint Neg(300); \" \"; Neg(-7)\nDIM r AS INTEGER\nr = Neg(1000)\nprint r\n", "-300 7\r-1000\r"),
+        ("FUNCTION Negyzet(x AS INTEGER) AS INTEGER\n Negyzet = x * x\nEND FUNCTION\nprint Negyzet(30)\n", "900\r"),
+        ("DIM a AS INTEGER = -3\nSELECT CASE a\n CASE IS < 0\n  print \"NEG\"\n CASE ELSE\n  print \"POS\"\nEND SELECT\n", "NEG\r"),
+        ("DIM a AS INTEGER\nDIM s AS STRING\ns = \"-42\"\na = val(s)\nprint a; \" \"; str$(a)\n", "-42 -42\r"),
+    ];
+    for (src, want) in cases {
+        assert_eq!(run_src(src).output(), *want, "{src}");
+    }
+    let r = run_src_with_input("DIM n AS INTEGER\ninput n\nprint \"=\"; n\n", &["-321"]);
+    assert!(r.output().ends_with("=-321\r"), "{:?}", r.output());
+}
+
+/// Q8.8 × Q8.8 and exact Q8.8 ÷ Q8.8 (the divisor's fraction was ignored).
+#[test]
+fn float_mul_div() {
+    let cases: &[(&str, &str)] = &[
+        ("DIM a AS DOUBLE = 2.5\nDIM b AS DOUBLE = 1.5\nDIM c AS DOUBLE\nc = a * b\nprint c\n", "3.75\r"),
+        ("DIM a AS DOUBLE = 7.5\nDIM b AS DOUBLE = 2.5\nDIM c AS DOUBLE\nc = a / b\nprint c\n", "3.00\r"),
+        ("DIM a AS DOUBLE = 1.0\nDIM b AS DOUBLE = 0.25\nDIM c AS DOUBLE\nc = a / b\nprint c\n", "4.00\r"),
+        ("DIM a AS DOUBLE = 10\nDIM b AS DOUBLE = 3\nDIM c AS DOUBLE\nc = a / b\nprint c\n", "3.33\r"),
+        ("DIM a AS DOUBLE = 3.5\nprint a * 2; \" \"; a / 2; \" \"; a * a\n", "7.00 1.75 12.25\r"),
+        ("DIM a AS DOUBLE = 0.5\nDIM b AS DOUBLE = 0.5\nprint a * b; \" \"; a / b\n", "0.25 1.00\r"),
+    ];
+    for (src, want) in cases {
+        assert_eq!(run_src(src).output(), *want, "{src}");
+    }
+}
+
+
+
+
+
+/// examples/qbasic_demo.ub end to end (keyboard input "ZSOLT").
+#[test]
+fn qbasic_demo_runs() {
+    let src = std::fs::read_to_string("examples/qbasic_demo.ub").unwrap();
+    let out = run_src_with_input(&src, &["ZSOLT"]).output();
+    assert_eq!(
+        out,
+        "Udvozollek, Zsolt!\r30 negyzete: 900\rnagyobb(3, 9): 9\rNeved: ZSOLT\rUdvozollek, ZSOLT!\r\
+         Szia, ZSOLT! Hossz: 5\rZ.SO.T\rIsmerlek!\rOsszeg: 900\r-2 negativ\r-1 negativ\r0 nulla\r\
+         1 pozitiv\r2 pozitiv\rharom\r"
+    );
+}
+
+
+
+/// word × word keeps 16 bits of both operands (the right one was cut to a byte).
+#[test]
+fn word_times_word() {
+    for (a, b) in [(300u16, 300u16), (300, 2), (2, 300), (1000, 65), (65535, 65535), (12345, 0)] {
+        let r = run_src(&format!(
+            "DIM a AS WORD = {a}\nDIM b AS WORD = {b}\nDIM c AS WORD\nc = a * b\n"
+        ));
+        assert_eq!(r.word("c"), a.wrapping_mul(b), "{a} * {b}");
+    }
+    let r = run_src("DIM a AS INTEGER = -300\nDIM b AS INTEGER = 7\nDIM c AS INTEGER\nc = a * b\nprint c\n");
+    assert_eq!(r.output(), "-2100\r");
+}
