@@ -93,7 +93,11 @@ pub enum Token {
     Int,
     Str,
     Float,
-    FixedLit(u16), // Q8.8 fixed-point literal (e.g. 3.5 → 896 = 0x0380)
+    /// Decimal literal: Q8.8 value (e.g. 3.5 → 0x0380), exact value, and
+    /// whether only floating point can hold it (`1E6`, `300.5`, `70000`).
+    FixedLit(u16, f64, bool),
+    /// `^` (power)
+    Caret,
     Const,
     Label,
     Goto,
@@ -288,6 +292,23 @@ impl Lexer {
                     tokens.push(Token::RBrace);
                 }
                 Some(c) if c.is_ascii_digit() => tokens.push(self.read_number()),
+                Some('.') if matches!(self.input.get(self.pos + 1), Some(c) if c.is_ascii_digit()) => {
+                    tokens.push(self.read_number())
+                }
+                Some('^') => {
+                    self.advance();
+                    tokens.push(Token::Caret);
+                }
+                // `%01010101` binary literal (sprdef / chardef rows)
+                Some('%') if matches!(self.input.get(self.pos + 1), Some('0') | Some('1')) => {
+                    self.advance();
+                    let mut v: u32 = 0;
+                    while let Some(c @ ('0' | '1')) = self.peek() {
+                        self.advance();
+                        v = (v << 1 | (c == '1') as u32) & 0xFFFF;
+                    }
+                    tokens.push(if v > 0x7FFF { Token::Addr(v as u16) } else { Token::Number(v as i16) });
+                }
                 Some(c) if c.is_alphabetic() || c == '_' => tokens.push(self.read_ident()),
                 Some('+') => {
                     self.advance();
@@ -438,29 +459,67 @@ impl Lexer {
         while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
             s.push(self.advance().unwrap());
         }
-        // Check for fractional part → Q8.8 fixed-point literal (e.g. 3.5 → FixedLit(896))
-        if self.peek() == Some('.') {
-            if matches!(self.input.get(self.pos + 1), Some(c) if c.is_ascii_digit()) {
-                self.advance(); // consume '.'
-                let mut frac_s = String::new();
-                while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
-                    frac_s.push(self.advance().unwrap());
-                }
-                let int_part: u32 = s.parse().unwrap_or(0);
-                // Compute fractional byte: parse up to 8 significant decimal digits
-                // frac_byte = round(0.frac_digits × 256)
-                let frac_val: f64 = format!("0.{}", frac_s).parse().unwrap_or(0.0);
-                let frac_byte = (frac_val * 256.0).round() as u32;
-                let q88 = ((int_part & 0xFF) << 8) | (frac_byte & 0xFF);
-                return Token::FixedLit(q88 as u16);
+        let mut frac_s = String::new();
+        let mut is_frac = false;
+        // fractional part (`3.5`, `.5`)
+        if self.peek() == Some('.')
+            && matches!(self.input.get(self.pos + 1), Some(c) if c.is_ascii_digit())
+        {
+            self.advance(); // consume '.'
+            is_frac = true;
+            while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
+                frac_s.push(self.advance().unwrap());
             }
         }
-        let val: u32 = s.parse().unwrap_or(0);
-        if val > 0x7FFF {
-            Token::Addr(val as u16)
-        } else {
-            Token::Number(val as i16)
+        // exponent (`1E6`, `2.5e-3`) — floating point only
+        let mut exp: Option<i32> = None;
+        if matches!(self.peek(), Some('e') | Some('E')) {
+            let n1 = self.input.get(self.pos + 1).copied();
+            let n2 = self.input.get(self.pos + 2).copied();
+            let digit_at = match n1 {
+                Some(c) if c.is_ascii_digit() => Some(1),
+                Some('+') | Some('-') if matches!(n2, Some(c) if c.is_ascii_digit()) => Some(2),
+                _ => None,
+            };
+            if let Some(skip) = digit_at {
+                self.advance(); // e
+                let neg = skip == 2 && self.advance() == Some('-');
+                let mut es = String::new();
+                while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
+                    es.push(self.advance().unwrap());
+                }
+                let e: i32 = es.parse().unwrap_or(99);
+                exp = Some(if neg { -e } else { e });
+            }
         }
+        if !is_frac && exp.is_none() {
+            let val: u64 = s.parse().unwrap_or(u64::MAX);
+            if val > 0xFFFF {
+                // only floating point can hold it
+                return Token::FixedLit(0xFFFF, val as f64, true);
+            }
+            return if val > 0x7FFF {
+                Token::Addr(val as u16)
+            } else {
+                Token::Number(val as i16)
+            };
+        }
+        let text = format!(
+            "{}.{}e{}",
+            if s.is_empty() { "0" } else { &s },
+            if frac_s.is_empty() { "0" } else { &frac_s },
+            exp.unwrap_or(0)
+        );
+        let v: f64 = text.parse().unwrap_or(0.0);
+        let int_part: u64 = s.parse().unwrap_or(0);
+        // Q8.8 (hi = integer part, lo = round(fraction × 256))
+        let frac_val: f64 = format!("0.{}", if frac_s.is_empty() { "0" } else { &frac_s })
+            .parse()
+            .unwrap_or(0.0);
+        let frac_byte = (frac_val * 256.0).round() as u64;
+        let q88 = ((int_part & 0xFF) << 8) | (frac_byte & 0xFF);
+        let real_only = exp.is_some() || int_part > 255;
+        Token::FixedLit(q88 as u16, v, real_only)
     }
 
     fn read_hex(&mut self) -> Token {

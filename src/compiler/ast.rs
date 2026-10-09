@@ -56,7 +56,9 @@ pub enum Expr {
     Spc(Box<Expr>),        // spc(n) — in print: print n spaces
     Tab(Box<Expr>),        // tab(n) — in print: move cursor to column n
     Val(Box<Expr>),        // val(s) — runtime PETSCII decimal string → 8-bit int
-    FixedLit(u16),         // Q8.8 fixed-point literal (e.g. 3.5 → hi=3, lo=128)
+    /// Decimal literal: Q8.8 value (3.5 → hi=3, lo=128), exact value, and whether
+    /// only floating point can hold it (`1E6`, `300.5`).
+    FixedLit(u16, f64, bool),
     FixedToInt(Box<Expr>), // int(f) — extract integer part (hi byte) of a float variable
     FnCall(String, Vec<Expr>), // fn_name(args) — call a function, result in A
 }
@@ -79,6 +81,8 @@ pub enum BinOp {
     Xor,
     Shl,
     Shr,
+    /// `^` — power (floating point)
+    Pow,
 }
 
 #[derive(Debug, Clone)]
@@ -109,6 +113,10 @@ pub enum VarType {
     FloatArray,
     /// `dim a(n) as string` — 2-byte string pointers (stored like WordArray)
     StrArray,
+    /// `as single` / `as double` — 5-byte floating point (C64 BASIC format)
+    Real,
+    /// `dim a(n) as single|double` — 5-byte floating-point elements
+    RealArray,
     /// `as integer` — signed 16-bit. Only produced by the parser; turned into
     /// `Word` + a signed-name list by `extract_signed` before codegen.
     Int16,
@@ -584,6 +592,33 @@ pub enum Stmt {
     Uppercase,
 }
 
+/// Integer constant arithmetic as the compiler always did it (16-bit wrapping,
+/// truncating division). `None` for comparisons, `^` and division by zero.
+pub fn fold_int_op(a: i16, op: &BinOp, b: i16) -> Option<i16> {
+    Some(match op {
+        BinOp::Add => a.wrapping_add(b),
+        BinOp::Sub => a.wrapping_sub(b),
+        BinOp::Mul => a.wrapping_mul(b),
+        BinOp::Div if b != 0 => a.wrapping_div(b),
+        BinOp::Mod if b != 0 => a.wrapping_rem(b),
+        BinOp::And => a & b,
+        BinOp::Or => a | b,
+        BinOp::Xor => a ^ b,
+        BinOp::Shl => a.wrapping_shl(b as u32),
+        BinOp::Shr => ((a as u16).wrapping_shr(b as u32)) as i16,
+        _ => return None,
+    })
+}
+
+/// `fold_int_op` over a whole tree of integer constants.
+pub fn fold_int(e: &Expr) -> Option<i16> {
+    match e {
+        Expr::Number(n) => Some(*n),
+        Expr::BinOp(l, op, r) => fold_int_op(fold_int(l)?, op, fold_int(r)?),
+        _ => None,
+    }
+}
+
 /// Splice every `Stmt::Block` into the statement list that contains it, at any
 /// depth. The parser uses `Block` to lower one source statement into several
 /// (e.g. `select case`); codegen and its pre-scans then only see plain lists.
@@ -618,7 +653,7 @@ pub fn flatten_blocks(stmts: Vec<Stmt>) -> Vec<Stmt> {
 
 /// Names declared signed (`as integer`): variables / arrays / parameters, and
 /// functions with a signed return type.
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct SignedNames {
     pub vars: std::collections::HashSet<String>,
     pub fns: std::collections::HashSet<String>,

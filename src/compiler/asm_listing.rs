@@ -23,7 +23,7 @@ pub fn generate(map: &MemoryMap, source_path: Option<&Path>) -> String {
             out,
             ".label {:<17} = ${:02X} ; {}",
             symbol(&var.name),
-            var.zp_addr,
+            var.addr(),
             var.type_str
         )
         .unwrap();
@@ -101,6 +101,7 @@ pub fn generate(map: &MemoryMap, source_path: Option<&Path>) -> String {
     let zp_names: HashMap<u8, String> = map
         .variables
         .iter()
+        .filter(|v| v.ram_addr.is_none())
         .map(|v| (v.zp_addr, symbol(&v.name)))
         .collect();
     let mut comments: BTreeMap<usize, Vec<&str>> = BTreeMap::new();

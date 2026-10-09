@@ -69,7 +69,7 @@ impl Codegen {
     }
 
     /// Emit `JMP past; <n zero bytes>; past:` and return the data address.
-    fn emit_inline_zeros(&mut self, n: usize) -> u16 {
+    pub(super) fn emit_inline_zeros(&mut self, n: usize) -> u16 {
         self.emit(0x4C);
         let p = self.code.len();
         self.emit16(0);
@@ -478,7 +478,13 @@ impl Codegen {
 
     /// Numbers that `str$` / concatenation convert with the 16-bit routine.
     fn is_wide_number(&self, e: &Expr) -> bool {
-        self.can_be_word_result(e) || self.is_signed_expr(e)
+        self.can_be_word_result(e) || self.is_signed_expr(e) || self.is_real_number(e)
+    }
+
+    /// ZP pair holding a pointer to the text of string expression `e`.
+    pub(super) fn str_text_ptr(&mut self, e: &Expr) -> u8 {
+        self.emit_str_src(e, 0);
+        self.str_zp() + SRC
     }
 
     /// Conservative: could evaluating `e` read string variable `name`?
@@ -557,6 +563,9 @@ impl Codegen {
     /// Numeric expression → decimal text in num_buf; SRC ← num_buf.
     fn emit_number_text(&mut self, e: &Expr) {
         let z = self.str_zp();
+        if self.real_number_text(e, z + SRC) {
+            return;
+        }
         if self.is_float_like(e) {
             // Q8.8: integer part, '.', two decimals — use the integer part only
             // for now and append ".DD" from the fraction byte

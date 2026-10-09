@@ -4,6 +4,7 @@ pub mod codegen;
 pub mod debug_output;
 pub mod lexer;
 pub mod parser;
+pub mod spill;
 pub mod map_view;
 pub mod tune;
 
@@ -31,7 +32,16 @@ impl Default for CompileOptions {
 pub struct VarEntry {
     pub name: String,
     pub zp_addr: u8,
+    /// Set for a variable moved to RAM because zero page ran out (1.6.4).
+    pub ram_addr: Option<u16>,
     pub type_str: String,
+}
+
+impl VarEntry {
+    /// Where the variable lives: its RAM home, or its zero-page address.
+    pub fn addr(&self) -> u16 {
+        self.ram_addr.unwrap_or(self.zp_addr as u16)
+    }
 }
 
 /// Named subroutine with its absolute address.
@@ -46,7 +56,7 @@ pub struct LabelEntry {
     pub addr: u16,
 }
 
-/// Byte array in heap RAM ($C000+).
+/// Array in RAM ($C000+, or from $A000 when the arrays need more than 4 KB).
 pub struct ArrayEntry {
     pub name: String,
     pub base_addr: u16,
@@ -120,6 +130,17 @@ const BASIC_STUB: &[u8] = &[
 // = 2 + 2 + 2 + 1 + 4 + 1 + 2 = 14 bytes
 // Code starts at $0801 + 12 (excluding 2-byte header) = $080D = 2061 ✓
 
+thread_local! {
+    static FORCE_SPILL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Testing aid: move every variable that may live in RAM there, even when
+/// zero page is not full (applies to `compile` calls on this thread).
+#[doc(hidden)]
+pub fn set_force_spill(on: bool) {
+    FORCE_SPILL.with(|f| f.set(on));
+}
+
 pub fn compile(source: &str, opts: &CompileOptions) -> CompileResult {
     compile_with_path(source, opts, None)
 }
@@ -153,9 +174,42 @@ pub fn compile_with_path(
     let mut errors = lex_errors;
     errors.extend(parser.errors().iter().cloned());
     let mut cg = Codegen::new(load_addr);
-    cg.set_source_lines(source_lines);
-    cg.set_signed(signed);
-    let raw = cg.compile(&ast);
+    cg.set_source_lines(source_lines.clone());
+    cg.set_signed(signed.clone());
+    let mut raw = cg.compile(&ast);
+    // Out of zero page: compile again with the least used variables in RAM
+    // (compiler/spill.rs). Programs that fit are never touched.
+    let force = FORCE_SPILL.with(|f| f.get());
+    if let Some(analysis) = force.then(|| spill::analyse(&ast)).flatten() {
+        let mut retry = Codegen::new(load_addr);
+        retry.set_source_lines(source_lines.clone());
+        retry.set_signed(signed.clone());
+        retry.set_spill(analysis.plan(analysis.candidate_count()));
+        raw = retry.compile(&ast);
+        cg = retry;
+    } else if let Some(over) = cg.zp_overflow() {
+        if let Some(analysis) = spill::analyse(&ast) {
+            let total = analysis.candidate_count();
+            let mut k = (over as usize).div_ceil(2) + 2;
+            while total > 0 {
+                k = k.min(total);
+                let mut retry = Codegen::new(load_addr);
+                retry.set_source_lines(source_lines.clone());
+                retry.set_signed(signed.clone());
+                retry.set_spill(analysis.plan(k));
+                let retry_raw = retry.compile(&ast);
+                match retry.zp_overflow() {
+                    None => {
+                        cg = retry;
+                        raw = retry_raw;
+                        break;
+                    }
+                    Some(more) if k < total => k += (more as usize).div_ceil(2).max(2),
+                    Some(_) => break, // even moving every candidate is not enough
+                }
+            }
+        }
+    }
     errors.extend(cg.errors());
     let map = cg.memory_map();
     let asm = asm_listing::generate(&map, source_path);

@@ -330,6 +330,8 @@ impl Codegen {
         let zp = self.alloc_var(var);
         let perm_before = self.perm_zp;
         let mut temps = 0; // permanent ZP bytes taken for limit/step snapshots
+        // the bounds are one spill fragment (the counter itself is never spilled)
+        let header_frame = self.spill_enter(&format!("{from:?}{to:?}{step:?}"));
 
         // Step: constant (with direction) or a runtime value (counting up).
         #[derive(Clone, Copy)]
@@ -372,6 +374,7 @@ impl Codegen {
             }
         };
         let down = matches!(step, Step::Down(_));
+        self.spill_exit(header_frame, false);
 
         // A first iteration is certain when both ends are constants in order.
         let first_iteration_certain = match (from, limit) {
@@ -496,6 +499,7 @@ impl Codegen {
         let zp = self.alloc_var(var);
         let perm_before = self.perm_zp;
         let mut temps = 0u8;
+        let header_frame = self.spill_enter(&format!("{from:?}{to:?}{step:?}"));
 
         // from → var (16-bit)
         if !self.gen_word_assign(zp, from) {
@@ -539,6 +543,7 @@ impl Codegen {
             W::Imm(v) => Operand::Imm((v >> 8) as u8),
             W::Zp(z) => Operand::Zp(z + 1),
         };
+        self.spill_exit(header_frame, false);
 
         self.emit(JMP); // JMP test
         let entry = self.code.len();
@@ -1128,6 +1133,33 @@ impl Codegen {
             }
             // `not x` is 1 exactly when x == 0.
             Expr::Not(inner) => self.gen_cond_jump(inner, !jump_when, Truth::NonZero, target),
+            // floating point: compare, or the value itself against 0 / 1
+            Expr::BinOp(l, op, r) if self.is_real_number(l) || self.is_real_number(r) => {
+                let pred = match Pred::from_binop(op) {
+                    Some(_) => self.real_compare(l, op, r),
+                    None => {
+                        self.eval_expr(cond);
+                        self.emit(0xC9);
+                        self.emit(0x00); // CMP #0
+                        Pred::Ne
+                    }
+                };
+                let pred = if jump_when { pred } else { pred.negate() };
+                self.emit_jump_on(pred, target)
+            }
+            c if self.is_real_number(c) => {
+                let one = Expr::Number(match truth {
+                    Truth::NonZero => 0,
+                    Truth::EqualsOne => 1,
+                });
+                let op = match truth {
+                    Truth::NonZero => BinOp::NotEq,
+                    Truth::EqualsOne => BinOp::Eq,
+                };
+                let pred = self.real_compare(c, &op, &one);
+                let pred = if jump_when { pred } else { pred.negate() };
+                self.emit_jump_on(pred, target)
+            }
             Expr::BinOp(l, op, r)
                 if Pred::from_binop(op).is_some() && self.is_byte_compare(l, r) =>
             {

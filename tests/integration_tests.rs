@@ -6267,15 +6267,14 @@ fn arrays_are_zeroed_at_startup() {
 }
 
 #[test]
-fn zero_page_overflow_is_a_compile_error() {
-    // 2 bytes per variable in $02-$4F: 40 variables cannot fit.
+fn zero_page_overflow_moves_variables_to_ram() {
+    // 2 bytes per variable in $02-$4F: 40 variables cannot all fit. Before 1.6.4
+    // this was the error "out of zero page"; now the least used ones live in RAM.
+    // (`zero_page_error_when_nothing_can_move` covers the remaining error.)
     let src: String = (0..40).map(|i| format!("var v{i} = 0\n")).collect();
     let res = compile(&src, &CompileOptions { basic_stub: false, explicit: false });
-    assert!(
-        res.errors.iter().any(|e| e.contains("out of zero page")),
-        "expected zero-page overflow error, got {:?}",
-        res.errors
-    );
+    assert!(res.errors.is_empty(), "errors: {:?}", res.errors);
+    assert!(res.map.variables.iter().any(|v| v.ram_addr.is_some()));
 }
 
 #[test]

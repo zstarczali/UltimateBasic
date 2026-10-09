@@ -1,6 +1,6 @@
 # NUltimate Basic
 
-Current version: **1.6.3** (1.6.3 = QBasic-style syntax: `dim … as …` scalars and arrays of every type, `function`/`sub` with `as` types, return-by-name, `end sub`/`end if`, bare sub calls, `print a; b`, ELSEIF / DO-LOOP / WHILE-WEND / SELECT CASE, runtime strings (`codegen/strings.rs`), signed INTEGER, 16-bit for loops, recursion check; deferred work in `ROADMAP.md`; 1.6.2 = `tune` instrument modulation: `imod` / `ifilt` / `igate` / `itab`, frame-based player in `compiler/tune.rs`; 1.6.1 = `map view` smooth scrolling, `compiler/map_view.rs`, `map load` of Level Editor projects and to an address; 1.6.0 = optimised 6502 codegen, `codegen/opt.rs`; release notes in `whatnews.txt`, user docs in `README.md` / `MANUAL.md`).
+Current version: **1.6.3**, unreleased 1.6.4 work in the tree (1.6.4 = SINGLE/DOUBLE real 5-byte floating point (`codegen/float.rs` codegen, `codegen/float_lib.rs` runtime assembled by `codegen/rtasm.rs`), variables spilled to RAM when zero page runs out (`compiler/spill.rs`), 12 KB arrays at `$A000-$CFFF` with BASIC banked out, `%` binary literals, unary-minus precedence fix; 1.6.3 = QBasic-style syntax: `dim … as …` scalars and arrays of every type, `function`/`sub` with `as` types, return-by-name, `end sub`/`end if`, bare sub calls, `print a; b`, ELSEIF / DO-LOOP / WHILE-WEND / SELECT CASE, runtime strings (`codegen/strings.rs`), signed INTEGER, 16-bit for loops, recursion check; deferred work in `ROADMAP.md`; 1.6.2 = `tune` instrument modulation: `imod` / `ifilt` / `igate` / `itab`, frame-based player in `compiler/tune.rs`; 1.6.1 = `map view` smooth scrolling, `compiler/map_view.rs`, `map load` of Level Editor projects and to an address; 1.6.0 = optimised 6502 codegen, `codegen/opt.rs`; release notes in `whatnews.txt`, user docs in `README.md` / `MANUAL.md`).
 
 A custom BASIC-like language compiler targeting the Commodore 64 and Commodore 64 Ultimate. Produces `.prg` files runnable in VICE or on real hardware.
 
@@ -31,6 +31,10 @@ src/
     codegen.rs         – 6502 code generator (Codegen)
     codegen/opt.rs     – optimised paths: conditions, operands, mul/div, arrays, for, A-reuse
     codegen/strings.rs – runtime strings: concat, left$/right$/mid$, number↔text, compare, input conversion
+    codegen/float.rs   – SINGLE/DOUBLE codegen: typing (is_real_expr), eval into FAC, hooks into the integer paths
+    codegen/float_lib.rs – floating-point runtime (6502 assembly source, MFLPT format) + to_mflpt/from_mflpt
+    codegen/rtasm.rs   – strict two-pass 6502 assembler used for the float runtime
+    spill.rs           – which variables move to RAM when zero page runs out (SpillPlan)
 examples/
   features.ub          – original feature demo
   new_features.ub      – arrays, word vars, sub params, string vars demo
@@ -53,6 +57,7 @@ examples/
   function_demo.ub    – fn return value demo (square, add, max, clamp)
   dim_demo.ub         – DIM … AS … scalars and arrays (integer, string, double)
   qbasic_demo.ub      – QBasic-style FUNCTION / SUB / IF-ELSEIF / DO-LOOP / SELECT CASE / strings / signed INTEGER
+  float_demo.ub       – SINGLE / DOUBLE floating point: ^, SQR, SIN, ATN, EXP, LOG, FOR STEP 0.5, AS DOUBLE function
 ```
 
 ## Architecture
@@ -115,6 +120,31 @@ the C64 with no ROM overlay when no cartridge is present. All arrays are **zeroe
 at program entry** (`emit_zero_arrays`, one shared loop over the whole array region),
 because C64 RAM powers up with a garbage pattern.
 
+
+1.6.4: when arrays (+ paint stack, spill homes, float slots) need more than 4 KB, `pre_scan`
+starts the area at `$A000` (`basic_rom_out`): `emit_basic_rom(false)` at program start,
+`emit_basic_rom(true)` before every return to BASIC (`end`, `bye`, `chain`, final RTS). The
+test CPU models `$01` (reads of `$A000-$BFFF` give `$AA` while BASIC is visible) and asserts
+that BASIC is visible at the final RTS. `collect_array_decls` also finds arrays inside
+subs / blocks (they used to overlap at `$C000`).
+
+### Floating point (1.6.4)
+
+`VarType::Real` / `RealArray` (parser: `as single|double`). `pre_scan`: `program_uses_reals`
+(Debug-text scan) allocates the runtime's 2-byte ZP pointer `flt_zp`; `scan_reals` finds typed
+real vars, untyped `var x = <real expr>`, `AS DOUBLE` fn results (`real_fns`) and params
+(`real_params`, no ZP slot: `sub_params` entry `(0, Some(Real))`); `place_reals` gives them
+5-byte slots after the arrays (`real_range`, zeroed with the arrays). Codegen hooks (all no-ops
+when `flt_zp` is None, so programs without floats compile byte-identically): `gen_real_stmt`
+at the top of `gen_stmt_inner`, `real_eval_byte` / `real_eval_word` at the top of `eval_expr` /
+`eval_expr_word` / `gen_word_assign` (round via `f_rndu16`), `real_print`, `real_number_text`
+(strings), `real_param_store`, real compare arms in `gen_cond_jump`. `is_real_expr`: real
+var/array/fn, `^`, real builtins, decimal literals once floats are on. `eval_real` leaves the
+value in FAC (simple right operands straight from memory, else `f_push` / `f_*p`). Runtime calls
+are `JSR` patched in `emit_float_runtime` (appended before `patch_forward_refs`); constants are
+pooled 5-byte MFLPT after it. Parser: `Token::FixedLit(q88, exact, real_only)`, `Token::Caret`,
+`parse_power`; constant folding only folds exact results within i16 (`7/2`, `300*300` stay
+BinOps; `ast::fold_int` gives integer contexts the old wrapped value).
 ---
 
 ## Language Reference
@@ -168,7 +198,7 @@ as that keyword — use non-keyword names like `SCRADDR`, `BORDER_ADDR`.
 ```basic
 DIM kor AS INTEGER          # signed 16-bit, starts at 0
 DIM nev AS STRING           # string, starts as ""
-DIM fizetes AS DOUBLE       # Q8.8 fixed point, starts at 0.00
+DIM fizetes AS DOUBLE       # 5-byte floating point, starts at 0
 DIM x, y AS BYTE            # several names, all get the type
 DIM pont AS INTEGER = 1000, cim AS STRING = "C64"   # initializers, mixed types
 ```
@@ -178,7 +208,8 @@ DIM pont AS INTEGER = 1000, cim AS STRING = "C64"   # initializers, mixed types
 | `byte`, `int` | `int` (8-bit, 0–255) |
 | `integer` | signed 16-bit (−32768 … 32767) — QBasic INTEGER |
 | `word` | `word` (unsigned 16-bit, 0–65535) |
-| `single`, `double`, `float` | `float` (Q8.8 — 0–255.99, **not** IEEE floating point) |
+| `single`, `double` | `VarType::Real` — 5-byte floating point in RAM (1.6.4) |
+| `float` | `float` (Q8.8 — 0–255.99) |
 | `string` | `string` |
 
 - Without `= value`, numbers start at 0 and strings at `""`.
@@ -197,7 +228,7 @@ DIM pont AS INTEGER = 1000, cim AS STRING = "C64"   # initializers, mixed types
 ```basic
 DIM tabla(2, 3) AS INTEGER     ' 3 × 4 elements: tabla(0..2, 0..3)
 DIM kocka(1, 2, 3) AS BYTE     ' any number of dimensions
-DIM ar(9) AS DOUBLE            ' 10 Q8.8 values
+DIM ar(9) AS DOUBLE            ' 10 floating-point values (RealArray, 5 bytes each)
 DIM nevek(4) AS STRING         ' 5 strings, all start as ""
 DIM v(9)                       ' no AS → byte array
 
@@ -210,8 +241,9 @@ PRINT tabla(2, 3); " "; nevek(0); " "; ar(1)
 - Every bound is the **highest index** (BASIC rule): `dim t(2, 3)` has 3 × 4 elements.
   (`var t = array(3, 4)` takes element counts — same array.)
 - Element types: `byte`/`int` → 1 byte, `integer` (signed) / `word` → 2 bytes,
-  `single`/`double`/`float` → 2-byte Q8.8, `string` → 2-byte pointer. Bounds must be
-  compile-time constants; arrays live in `$C000-$CFFF` (4096 bytes, checked).
+  `float` → 2-byte Q8.8, `single`/`double` → 5-byte float, `string` → 2-byte pointer. Bounds
+  must be compile-time constants; arrays live in `$C000-$CFFF`, or `$A000-$CFFF` (12 KB, BASIC
+  ROM banked out) when they need more than 4 KB (checked).
 - String-array elements start as `""`; `nevek(i) = "TEXT"` / `= s` / `= a + b`,
   `n = nevek(i)`, printing, `+`, passing to a `string` parameter and `input nevek(i)` all
   work (non-literal values are copied into a 31-character slot per element).
@@ -817,7 +849,7 @@ charset off              # back to ROM set ($1000; $1800 after `lowercase`)
 `charset addr` is a compile-time directive (no code). `chardef` does not clear the rest of the
 set. `charset on` requires a multiple of `$800` inside VIC bank 0, else a compile-time error;
 it uses the `charset addr` compiled last (keep it in the main body — subs compile after it).
-`%` binary literals are **not** supported by the lexer (use `$xx` / decimal).
+`%01010101` binary literals are supported since 1.6.4 (lexer).
 The program code must not overlap the charset: `charset on` claims the 2 KB set and `chardef` its 8 bytes, and a compile-time error is reported if the generated code reaches into them (e.g. a big program with `charset $2800` — use `charset $3800`, above the code).
 
 ### Ultimate 64 — CPU Speed
@@ -1816,7 +1848,7 @@ labels. The `.dbg` format does not yet include instruction-to-source-line mappin
 | Feature | Limitation |
 |---|---|
 | Integer arithmetic | `var`/`byte` 8-bit unsigned, wraps silently (`var c = a + b` stays a byte by design — see `can_be_word_result`); `integer` signed 16-bit (`signed_vars`), `word` unsigned 16-bit |
-| Zero page budget | Permanent ZP is `$02–$4F` (78 bytes): every variable and sub/fn parameter takes 2 bytes, every running `for` loop 2 more (freed when the loop ends, if its body declared no variables). Exceeding it is a compile-time error ("out of zero page"). Reuse variables in big programs |
+| Zero page budget | Permanent ZP is `$02–$4F` (78 bytes): every variable and sub/fn parameter takes 2 bytes, every running `for` loop 2 more (freed when the loop ends, if its body declared no variables). Since 1.6.4 `compile()` retries with variables spilled to RAM (`spill.rs`, `spill_enter`/`spill_exit` proxy slots); "out of zero page" only when even that fails |
 | Subroutines | No recursion — ZP parameter slots are statically allocated |
 | String vars | Computed values: 80-char buffer per variable (cut at 80); string-array element values: 31-char slots; no `<`/`>` ordering of strings |
 | `rnd()` | Simple LCG, not cryptographic; period = 256 |

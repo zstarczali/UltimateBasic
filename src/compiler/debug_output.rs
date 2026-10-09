@@ -28,7 +28,7 @@ fn symbols(map: &MemoryMap) -> BTreeMap<String, u16> {
         map.load_addr.wrapping_add(map.code_size as u16),
     );
     for var in &map.variables {
-        result.insert(clean_name(&var.name), var.zp_addr as u16);
+        result.insert(clean_name(&var.name), var.addr());
     }
     for array in &map.arrays {
         result.insert(clean_name(&array.name), array.base_addr);
@@ -119,6 +119,7 @@ mod tests {
             variables: vec![VarEntry {
                 name: "score".into(),
                 zp_addr: 0x02,
+                ram_addr: None,
                 type_str: "int".into(),
             }],
             subroutines: vec![SubEntry {

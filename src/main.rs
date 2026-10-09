@@ -251,15 +251,18 @@ fn print_memory_map(map: &MemoryMap, verbose: bool) {
     println!("  Code:    {} bytes", map.code_size);
 
     println!();
-    println!("  Variables (zero page):");
+    println!("  Variables (zero page, or RAM when zero page ran out):");
     if map.variables.is_empty() {
         println!("    (none)");
     } else {
         for var in &map.variables {
-            println!(
-                "    {:<16} ZP:${:02X}   {}",
-                var.name, var.zp_addr, var.type_str
-            );
+            match var.ram_addr {
+                Some(a) => println!("    {:<16} RAM:${:04X} {}", var.name, a, var.type_str),
+                None => println!(
+                    "    {:<16} ZP:${:02X}   {}",
+                    var.name, var.zp_addr, var.type_str
+                ),
+            }
         }
     }
 
@@ -274,7 +277,7 @@ fn print_memory_map(map: &MemoryMap, verbose: bool) {
     }
 
     println!();
-    println!("  Arrays ($C000+):");
+    println!("  Arrays ($C000+, or $A000+ with the BASIC ROM banked out):");
     if map.arrays.is_empty() {
         println!("    (none)");
     } else {

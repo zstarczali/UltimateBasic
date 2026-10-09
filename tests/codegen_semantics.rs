@@ -721,7 +721,8 @@ fn dim_as_type_declarations() {
          print fizetes\n",
     );
     assert_eq!(r.word("kor"), 300, "INTEGER is 16-bit");
-    assert_eq!(r.word("fizetes"), 3 << 8, "DOUBLE is Q8.8 float");
+    let f = r.var_addr("fizetes") as usize;
+    assert_eq!(&r.cpu.mem[f..f + 5], &[0x82, 0x40, 0, 0, 0], "DOUBLE is 5-byte floating point (3.0)");
     assert_eq!(r.byte("b"), 200);
     assert_eq!(r.word("w1"), 500);
     assert_eq!(r.word("w2"), 800, "dim a, b as integer types both names");
@@ -729,7 +730,7 @@ fn dim_as_type_declarations() {
     assert_eq!(r.word("y"), 1000);
     let out = r.output();
     assert!(out.contains("ZSOLT"), "{out:?}");
-    assert!(out.contains("3.00"), "{out:?}");
+    assert!(out.ends_with("ZSOLT\r3\r"), "{out:?}");
 }
 
 /// Uninitialized `dim` vars start at zero / empty string.
@@ -756,7 +757,7 @@ fn dim_rejects_unsupported_forms() {
         "dim a(10) as long\n",
         "dim a(n)\n",
         "dim a(10) = 5\n",
-        "dim a(4000) as integer\n",
+        "dim a(7000) as integer\n",
         "dim a, b as integer = 5\n",
     ] {
         let toks = ultimate_basic::compiler::lexer::Lexer::new(src).tokenize();
@@ -886,7 +887,7 @@ fn dim_arrays_all_types() {
     assert_eq!(r.word("w"), 208);
     assert_eq!(
         r.output(),
-        "203 100 2\r3.00 2.50 3.75 0.00\r<ZSOLT..ANNA>\r"
+        "203 100 2\r3 2.5 3.75 0\r<ZSOLT..ANNA>\r"
     );
 }
 
@@ -1064,9 +1065,11 @@ fn input_kinds() {
     let cases: &[(&str, &[&str], &str)] = &[
         ("var b = 0\ninput b\nprint \"=\"; b\n", &["42"], "=42\r"),
         ("DIM n AS INTEGER\ninput \"N\"; n\nprint \"=\"; n\n", &["12345"], "=12345\r"),
-        ("DIM f AS DOUBLE\ninput f\nprint \"=\"; f\n", &["12.5"], "=12.50\r"),
-        ("DIM f AS DOUBLE\ninput f\nprint \"=\"; f\n", &["3.07"], "=3.07\r"),
-        ("DIM f AS DOUBLE\ninput f\nprint \"=\"; f\n", &["7"], "=7.00\r"),
+        ("DIM f AS FLOAT\ninput f\nprint \"=\"; f\n", &["12.5"], "=12.50\r"),
+        ("DIM f AS FLOAT\ninput f\nprint \"=\"; f\n", &["3.07"], "=3.07\r"),
+        ("DIM f AS FLOAT\ninput f\nprint \"=\"; f\n", &["7"], "=7.00\r"),
+        ("DIM f AS DOUBLE\ninput f\nprint \"=\"; f\n", &["12.5"], "=12.5\r"),
+        ("DIM f AS DOUBLE\ninput f\nprint \"=\"; f\n", &["-3.07e2"], "=-307\r"),
         ("DIM t(2) AS INTEGER\nvar i = 0\nfor i = 0 to 2\n input t(i)\nnext\nprint \"=\"; t(0); \",\"; t(1); \",\"; t(2)\n", &["100", "2000", "30000"], "=100,2000,30000\r"),
         ("DIM nev(2) AS STRING\nvar i = 0\nfor i = 0 to 2\n input nev(i)\nnext\nprint \"=\"; nev(0); \",\"; nev(1); \",\"; nev(2)\n", &["ANNA", "BELA", "CILI"], "=ANNA,BELA,CILI\r"),
         ("DIM nev(1) AS STRING\nDIM s AS STRING\ns = \"X\"\nnev(0) = s\ns = \"Y\"\nnev(1) = s + \"Z\"\nprint \"=\"; nev(0); nev(1)\n", &[], "=XYZ\r"),
@@ -1105,12 +1108,15 @@ fn signed_integers() {
 #[test]
 fn float_mul_div() {
     let cases: &[(&str, &str)] = &[
-        ("DIM a AS DOUBLE = 2.5\nDIM b AS DOUBLE = 1.5\nDIM c AS DOUBLE\nc = a * b\nprint c\n", "3.75\r"),
-        ("DIM a AS DOUBLE = 7.5\nDIM b AS DOUBLE = 2.5\nDIM c AS DOUBLE\nc = a / b\nprint c\n", "3.00\r"),
-        ("DIM a AS DOUBLE = 1.0\nDIM b AS DOUBLE = 0.25\nDIM c AS DOUBLE\nc = a / b\nprint c\n", "4.00\r"),
-        ("DIM a AS DOUBLE = 10\nDIM b AS DOUBLE = 3\nDIM c AS DOUBLE\nc = a / b\nprint c\n", "3.33\r"),
-        ("DIM a AS DOUBLE = 3.5\nprint a * 2; \" \"; a / 2; \" \"; a * a\n", "7.00 1.75 12.25\r"),
-        ("DIM a AS DOUBLE = 0.5\nDIM b AS DOUBLE = 0.5\nprint a * b; \" \"; a / b\n", "0.25 1.00\r"),
+        ("DIM a AS FLOAT = 2.5\nDIM b AS FLOAT = 1.5\nDIM c AS FLOAT\nc = a * b\nprint c\n", "3.75\r"),
+        ("DIM a AS FLOAT = 7.5\nDIM b AS FLOAT = 2.5\nDIM c AS FLOAT\nc = a / b\nprint c\n", "3.00\r"),
+        ("DIM a AS FLOAT = 1.0\nDIM b AS FLOAT = 0.25\nDIM c AS FLOAT\nc = a / b\nprint c\n", "4.00\r"),
+        ("DIM a AS FLOAT = 10\nDIM b AS FLOAT = 3\nDIM c AS FLOAT\nc = a / b\nprint c\n", "3.33\r"),
+        ("DIM a AS FLOAT = 3.5\nprint a * 2; \" \"; a / 2; \" \"; a * a\n", "7.00 1.75 12.25\r"),
+        ("DIM a AS FLOAT = 0.5\nDIM b AS FLOAT = 0.5\nprint a * b; \" \"; a / b\n", "0.25 1.00\r"),
+        // SINGLE / DOUBLE: floating point (1.6.4)
+        ("DIM a AS DOUBLE = 7.5\nDIM b AS DOUBLE = 2.5\nprint a / b; \" \"; a * b\n", "3 18.75\r"),
+        ("DIM a AS DOUBLE = 10\nDIM b AS DOUBLE = 3\nprint a / b\n", "3.33333333\r"),
     ];
     for (src, want) in cases {
         assert_eq!(run_src(src).output(), *want, "{src}");
@@ -1147,4 +1153,138 @@ fn word_times_word() {
     }
     let r = run_src("DIM a AS INTEGER = -300\nDIM b AS INTEGER = 7\nDIM c AS INTEGER\nc = a * b\nprint c\n");
     assert_eq!(r.output(), "-2100\r");
+}
+
+/// Arrays beyond 4 KB move to $A000 (RAM under the BASIC ROM, up to $CFFF):
+/// BASIC is banked out while the program runs and back in on every exit.
+/// The emulator models the banking: reads at $A000-$BFFF with BASIC visible
+/// return $AA, and returning to BASIC with the ROM banked out panics.
+#[test]
+fn arrays_under_basic_rom() {
+    let src = "DIM big(4999) AS INTEGER\nDIM b(999) AS BYTE\nvar k: word = 0\n\
+               for k = 0 to 4999\n big(k) = k * 3\nnext\n\
+               for k = 0 to 999\n b(k) = k and 255\nnext\n\
+               var s: word = 0\nvar t: word = 0\n\
+               s = big(4999)\nt = big(1234)\nvar u = b(999)\nvar z = b(0)\n";
+    for exit in ["", "END\n", "bye\n"] {
+        let r = run_src(&format!("{src}{exit}"));
+        assert_eq!(r.word("s"), 14997, "exit {exit:?}");
+        assert_eq!(r.word("t"), 3702);
+        assert_eq!(r.byte("u"), 999u16 as u8);
+        assert_eq!(r.byte("z"), 0);
+    }
+    // the layout itself: first array at $A000, BASIC banked out at start
+    let res = compile_src(src);
+    let a = res.map.arrays.iter().find(|a| a.name == "big").unwrap();
+    assert_eq!(a.base_addr, 0xA000);
+    // small programs keep $C000 and do not touch $01
+    let small = compile_src("DIM a(100) AS BYTE\na(5) = 1\n");
+    assert_eq!(small.map.arrays[0].base_addr, 0xC000);
+    assert!(!contains(&small.prg, &[0xA5, 0x01]), "no banking for small arrays");
+    // more than 12 KB is an error
+    let res = ultimate_basic::compiler::compile(
+        "DIM a(6000) AS INTEGER\nDIM b(500) AS INTEGER\n",
+        &ultimate_basic::compiler::CompileOptions { basic_stub: false, explicit: false },
+    );
+    assert!(res.errors.iter().any(|e| e.contains("12288")), "{:?}", res.errors);
+}
+
+/// Arrays declared inside a SUB (or a block) get their own memory (they all
+/// fell back to $C000 and overlapped the first array before 1.6.4).
+#[test]
+fn arrays_declared_in_subs() {
+    let r = run_src(
+        "DIM a(3) AS BYTE\nSUB S()\n  DIM b(3) AS BYTE\n  b(0) = 7\nEND SUB\n\
+         a(0) = 5\nS()\nvar x = a(0)\n",
+    );
+    assert_eq!(r.byte("x"), 5);
+}
+
+/// Moving variables to RAM (1.6.4) keeps the behaviour of a program with subs,
+/// nested functions (pool levels), strings, signed values and every loop kind.
+#[test]
+fn spilled_variables_rich_program() {
+    let src = "var a = 1\nvar b: word = 300\nDIM s AS STRING\nDIM n AS INTEGER = -5\nvar c = 0\nvar total: word = 0\n\
+        FUNCTION Twice(x AS BYTE) AS BYTE\n  Twice = x + x + a\nEND FUNCTION\n\
+        FUNCTION Outer(y AS BYTE) AS BYTE\n  Outer = Twice(y) + c\nEND FUNCTION\n\
+        SUB Bump()\n  a = a + 1\n  b = b + a\n  s = s + \"X\"\nEND SUB\n\
+        var i = 0\nfor i = 1 to 5\n  Bump\n  c = Outer(i) + Twice(a)\n  total = total + c + b\nnext\n\
+        while a < 20\n  a = a + 3\nwend\n\
+        repeat\n  c = c - 1\nuntil c < 5 or c > 200\n\
+        select a\n  case 20: n = n * 2\n  case 21: n = n * 3\n  else: n = n - 100\nend\n\
+        if b > 1000 then n = n + 1 end\n\
+        SELECT CASE b\n  CASE 0 TO 999\n    n = n + 7\n  CASE ELSE\n    n = n - 7\nEND SELECT\n\
+        print s; \" \"; total; \" \"; n; \" \"; a; \" \"; c\n";
+    ultimate_basic::compiler::set_force_spill(false);
+    let plain = run_src(src);
+    ultimate_basic::compiler::set_force_spill(true);
+    let spilled = run_src(src);
+    ultimate_basic::compiler::set_force_spill(false);
+    let in_ram: Vec<&str> = spilled
+        .res
+        .map
+        .variables
+        .iter()
+        .filter(|v| v.ram_addr.is_some())
+        .map(|v| v.name.as_str())
+        .collect();
+    for v in ["a", "b", "s", "n", "total"] {
+        assert!(in_ram.contains(&v), "{v} should be in RAM: {in_ram:?}");
+    }
+    assert!(!in_ram.contains(&"i"), "for counters stay in zero page");
+    assert!(!in_ram.contains(&"twice__result"), "written inside a function: stays");
+    assert_eq!(spilled.output(), plain.output());
+    for v in ["a", "c"] {
+        assert_eq!(spilled.byte(v), plain.byte(v), "{v}");
+    }
+    for v in ["b", "total", "n"] {
+        assert_eq!(spilled.word(v), plain.word(v), "{v}");
+    }
+}
+
+/// A program that does not fit in zero page compiles (it was the error
+/// "out of zero page" before 1.6.4) and computes the same values.
+#[test]
+fn out_of_zero_page_moves_variables_to_ram() {
+    let n = 60;
+    let mut src = String::new();
+    for k in 0..n {
+        src += &format!("var v{k} = {k}\n");
+    }
+    src += "SUB Mix(p AS BYTE)\n  v0 = v0 + p\nEND SUB\nFUNCTION Get3() AS BYTE\n  Get3 = v3 + 1\nEND FUNCTION\n";
+    src += "var r = 0\nfor r = 1 to 3\n";
+    for k in 1..n {
+        src += &format!("  v{k} = v{k} + v{}\n", k - 1);
+    }
+    src += "  Mix(r)\n  v5 = Get3()\nnext\n";
+    // reference in Rust
+    let mut v: Vec<u8> = (0..n as u8).collect();
+    for r in 1..=3u8 {
+        for k in 1..n {
+            v[k] = v[k].wrapping_add(v[k - 1]);
+        }
+        v[0] = v[0].wrapping_add(r);
+        v[5] = v[3].wrapping_add(1);
+    }
+    let run = run_src(&src);
+    let in_ram = run.res.map.variables.iter().filter(|x| x.ram_addr.is_some()).count();
+    assert!(in_ram > 0, "some variables must have moved to RAM");
+    for k in 0..n {
+        assert_eq!(run.byte(&format!("v{k}")), v[k], "v{k}");
+    }
+}
+
+/// When nothing can move (sub parameters always stay in zero page), the
+/// original error remains.
+#[test]
+fn zero_page_error_when_nothing_can_move() {
+    let mut src = String::new();
+    for k in 0..45 {
+        src += &format!("sub s{k}(p{k})\n  print p{k}\nend\ns{k}({k})\n");
+    }
+    let res = ultimate_basic::compiler::compile(
+        &src,
+        &ultimate_basic::compiler::CompileOptions { basic_stub: false, explicit: false },
+    );
+    assert!(res.errors.iter().any(|e| e.contains("out of zero page")), "{:?}", res.errors);
 }

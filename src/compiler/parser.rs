@@ -41,40 +41,38 @@ fn fold_const_expr(e: Expr) -> Expr {
             let l = fold_const_expr(*l);
             let r = fold_const_expr(*r);
             if let (Expr::Number(a), Expr::Number(b)) = (&l, &r) {
-                let a = *a;
-                let b = *b;
-                let result: Option<i16> = match op {
-                    BinOp::Add => Some(a.wrapping_add(b)),
-                    BinOp::Sub => Some(a.wrapping_sub(b)),
-                    BinOp::Mul => Some(a.wrapping_mul(b)),
-                    BinOp::Div => {
-                        if b != 0 {
-                            Some(a.wrapping_div(b))
-                        } else {
-                            None
-                        }
-                    }
-                    BinOp::Mod => {
-                        if b != 0 {
-                            Some(a.wrapping_rem(b))
-                        } else {
-                            None
-                        }
-                    }
-                    BinOp::And => Some(a & b),
-                    BinOp::Or => Some(a | b),
-                    BinOp::Xor => Some(a ^ b),
-                    BinOp::Shl => Some(a.wrapping_shl(b as u32)),
-                    BinOp::Shr => Some(((a as u16).wrapping_shr(b as u32)) as i16),
-                    _ => None, // comparisons: don't fold
+                // Only exact results are folded here: `7 / 2` or `300 * 300`
+                // keep their operator, so a floating-point (SINGLE / DOUBLE)
+                // context can compute 3.5 / 90000. Integer contexts fold the
+                // rest in the code generator (`fold_int`), with the old result.
+                let (a, b) = (*a, *b);
+                let exact: Option<i64> = match op {
+                    BinOp::Add => Some(a as i64 + b as i64),
+                    BinOp::Sub => Some(a as i64 - b as i64),
+                    BinOp::Mul => Some(a as i64 * b as i64),
+                    BinOp::Div if b != 0 && a % b == 0 => Some((a / b) as i64),
+                    BinOp::Div => None,
+                    _ => crate::compiler::ast::fold_int_op(a, &op, b).map(|v| v as i64),
                 };
-                if let Some(n) = result {
-                    return Expr::Number(n);
+                if let Some(v) = exact {
+                    if (i16::MIN as i64..=i16::MAX as i64).contains(&v) {
+                        return Expr::Number(v as i16);
+                    }
                 }
             }
             Expr::BinOp(Box::new(l), op, Box::new(r))
         }
         other => other,
+    }
+}
+
+/// Integer constant (array bounds, `const`): folded with the integer rules,
+/// whatever the result.
+fn fold_int_const(e: Expr) -> Expr {
+    let e = fold_const_expr(e);
+    match crate::compiler::ast::fold_int(&e) {
+        Some(n) => Expr::Number(n),
+        None => e,
     }
 }
 
@@ -893,7 +891,7 @@ impl Parser {
             Token::Ident(tn) => match tn.as_str() {
                 "byte" => VarType::Int,
                 "integer" => VarType::Int16, // signed 16-bit (QBasic INTEGER)
-                "single" | "double" => VarType::Float,
+                "single" | "double" => VarType::Real,
                 "long" => {
                     return Err(
                         "'as long' (32-bit) is not supported — use 'as integer' (16-bit word)".into(),
@@ -929,6 +927,7 @@ impl Parser {
             Token::StringLit(_)
             | Token::Number(_)
             | Token::Addr(_)
+            | Token::FixedLit(..)
             | Token::LParen
             | Token::Minus
             | Token::Not => true,
@@ -959,7 +958,7 @@ impl Parser {
         self.advance(); // (
         let mut dims: Vec<u16> = vec![];
         loop {
-            match fold_const_expr(self.parse_expr()) {
+            match fold_int_const(self.parse_expr()) {
                 Expr::Number(n) if n >= 0 => dims.push(n as u16 + 1),
                 _ => {
                     return self.reject_stmt(&format!(
@@ -985,6 +984,7 @@ impl Parser {
                 Ok(VarType::Word) => VarType::WordArray,
                 Ok(VarType::Int16) => VarType::Int16Array,
                 Ok(VarType::Float) => VarType::FloatArray,
+                Ok(VarType::Real) => VarType::RealArray,
                 Ok(VarType::Str) => VarType::StrArray,
                 Ok(_) => VarType::Array,
                 Err(msg) => return self.reject_stmt(&msg),
@@ -1005,10 +1005,14 @@ impl Parser {
             ));
         }
         let total: u32 = dims.iter().map(|&d| d as u32).product();
-        let bytes = if vtype == VarType::Array { total } else { total * 2 }; // all others: 2 bytes
-        if bytes > 0x1000 {
+        let bytes = match vtype {
+            VarType::Array => total,
+            VarType::RealArray => total * 5,
+            _ => total * 2, // all others: 2 bytes
+        };
+        if bytes > 0x3000 {
             return self.reject_stmt(&format!(
-                "'dim {}(…)': {} bytes — arrays live in $C000-$CFFF (4096 bytes)",
+                "'dim {}(…)': {} bytes — all arrays together can use at most 12288 bytes ($A000-$CFFF)",
                 name, bytes
             ));
         }
@@ -1021,6 +1025,7 @@ impl Parser {
             VarType::WordArray => VarType::Word,
             VarType::Int16Array => VarType::Int16,
             VarType::FloatArray => VarType::Float,
+            VarType::RealArray => VarType::Real,
             VarType::StrArray => VarType::Str,
             _ => VarType::Int,
         };
@@ -1697,7 +1702,7 @@ impl Parser {
         }
         let mut dims: Vec<u16> = Vec::new();
         loop {
-            let dim_expr = fold_const_expr(self.parse_expr());
+            let dim_expr = fold_int_const(self.parse_expr());
             match dim_expr {
                 Expr::Number(n) => dims.push(n as u16),
                 _ => {
@@ -2942,7 +2947,7 @@ impl Parser {
                 if self.peek() == &Token::Assign {
                     self.advance();
                 }
-                let val = self.parse_expr();
+                let val = fold_int_const(self.parse_expr());
                 if let Expr::Number(v) = &val {
                     self.consts.insert(name.clone(), *v);
                 }
@@ -4512,15 +4517,8 @@ impl Parser {
             self.advance();
             return Expr::Not(Box::new(self.parse_unary()));
         }
-        if matches!(self.peek(), Token::Minus) {
-            self.advance();
-            let inner = self.parse_unary();
-            // Fold constant negative literals at parse time
-            if let Expr::Number(n) = inner {
-                return Expr::Number(n.wrapping_neg());
-            }
-            return Expr::BinOp(Box::new(Expr::Number(0)), BinOp::Sub, Box::new(inner));
-        }
+        // A leading `-` binds to its operand (`parse_power`): `-5 - 3` is -8.
+        // (Before 1.6.4 it negated the whole rest: -(5 - 3) = -2.)
         self.parse_comparison()
     }
 
@@ -4564,8 +4562,26 @@ impl Parser {
         left
     }
 
+    /// `a ^ b` (right associative, binds tighter than unary minus: `-2^2` = -4).
+    fn parse_power(&mut self) -> Expr {
+        if matches!(self.peek(), Token::Minus) {
+            self.advance();
+            return match self.parse_power() {
+                Expr::Number(n) => Expr::Number(n.wrapping_neg()),
+                inner => Expr::BinOp(Box::new(Expr::Number(0)), BinOp::Sub, Box::new(inner)),
+            };
+        }
+        let base = self.parse_primary();
+        if matches!(self.peek(), Token::Caret) {
+            self.advance();
+            let exp = self.parse_power();
+            return Expr::BinOp(Box::new(base), BinOp::Pow, Box::new(exp));
+        }
+        base
+    }
+
     fn parse_multiplicative(&mut self) -> Expr {
-        let mut left = self.parse_primary();
+        let mut left = self.parse_power();
         loop {
             let op = match self.peek() {
                 Token::Star => BinOp::Mul,
@@ -4574,7 +4590,7 @@ impl Parser {
                 _ => break,
             };
             self.advance();
-            let right = self.parse_primary();
+            let right = self.parse_power();
             left = Expr::BinOp(Box::new(left), op, Box::new(right));
         }
         left
@@ -4589,7 +4605,7 @@ impl Parser {
             },
             Token::Number(n) => Expr::Number(n),
             Token::Addr(a) => Expr::Number(a as i16),
-            Token::FixedLit(v) => Expr::FixedLit(v),
+            Token::FixedLit(q, v, r) => Expr::FixedLit(q, v, r),
             Token::StringLit(s) => Expr::StringLit(s),
             Token::Int => {
                 // int(expr) — extract integer part (hi byte) of a float variable

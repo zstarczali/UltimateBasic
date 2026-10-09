@@ -1,0 +1,46 @@
+' float_demo.ub — SINGLE / DOUBLE: real floating point (1.6.4)
+'
+' 5-byte numbers as in C64 BASIC: about 9 digits, range 2.9E-39 .. 1.7E+38.
+' Operators + - * / ^, functions SQR SIN COS TAN ATN EXP LOG INT FIX CINT ABS SGN.
+' FLOAT stays the fast Q8.8 fixed-point type.
+
+DIM r AS DOUBLE, terulet AS DOUBLE
+DIM pi AS DOUBLE
+DIM i AS INTEGER
+DIM toke AS DOUBLE, kamat AS DOUBLE
+
+FUNCTION Atfogo (a AS DOUBLE, b AS DOUBLE) AS DOUBLE
+    Atfogo = SQR(a ^ 2 + b ^ 2)
+END FUNCTION
+
+cls
+pi = ATN(1) * 4
+PRINT "PI = "; pi
+
+' circle areas
+FOR r = 0.5 TO 2 STEP 0.5
+    terulet = pi * r ^ 2
+    PRINT "R="; r; "  T="; terulet
+NEXT
+
+' a few functions
+PRINT "SQR(2) = "; SQR(2)
+PRINT "SIN(PI/6) = "; SIN(pi / 6)
+PRINT "EXP(1) = "; EXP(1)
+PRINT "LOG(1000)/LOG(10) = "; LOG(1000) / LOG(10)
+PRINT "ATFOGO(3,4) = "; Atfogo(3, 4)
+
+' compound interest: 100000 at 5% for 10 years
+toke = 100000
+kamat = 0.05
+FOR i = 1 TO 10
+    toke = toke * (1 + kamat)
+NEXT
+PRINT "TOKE 10 EV UTAN: "; INT(toke * 100 + 0.5) / 100
+
+' big and small numbers
+PRINT 2 ^ 100; " "; 1 / 3E8; " "; -1.5E-7
+
+' conversion to INTEGER rounds
+i = pi * 1000
+PRINT "PI*1000 -> INTEGER: "; i
