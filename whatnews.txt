@@ -1,7 +1,7 @@
-Ultimate Basic v1.6.3 – Release Notes
+Ultimate Basic v1.6.4 – Release Notes
 ======================================
 
-1.6.4 – unreleased: floating point, variables in RAM, 12 KB arrays
+2026-10-09 – Release 1.6.4: floating point, variables in RAM, 12 KB arrays
 ------------------------------------------------------------------
   New
   - SINGLE / DOUBLE are real floating-point numbers: 5 bytes, the C64

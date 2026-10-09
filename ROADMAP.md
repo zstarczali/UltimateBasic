@@ -6,7 +6,7 @@ are listed in `CLAUDE.md` → *Known Limitations*.
 
 ---
 
-## Done in 1.6.4 (unreleased)
+## Done in 1.6.4
 
 The three big items of the 1.6.3 roadmap are implemented:
 

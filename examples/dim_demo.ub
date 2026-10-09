@@ -12,12 +12,14 @@ DIM kor AS INTEGER
 DIM nev AS STRING
 DIM fizetes AS DOUBLE
 
+lowercase
+
 DIM x, y AS BYTE                     # both are BYTE
 DIM pont AS INTEGER = 1000, cim AS STRING = "C64"
 
 cls
-input "NEV: ", nev
-input "KOR: ", kor
+input "NEV: ", nev: print
+input "KOR: ", kor: print
 
 fizetes = 12.5
 fizetes = fizetes + 0.25
