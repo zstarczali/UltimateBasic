@@ -338,3 +338,47 @@ fn differential_trace_file() {
         println!("{name}: {}", log.join(" "));
     }
 }
+
+/// Final state by variable name (works for zero-page and RAM variables).
+fn named_state(res: &ultimate_basic::compiler::CompileResult) -> Result<Vec<u8>, String> {
+    let mut cpu = Cpu::new(&res.prg);
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cpu.run(20_000_000)));
+    if r.is_err() {
+        return Err(format!("crashed/hung at ${:04X}", cpu.pc));
+    }
+    let mut state = vec![];
+    for name in ["v0", "v1", "v2", "v3", "v4", "v5", "l0", "l1", "g0", "g1", "g2"] {
+        let v = res.map.variables.iter().find(|v| v.name == name);
+        state.push(v.map(|v| cpu.mem[v.addr() as usize]).unwrap_or(0));
+    }
+    state.extend_from_slice(&cpu.mem[0xC000..0xC010]);
+    Ok(state)
+}
+
+/// Variables moved to RAM (1.6.4 spilling) must not change behaviour: every
+/// random program is compiled normally and with *all* eligible variables in
+/// RAM, and both runs must end in the same state.
+#[test]
+fn spilled_variables_match_zero_page() {
+    let cases: usize = std::env::var("UB_FUZZ_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(40);
+    let seed: u64 = std::env::var("UB_FUZZ_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+    let mut g = Gen { rng: Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1), guards: 0, loop_vars: 0 };
+    let mut spilled_total = 0;
+    for n in 0..cases {
+        let src = g.program();
+        ultimate_basic::compiler::set_force_spill(false);
+        let plain = compile_src(&src);
+        ultimate_basic::compiler::set_force_spill(true);
+        let spilled = compile_src(&src);
+        ultimate_basic::compiler::set_force_spill(false);
+        spilled_total += spilled.map.variables.iter().filter(|v| v.ram_addr.is_some()).count();
+        let want = match named_state(&plain) {
+            Ok(s) => s,
+            Err(_) => continue, // the program itself hangs (budget) — nothing to compare
+        };
+        let got = named_state(&spilled).unwrap_or_else(|e| panic!("case {n}: spilled code {e}\n{src}"));
+        assert_eq!(got, want, "case {n} differs (v0..v5, l0, l1, g0..g2, a[0..16])\n{src}");
+    }
+    assert!(spilled_total > cases, "spilling was hardly exercised ({spilled_total})");
+    // more: UB_FUZZ_CASES=3000 cargo test --release --test differential_fuzz spilled
+}

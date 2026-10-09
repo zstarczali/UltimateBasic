@@ -2,7 +2,10 @@ use super::ast::{BinOp, ColorTarget, Expr, FieldKind, ReuOp, Stmt, VarType};
 use super::{ArrayEntry, MemoryMap, SubEntry, VarEntry};
 use std::collections::HashMap;
 
+mod float;
+pub mod float_lib;
 mod opt;
+pub(crate) mod rtasm;
 mod strings;
 use opt::{Pred, Target, Truth};
 
@@ -615,9 +618,33 @@ pub struct Codegen {
     a_cache: Option<(u8, usize)>,
     break_patches: Vec<Vec<usize>>,
     continue_patches: Vec<Vec<usize>>,
-    arrays: HashMap<String, u16>, // array_name → base address ($C000+)
+    arrays: HashMap<String, u16>, // array_name → base address ($C000+ or $A000+)
     array_sizes: HashMap<String, u16>, // array_name → size in bytes
     array_ptr: u16,               // next free array slot
+    /// Arrays did not fit in $C000-$CFFF and start at $A000 (RAM under the BASIC
+    /// ROM): BASIC is banked out at program start and back in on every exit.
+    basic_rom_out: bool,
+    array_errors: Vec<String>,
+    /// Bytes reserved in the array area besides arrays (spilled variable homes).
+    extra_array_bytes: u16,
+    // variables in RAM (compiler/spill.rs): second pass when zero page runs out
+    spill_plan: Option<super::spill::SpillPlan>,
+    spill_set: std::collections::HashSet<String>,
+    spill_home: HashMap<String, u16>,
+    spill_home_range: Option<(u16, u16)>,
+    spill_pool: u8,
+    spill_level: u8,
+    // floating point (codegen/float.rs): 5-byte values in RAM
+    real_vars: HashMap<String, u16>,
+    real_arrays: std::collections::HashSet<String>,
+    real_fns: HashMap<String, u16>,
+    real_params: HashMap<String, Vec<Option<u16>>>,
+    real_range: Option<(u16, u16)>,
+    flt_zp: Option<u8>,
+    flt_patches: Vec<(usize, &'static str)>,
+    flt_consts: Vec<[u8; 5]>,
+    flt_const_patches: Vec<(usize, usize, usize)>,
+    cur_fn: Option<String>,
     rnd_seeded: bool,
     plot_zp: Option<u8>,              // base of 5-byte ZP block for plot helper
     pen_color_zp: Option<u8>,        // ZP byte: current hires draw color (`color pen N`); 0-15 fg nibble
@@ -757,6 +784,25 @@ impl Codegen {
             arrays: HashMap::new(),
             array_sizes: HashMap::new(),
             array_ptr: 0xC000,
+            basic_rom_out: false,
+            array_errors: vec![],
+            extra_array_bytes: 0,
+            spill_plan: None,
+            spill_set: std::collections::HashSet::new(),
+            spill_home: HashMap::new(),
+            spill_home_range: None,
+            spill_pool: 0,
+            spill_level: 0,
+            real_vars: HashMap::new(),
+            real_arrays: std::collections::HashSet::new(),
+            real_fns: HashMap::new(),
+            real_params: HashMap::new(),
+            real_range: None,
+            flt_zp: None,
+            flt_patches: vec![],
+            flt_consts: vec![],
+            flt_const_patches: vec![],
+            cur_fn: None,
             rnd_seeded: false,
             plot_zp: None,
             pen_color_zp: None,
@@ -1425,6 +1471,74 @@ impl Codegen {
     }
 
     /// Recursively check whether any Paint statement exists anywhere in the AST.
+    /// Every array declaration (name, element type, size in bytes), depth-first in
+    /// source order, including those inside sub/fn bodies and blocks.
+    fn collect_array_decls(stmts: &[Stmt], out: &mut Vec<(String, VarType, u16)>) {
+        for st in stmts {
+            match st {
+                Stmt::VarDecl { name, vtype: Some(vt), expr }
+                    if matches!(
+                        vt,
+                        VarType::Array
+                            | VarType::WordArray
+                            | VarType::FloatArray
+                            | VarType::StrArray
+                            | VarType::RealArray
+                    ) =>
+                {
+                    let n = if let Expr::Number(n) = expr { *n as u16 } else { 0 };
+                    let bytes = match vt {
+                        VarType::Array => n,
+                        VarType::RealArray => n.wrapping_mul(5),
+                        _ => n.wrapping_mul(2),
+                    };
+                    out.push((name.clone(), vt.clone(), bytes));
+                }
+                Stmt::If(_, t, e) => {
+                    Self::collect_array_decls(t, out);
+                    if let Some(e) = e {
+                        Self::collect_array_decls(e, out);
+                    }
+                }
+                Stmt::Loop(_, b)
+                | Stmt::WhileLoop(_, b)
+                | Stmt::RepeatLoop(b, _)
+                | Stmt::Block(b)
+                | Stmt::SubDef(_, _, b)
+                | Stmt::FnDef(_, _, _, b) => Self::collect_array_decls(b, out),
+                Stmt::ForLoop { body, .. } => Self::collect_array_decls(body, out),
+                Stmt::Select { cases, else_body, .. } => {
+                    for (_, b) in cases {
+                        Self::collect_array_decls(b, out);
+                    }
+                    if let Some(e) = else_body {
+                        Self::collect_array_decls(e, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// `LDA $01; ORA #1 / AND #$FE; STA $01` — bank the BASIC ROM in or out
+    /// (only when arrays live under it).
+    fn emit_basic_rom(&mut self, visible: bool) {
+        if !self.basic_rom_out {
+            return;
+        }
+        self.emit(0xA5);
+        self.emit(0x01); // LDA $01
+        if visible {
+            self.emit(0x09);
+            self.emit(0x01); // ORA #$01 (LORAM: BASIC ROM at $A000)
+        } else {
+            self.emit(0x29);
+            self.emit(0xFE); // AND #$FE (RAM at $A000-$BFFF)
+        }
+        self.emit(0x85);
+        self.emit(0x01); // STA $01
+    }
+
     fn has_paint_stmt(stmts: &[Stmt]) -> bool {
         for stmt in stmts {
             match stmt {
@@ -1637,6 +1751,38 @@ impl Codegen {
             self.circle4_zp = Some(zp);
         }
 
+        // Array area: $C000-$CFFF (4 KB) as before; if the arrays (and the paint
+        // stack) need more, they start at $A000 instead — the RAM under the BASIC
+        // ROM, contiguous up to $CFFF (12 KB) — and BASIC is banked out while the
+        // program runs.
+        let mut decls = vec![];
+        Self::collect_array_decls(stmts, &mut decls);
+        // floating point: runtime pointer, and 5-byte slots after the arrays
+        if float::program_uses_reals(stmts) {
+            self.flt_zp = Some(self.perm_zp);
+            self.perm_zp += 2;
+        }
+        let real_slots = if self.flt_zp.is_some() { self.scan_reals(stmts) } else { 0 };
+        let mut seen = std::collections::HashSet::new();
+        let mut need: u32 = if Self::has_paint_stmt(stmts) { 512 } else { 0 };
+        for (name, _, bytes) in &decls {
+            if seen.insert(name.clone()) {
+                need += *bytes as u32;
+            }
+        }
+        need += self.extra_array_bytes as u32;
+        need += 5 * real_slots as u32;
+        if need > 0x1000 {
+            if need > 0x3000 {
+                self.array_errors.push(format!(
+                    "arrays need {need} bytes, but at most 12288 are available ($A000-$CFFF)"
+                ));
+            } else {
+                self.array_ptr = 0xA000;
+                self.basic_rom_out = true;
+            }
+        }
+
         // Reserve 2 ZP bytes (stk_head_lo, stk_head_hi) and a 512-byte stack in
         // $C000 area for the paint flood-fill helper.
         if Self::has_paint_stmt(stmts) {
@@ -1647,56 +1793,70 @@ impl Codegen {
             self.array_ptr += 512;
         }
 
+        // Arrays, in source order — also those declared inside subs and blocks
+        // (before 1.6.4 only top-level arrays got an address; nested ones all
+        // fell back to $C000 and overlapped).
+        for (name, vt, bytes) in decls {
+            if self.arrays.contains_key(&name) {
+                continue; // declared twice (e.g. in two subs): one array
+            }
+            self.arrays.insert(name.clone(), self.array_ptr);
+            self.array_sizes.insert(name.clone(), bytes);
+            match vt {
+                VarType::Array => {}
+                VarType::FloatArray => {
+                    self.word_arrays.insert(name.clone());
+                    self.float_arrays.insert(name.clone());
+                }
+                VarType::StrArray => {
+                    self.word_arrays.insert(name.clone());
+                    self.str_arrays.insert(name.clone());
+                }
+                VarType::RealArray => {
+                    self.real_arrays.insert(name.clone());
+                }
+                _ => {
+                    self.word_arrays.insert(name.clone());
+                }
+            }
+            self.array_ptr = self.array_ptr.wrapping_add(bytes);
+        }
+        self.place_reals();
+        if let Some(plan) = self.spill_plan.as_mut() {
+            // floating-point variables never live in zero page
+            let reals = &self.real_vars;
+            plan.vars.retain(|v| !reals.contains_key(v));
+            self.spill_set.retain(|v| !reals.contains_key(v));
+        }
+
+        // Spilled variables: 2-byte homes after the arrays, and one block of
+        // zero-page proxy slots per pool level.
+        if let Some(plan) = self.spill_plan.clone() {
+            let start = self.array_ptr;
+            for v in &plan.vars {
+                self.spill_home.insert(v.clone(), self.array_ptr);
+                self.array_ptr = self.array_ptr.wrapping_add(2);
+            }
+            self.spill_home_range = Some((start, self.array_ptr));
+            self.spill_pool = self.perm_zp;
+            let pool = (plan.max_level as usize + 1) * plan.slot_bytes as usize;
+            self.perm_zp = self.perm_zp.saturating_add(pool.min(255) as u8);
+        }
+
         for stmt in stmts {
             match stmt {
                 Stmt::SubDef(name, params, _) | Stmt::FnDef(name, params, _, _) => {
                     let mut addrs = vec![];
                     for (_, ptype) in params {
+                        if matches!(ptype, Some(VarType::Real)) {
+                            addrs.push((0, ptype.clone())); // 5-byte RAM slot (real_params)
+                            continue;
+                        }
                         let addr = self.perm_zp;
                         self.perm_zp += 2; // 2 bytes per slot (pointer/value pair)
                         addrs.push((addr, ptype.clone()));
                     }
                     self.sub_params.insert(name.clone(), addrs);
-                }
-                Stmt::VarDecl {
-                    name,
-                    vtype: Some(VarType::Array),
-                    expr,
-                    ..
-                } => {
-                    let size = if let Expr::Number(n) = expr {
-                        *n as u16
-                    } else {
-                        0
-                    };
-                    self.arrays.insert(name.clone(), self.array_ptr);
-                    self.array_sizes.insert(name.clone(), size);
-                    self.array_ptr += size;
-                }
-                Stmt::VarDecl {
-                    name,
-                    vtype: Some(vt @ (VarType::WordArray | VarType::FloatArray | VarType::StrArray)),
-                    expr,
-                    ..
-                } => {
-                    let size = if let Expr::Number(n) = expr {
-                        *n as u16
-                    } else {
-                        0
-                    };
-                    self.arrays.insert(name.clone(), self.array_ptr);
-                    self.array_sizes.insert(name.clone(), size * 2); // 2 bytes per word element
-                    self.word_arrays.insert(name.clone());
-                    match vt {
-                        VarType::FloatArray => {
-                            self.float_arrays.insert(name.clone());
-                        }
-                        VarType::StrArray => {
-                            self.str_arrays.insert(name.clone());
-                        }
-                        _ => {}
-                    }
-                    self.array_ptr += size * 2;
                 }
                 Stmt::LoadSid {
                     load_addr,
@@ -1818,6 +1978,12 @@ impl Codegen {
 
     // Evaluate expression, result in A (lo byte only for simplicity)
     fn eval_expr(&mut self, expr: &Expr) {
+        if self.real_eval_byte(expr) {
+            return;
+        }
+        if let (Expr::BinOp(..), Some(n)) = (expr, crate::compiler::ast::fold_int(expr)) {
+            return self.eval_expr(&Expr::Number(n));
+        }
         match expr {
             Expr::BinOp(l, op @ (BinOp::Eq | BinOp::NotEq), r)
                 if self.is_string_expr(l) || self.is_string_expr(r) =>
@@ -2686,7 +2852,7 @@ impl Codegen {
                 let inner = inner.clone();
                 self.eval_expr(&inner);
             }
-            Expr::FixedLit(v) => {
+            Expr::FixedLit(v, _, _) => {
                 // Q8.8 literal in 8-bit context → return integer part (hi byte)
                 self.emit(0xA9);
                 self.emit((*v >> 8) as u8); // LDA #hi
@@ -3033,6 +3199,7 @@ impl Codegen {
                         self.emit(tmp); // STA tmp
                         self.eval_expr(r);
                         match op {
+                            BinOp::Pow => {} // evaluated in floating point (float.rs)
                             BinOp::Add => {
                                 self.emit(0x18); // CLC
                                 self.emit(0x65);
@@ -3294,7 +3461,7 @@ impl Codegen {
     fn can_be_word_result(&self, expr: &Expr) -> bool {
         match expr {
             Expr::Number(n) => *n > 255_i16 || *n < 0_i16,
-            Expr::FixedLit(_) => true,
+            Expr::FixedLit(..) => true,
             Expr::Var(name) => matches!(
                 self.var_types.get(name),
                 Some(VarType::Word) | Some(VarType::Float)
@@ -3326,7 +3493,7 @@ impl Codegen {
     /// Returns true if `expr` contains at least one FixedLit (float) node.
     fn contains_fixed_lit(expr: &Expr) -> bool {
         match expr {
-            Expr::FixedLit(_) => true,
+            Expr::FixedLit(..) => true,
             Expr::BinOp(l, _, r) => Self::contains_fixed_lit(l) || Self::contains_fixed_lit(r),
             Expr::Var(_) => false,
             _ => false,
@@ -3350,7 +3517,7 @@ impl Codegen {
 
     fn is_float_like(&self, expr: &Expr) -> bool {
         match expr {
-            Expr::FixedLit(_) => true,
+            Expr::FixedLit(..) => true,
             Expr::Var(n) => matches!(self.var_types.get(n), Some(VarType::Float)),
             Expr::ArrayGet(n, _) => self.float_arrays.contains(n.as_str()),
             Expr::BinOp(l, _, r) => self.is_float_like(l) || self.is_float_like(r),
@@ -3361,6 +3528,12 @@ impl Codegen {
     /// Evaluate `expr` as a 16-bit result, storing lo-byte at ZP `lo`, hi-byte at `lo+1`.
     /// Handles: Number, Var (int/word), BinOp Add/Sub.  All others fall back to 8-bit, hi=0.
     fn eval_expr_word(&mut self, expr: &Expr, lo: u8, hi: u8) {
+        if self.real_eval_word(expr, lo, hi) {
+            return;
+        }
+        if let (Expr::BinOp(..), Some(n)) = (expr, crate::compiler::ast::fold_int(expr)) {
+            return self.eval_expr_word(&Expr::Number(n), lo, hi);
+        }
         match expr {
             Expr::Val(inner) => {
                 let inner = (**inner).clone();
@@ -4080,7 +4253,7 @@ impl Codegen {
                 self.emit(0x85);
                 self.emit(hi);
             }
-            Expr::FixedLit(v) => {
+            Expr::FixedLit(v, _, _) => {
                 let v = *v;
                 self.emit(0xA9);
                 self.emit(v as u8); // LDA #lo
@@ -4431,14 +4604,18 @@ impl Codegen {
     /// pattern, so `array(N)` would otherwise start with arbitrary contents.
     /// Clears `[lowest array base, end of last array)`; uses scratch ZP `$50/$51`.
     fn emit_zero_arrays(&mut self) {
-        let lo = match self.arrays.values().min() {
-            Some(&lo) => lo,
+        let home_lo = self.spill_home_range.map(|r| r.0);
+        let real_lo = self.real_range.map(|r| r.0);
+        let lo = match self.arrays.values().min().copied().into_iter().chain(home_lo).chain(real_lo).min() {
+            Some(lo) => lo,
             None => return,
         };
         let hi = self
             .arrays
             .iter()
             .map(|(n, &b)| b as u32 + *self.array_sizes.get(n).unwrap_or(&0) as u32)
+            .chain(self.spill_home_range.map(|r| r.1 as u32))
+            .chain(self.real_range.map(|r| r.1 as u32))
             .max()
             .unwrap_or(lo as u32);
         let len = hi.saturating_sub(lo as u32);
@@ -8878,6 +9055,9 @@ impl Codegen {
     /// Print a single argument. Handles the `+` operator as string concat
     /// when at least one operand is a string; otherwise evaluates numerically.
     fn print_single_arg(&mut self, arg: &Expr) {
+        if self.real_print(arg) {
+            return;
+        }
         match arg {
             // Large constant (> 255): emit digits as a compile-time string literal
             Expr::Number(n) if *n > 255_i16 || *n < 0_i16 => {
@@ -9144,7 +9324,8 @@ impl Codegen {
             }
             // Float-typed arithmetic (e.g. `a / 10` with `a: float`): evaluate as Q8.8
             // and print as "N.DD" instead of the raw 16-bit value.
-            Expr::BinOp(_, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div, _)
+            // (and a decimal literal: `print 2.5` printed the raw 640 before 1.6.4)
+            Expr::BinOp(_, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div, _) | Expr::FixedLit(..)
                 if self.is_float_like(arg) =>
             {
                 let arg = arg.clone();
@@ -9193,6 +9374,12 @@ impl Codegen {
     /// Returns `true` when a 16-bit pattern was matched and code was emitted.
     /// Returns `false` on fallback (caller should emit 8-bit eval + STA lo + clear hi).
     fn gen_word_assign(&mut self, dst_zp: u8, expr: &Expr) -> bool {
+        if self.real_eval_word(expr, dst_zp, dst_zp + 1) {
+            return true;
+        }
+        if let (Expr::BinOp(..), Some(n)) = (expr, crate::compiler::ast::fold_int(expr)) {
+            return self.gen_word_assign(dst_zp, &Expr::Number(n));
+        }
         match expr {
             // word × word: 16×16 multiply in eval_expr_word (the 16×8 arm below
             // would cut the right operand to a byte)
@@ -9242,7 +9429,7 @@ impl Codegen {
                 true
             }
             // ── fixed-point literal ───────────────────────────────────────────────
-            Expr::FixedLit(v) => {
+            Expr::FixedLit(v, _, _) => {
                 let v = *v;
                 self.emit(0xA9);
                 self.emit(v as u8); // LDA #lo
@@ -10395,6 +10582,9 @@ impl Codegen {
                 continue;
             };
             let arg = arg.clone();
+            if self.real_param_store(name, i, zp, &ptype, &arg) {
+                continue;
+            }
             match ptype {
                 Some(VarType::Str) => match &arg {
                     Expr::Var(arg_name) if self.var_addr(arg_name).is_some() => {
@@ -10636,7 +10826,31 @@ impl Codegen {
         if !Self::may_reuse_a(stmt) {
             self.a_cache = None;
         }
+        // A plain statement is one spill fragment (compound statements handle
+        // their headers themselves). Sub calls / gosub store nothing back: the
+        // callee may have written the variables' homes.
+        let leaf = !matches!(
+            stmt,
+            Stmt::If(..)
+                | Stmt::Loop(..)
+                | Stmt::ForLoop { .. }
+                | Stmt::WhileLoop(..)
+                | Stmt::RepeatLoop(..)
+                | Stmt::Select { .. }
+                | Stmt::SubDef(..)
+                | Stmt::FnDef(..)
+                | Stmt::Block(..)
+        );
+        let frame = if leaf && !self.spill_set.is_empty() {
+            self.spill_enter(&format!("{stmt:?}"))
+        } else {
+            vec![]
+        };
         self.gen_stmt_inner(stmt);
+        if !frame.is_empty() {
+            let store = !matches!(stmt, Stmt::Call(..) | Stmt::Gosub(..));
+            self.spill_exit(frame, store);
+        }
         // Only a byte assignment itself leaves A = variable behind; a cache set
         // inside a nested block (if/loop body) is reachable by jumps.
         if !matches!(stmt, Stmt::Assign(..) | Stmt::VarDecl { .. }) {
@@ -10653,6 +10867,100 @@ impl Codegen {
         }
     }
 
+    /// Second-pass plan: these variables live in RAM (see compiler/spill.rs).
+    pub fn set_spill(&mut self, plan: super::spill::SpillPlan) {
+        self.spill_set = plan.vars.iter().cloned().collect();
+        self.extra_array_bytes = (plan.vars.len() * 2) as u16;
+        self.spill_plan = Some(plan);
+    }
+
+    fn routine_level(&self, name: &str) -> u8 {
+        self.spill_plan
+            .as_ref()
+            .and_then(|p| p.levels.get(name).copied())
+            .unwrap_or(0)
+    }
+
+    /// Bytes of permanent zero page needed beyond $4F (None when it fits).
+    pub fn zp_overflow(&self) -> Option<u8> {
+        (self.perm_zp > 0x50).then(|| self.perm_zp - 0x50)
+    }
+
+    /// Start a code fragment: copy the spilled variables `text` mentions from
+    /// their RAM homes into this level's zero-page proxy slots and point the
+    /// variable map at the proxies. Returns the frame for `spill_exit`.
+    fn spill_enter(&mut self, text: &str) -> Vec<(String, Option<u8>)> {
+        if self.spill_set.is_empty() {
+            return vec![];
+        }
+        let mut names: Vec<String> = super::spill::quoted(text)
+            .into_iter()
+            .filter(|n| self.spill_set.contains(n))
+            .collect();
+        names.sort();
+        names.dedup();
+        let (slot_bytes, max_level) = self
+            .spill_plan
+            .as_ref()
+            .map(|p| (p.slot_bytes, p.max_level))
+            .unwrap_or((0, 0));
+        debug_assert!(
+            names.is_empty() || (self.spill_level <= max_level && names.len() * 2 <= slot_bytes as usize),
+            "spill fragment outside the planned pool: level {} names {:?}",
+            self.spill_level,
+            names
+        );
+        let base = self.spill_pool + self.spill_level * slot_bytes;
+        let mut frame = vec![];
+        for (i, n) in names.into_iter().enumerate() {
+            let slot = base + 2 * i as u8;
+            let home = self.spill_home[&n];
+            for k in 0..2u16 {
+                self.emit(0xAD);
+                self.emit16(home + k); // LDA home
+                self.emit(0x85);
+                self.emit(slot + k as u8); // STA proxy
+            }
+            let prev = self.vars.insert(n.clone(), slot);
+            frame.push((n, prev));
+        }
+        if !frame.is_empty() {
+            self.a_cache = None;
+        }
+        frame
+    }
+
+    /// End a fragment: optionally copy the proxies back to the RAM homes, then
+    /// restore the variable map.
+    fn spill_exit(&mut self, frame: Vec<(String, Option<u8>)>, store: bool) {
+        if frame.is_empty() {
+            return;
+        }
+        if store {
+            for (n, _) in &frame {
+                let slot = self.vars[n];
+                let home = self.spill_home[n];
+                for k in 0..2u16 {
+                    self.emit(0xA5);
+                    self.emit(slot + k as u8); // LDA proxy
+                    self.emit(0x8D);
+                    self.emit16(home + k); // STA home
+                }
+            }
+        }
+        for (n, prev) in frame.into_iter().rev() {
+            match prev {
+                Some(p) => {
+                    self.vars.insert(n, p);
+                }
+                None => {
+                    self.vars.remove(&n);
+                }
+            }
+        }
+        self.a_cache = None;
+    }
+
     /// Signed (`as integer`) variables / arrays / parameters and functions.
     pub fn set_signed(&mut self, names: super::ast::SignedNames) {
         self.signed_vars = names.vars;
@@ -10665,6 +10973,9 @@ impl Codegen {
     }
 
     fn gen_stmt_inner(&mut self, stmt: &Stmt) {
+        if self.gen_real_stmt(stmt) {
+            return;
+        }
         match stmt {
             // `Type X ... endType` is parser-level metadata: field layouts are
             // resolved at parse time into StructSet/StructGet nodes. Emit nothing.
@@ -10945,7 +11256,9 @@ impl Codegen {
             }
             Stmt::If(cond, then_body, else_body) => {
                 // Jump to else/end when the condition is false (nonzero = true)
+                let fr = self.spill_enter(&format!("{cond:?}"));
                 let skip_patches = self.gen_cond_jump(cond, false, Truth::NonZero, Target::Forward);
+                self.spill_exit(fr, false);
 
                 self.gen_stmts(then_body);
 
@@ -11068,7 +11381,9 @@ impl Codegen {
                     self.patch_abs(pos, cond_addr);
                 }
                 self.tmp_zp = TMP_BASE;
+                let fr = self.spill_enter(&format!("{cond:?}"));
                 self.gen_cond_jump(cond, true, Truth::EqualsOne, Target::Back(body_top));
+                self.spill_exit(fr, false);
                 let loop_end = self.current_addr();
                 let breaks = self.break_patches.pop().unwrap_or_default();
                 for pos in breaks {
@@ -11099,6 +11414,10 @@ impl Codegen {
                 let expr = expr.clone();
                 let cases = cases.clone();
                 let else_body = else_body.clone();
+                // one spill fragment for the selector and all case values: the
+                // tests run one after another before any body
+                let vals: Vec<&Expr> = cases.iter().map(|(v, _)| v).collect();
+                let select_frame = self.spill_enter(&format!("{expr:?}{vals:?}"));
                 // Case tests run before any case body, so a plain byte variable
                 // can be compared in place; anything else is stored once in
                 // permanent ZP (it must survive the tmp_zp resets of the bodies).
@@ -11155,6 +11474,7 @@ impl Codegen {
                 for pos in end_patches {
                     self.patch_abs(pos, end_addr);
                 }
+                self.spill_exit(select_frame, false);
             }
             Stmt::Sys { addr, arg } => {
                 if let Some(a) = arg {
@@ -11643,9 +11963,18 @@ impl Codegen {
                 let addr = self.current_addr();
                 self.subs.insert(name.clone(), addr);
                 // Register params as vars with their pre-allocated ZP addresses
+                let mut shadowed_reals = vec![];
                 if let Some(param_addrs) = self.sub_params.get(name).cloned() {
                     for (i, (param_name, _ptype)) in params.iter().enumerate() {
                         if let Some((zp, ptype)) = param_addrs.get(i).cloned() {
+                            if matches!(ptype, Some(VarType::Real)) {
+                                let slot = self.real_params.get(name).and_then(|v| v.get(i).copied().flatten());
+                                if let Some(slot) = slot {
+                                    let prev = self.real_vars.insert(param_name.clone(), slot);
+                                    shadowed_reals.push((param_name.clone(), prev));
+                                }
+                                continue;
+                            }
                             self.vars.insert(param_name.clone(), zp);
                             if let Some(ptype) = ptype {
                                 self.var_types.insert(param_name.clone(), ptype);
@@ -11653,16 +11982,29 @@ impl Codegen {
                         }
                     }
                 }
+                let prev_level = self.spill_level;
+                self.spill_level = self.routine_level(name);
                 self.gen_stmts(body);
+                self.spill_level = prev_level;
                 self.emit(0x60); // RTS
+                self.restore_real_params(shadowed_reals);
             }
             Stmt::FnDef(name, params, ret_type, body) => {
                 let addr = self.current_addr();
                 self.subs.insert(name.clone(), addr);
                 // Register params as vars with their pre-allocated ZP addresses
+                let mut shadowed_reals = vec![];
                 if let Some(param_addrs) = self.sub_params.get(name).cloned() {
                     for (i, (param_name, _ptype)) in params.iter().enumerate() {
                         if let Some((zp, ptype)) = param_addrs.get(i).cloned() {
+                            if matches!(ptype, Some(VarType::Real)) {
+                                let slot = self.real_params.get(name).and_then(|v| v.get(i).copied().flatten());
+                                if let Some(slot) = slot {
+                                    let prev = self.real_vars.insert(param_name.clone(), slot);
+                                    shadowed_reals.push((param_name.clone(), prev));
+                                }
+                                continue;
+                            }
                             self.vars.insert(param_name.clone(), zp);
                             if let Some(ptype) = ptype {
                                 self.var_types.insert(param_name.clone(), ptype);
@@ -11672,9 +12014,15 @@ impl Codegen {
                 }
                 let prev_ret_type = self.fn_ret_type.clone();
                 self.fn_ret_type = ret_type.clone();
+                let prev_fn = self.cur_fn.replace(name.clone());
+                let prev_level = self.spill_level;
+                self.spill_level = self.routine_level(name);
                 self.gen_stmts(body);
+                self.spill_level = prev_level;
                 self.fn_ret_type = prev_ret_type;
+                self.cur_fn = prev_fn;
                 self.emit(0x60); // RTS
+                self.restore_real_params(shadowed_reals);
             }
             Stmt::Call(name, args, src_line) => {
                 // Store args into the sub's parameter ZP slots before calling
@@ -11943,6 +12291,7 @@ impl Codegen {
                 self.emit(0x85);
                 self.emit(0x91); // STA $91 — clear stop-key flag
                 self.emit(0x58); // CLI
+                self.emit_basic_rom(true);
                 self.emit(0x4C);
                 self.emit16(0xA659); // JMP $A659
             }
@@ -11961,6 +12310,7 @@ impl Codegen {
                 self.emit(0x91); // STA $91 — clear stop-key flag
                 self.emit(0x58); // CLI
                 // Jump into BASIC warm start so we avoid BREAK-line handling path.
+                self.emit_basic_rom(true);
                 self.emit(0x4C);
                 self.emit16(0xA659); // JMP $A659
             }
@@ -12164,8 +12514,10 @@ impl Codegen {
                 self.emit(0x10); // BPL loop
                 let off = (loop_addr as i32) - (self.current_addr() as i32 + 1);
                 self.emit(off as i8 as u8);
+                self.emit_basic_rom(true); // the loader RUNs via BASIC ($A7AE)
                 self.emit(0x20);
                 self.emit16(CHAIN_BASE); // JSR $033C — returns only if the LOAD failed
+                self.emit_basic_rom(false);
             }
             Stmt::Input { prompt, var } => {
                 let var = var.clone();
@@ -14439,7 +14791,9 @@ impl Codegen {
                 }
                 // until-condition: loop again while it is false (1 = true → exit)
                 self.tmp_zp = TMP_BASE;
+                let fr = self.spill_enter(&format!("{cond:?}"));
                 self.gen_cond_jump(&cond, false, Truth::EqualsOne, Target::Back(loop_top));
+                self.spill_exit(fr, false);
                 let loop_end = self.current_addr();
                 let breaks = self.break_patches.pop().unwrap_or_default();
                 for pos in breaks {
@@ -15194,6 +15548,7 @@ impl Codegen {
         // arithmetic assumes binary ADC/SBC semantics, so normalize once at
         // program entry.
         self.emit(0xD8); // CLD
+        self.emit_basic_rom(false); // arrays under the BASIC ROM: bank it out
 
         self.emit_zero_arrays();
         self.emit_array_init_copies();
@@ -15244,6 +15599,7 @@ impl Codegen {
                 self.gen_stmt(stmt);
             }
         }
+        self.emit_basic_rom(true); // back to BASIC: ROM must be visible
         self.emit(0x60); // RTS — end of main program
 
         // Pass 2: subroutine definitions (after main, so they aren't executed at startup)
@@ -15649,6 +16005,7 @@ impl Codegen {
             }
         }
 
+        self.emit_float_runtime();
         self.patch_forward_refs();
         self.generated_code_len = self.code.len(); // before koala / incbin / sid data is appended
 
@@ -15774,6 +16131,7 @@ impl Codegen {
         errs.extend(self.incbin_errors.iter().cloned());
         errs.extend(self.array_init_errors.iter().cloned());
         errs.extend(self.str_errors.iter().cloned());
+        errs.extend(self.array_errors.iter().cloned());
         // Generated code must not sit where the program later writes the charset
         // (`charset on` copies/uses a 2 KB set, `chardef` writes 8 bytes).
         let code_start = self.load_addr as u32;
@@ -15848,11 +16206,41 @@ impl Codegen {
                 VarEntry {
                     name: name.clone(),
                     zp_addr,
+                    ram_addr: None,
                     type_str,
                 }
             })
             .collect();
         variables.sort_by_key(|v| v.zp_addr);
+        // spilled variables: RAM homes, after the zero-page ones
+        let mut spilled: Vec<(&String, &u16)> = self.spill_home.iter().collect();
+        spilled.sort_by_key(|(_, a)| **a);
+        for (name, &addr) in spilled {
+            let type_str = match self.var_types.get(name) {
+                _ if self.signed_vars.contains(name) => "integer",
+                Some(VarType::Word) => "word",
+                Some(VarType::Float) => "float",
+                Some(VarType::Str) => "string",
+                _ => "int",
+            };
+            variables.push(VarEntry {
+                name: name.clone(),
+                zp_addr: 0,
+                ram_addr: Some(addr),
+                type_str: type_str.to_string(),
+            });
+        }
+        // floating-point variables (5 bytes in RAM)
+        let mut reals: Vec<(&String, &u16)> = self.real_vars.iter().collect();
+        reals.sort_by_key(|(_, a)| **a);
+        for (name, &addr) in reals {
+            variables.push(VarEntry {
+                name: name.clone(),
+                zp_addr: 0,
+                ram_addr: Some(addr),
+                type_str: "single".to_string(),
+            });
+        }
 
         let mut subroutines: Vec<SubEntry> = self
             .subs

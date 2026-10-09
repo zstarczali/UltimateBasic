@@ -2,7 +2,8 @@
 #
 #   AS BYTE / INT            → int    (8-bit, 0-255)
 #   AS INTEGER / WORD        → word   (16-bit, 0-65535)
-#   AS SINGLE / DOUBLE/FLOAT → float  (Q8.8 fixed point, 0-255.99)
+#   AS SINGLE / DOUBLE       → floating point (5 bytes, ~9 digits)
+#   AS FLOAT                 → float  (Q8.8 fixed point, 0-255.99)
 #   AS STRING                → string
 #
 # Without "= value" numbers start at 0 and strings at "".
@@ -11,12 +12,14 @@ DIM kor AS INTEGER
 DIM nev AS STRING
 DIM fizetes AS DOUBLE
 
+lowercase
+
 DIM x, y AS BYTE                     # both are BYTE
 DIM pont AS INTEGER = 1000, cim AS STRING = "C64"
 
 cls
-input "NEV: ", nev
-input "KOR: ", kor
+input "NEV: ", nev: print
+input "KOR: ", kor: print
 
 fizetes = 12.5
 fizetes = fizetes + 0.25

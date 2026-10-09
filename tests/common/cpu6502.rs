@@ -37,6 +37,8 @@ pub struct Cpu {
 impl Cpu {
     pub fn new(prg: &[u8]) -> Self {
         let mut mem = vec![0u8; 65536];
+        mem[0] = 0x2F; // processor port as after reset: BASIC, KERNAL and I/O visible
+        mem[1] = 0x37;
         let load = u16::from_le_bytes([prg[0], prg[1]]);
         let start = load as usize;
         mem[start..start + prg.len() - 2].copy_from_slice(&prg[2..]);
@@ -77,11 +79,18 @@ impl Cpu {
         self.run(max_steps as u64)
     }
 
-    fn is_rom(addr: u16) -> bool {
-        (0xA000..0xC000).contains(&addr) || addr >= 0xE000
+    /// BASIC ROM visible at $A000-$BFFF (processor port $01: LORAM and HIRAM set).
+    pub fn basic_visible(&self) -> bool {
+        self.mem[1] & 3 == 3
+    }
+
+    fn is_rom(&self, addr: u16) -> bool {
+        ((0xA000..0xC000).contains(&addr) && self.basic_visible()) || addr >= 0xE000
     }
 
     fn rom_call(&mut self, addr: u16) {
+        // (is_rom only reports $A000-$BFFF as ROM while BASIC is visible, so a
+        //  BASIC call with the ROM banked out runs into RAM and fails there)
         match addr {
             CHROUT => self.output.push(self.a),
             GETIN => {
@@ -105,6 +114,9 @@ impl Cpu {
     }
     fn rd(&self, addr: u16) -> u8 {
         match addr {
+            // BASIC ROM: no image here — a fixed pattern makes reads of arrays
+            // under the ROM without banking it out visibly wrong
+            0xA000..=0xBFFF if self.basic_visible() => 0xAA,
             0xD012 => self.raster_line() as u8,
             0xD011 => (self.mem[0xD011] & 0x7F) | if self.raster_line() > 255 { 0x80 } else { 0 },
             _ => self.mem[addr as usize],
@@ -453,7 +465,7 @@ impl Cpu {
             // ── jumps ──
             0x4C => {
                 let t = self.fetch16();
-                if Self::is_rom(t) {
+                if self.is_rom(t) {
                     // JMP into ROM behaves like a tail call: run the trap, then RTS.
                     self.rom_call(t);
                     return self.do_rts();
@@ -470,7 +482,7 @@ impl Cpu {
             0x20 => {
                 let t = self.fetch16();
                 self.cycles += 4;
-                if Self::is_rom(t) {
+                if self.is_rom(t) {
                     self.rom_call(t);
                 } else {
                     let ret = self.pc.wrapping_sub(1);
@@ -500,6 +512,11 @@ impl Cpu {
     fn do_rts(&mut self) -> bool {
         self.cycles += 4;
         if self.call_depth == 0 {
+            assert!(
+                self.basic_visible(),
+                "program returned to BASIC with the BASIC ROM banked out ($01 = ${:02X})",
+                self.mem[1]
+            );
             return false;
         }
         let lo = self.pop();
@@ -531,20 +548,26 @@ pub struct Run {
 
 impl Run {
     pub fn var_zp(&self, name: &str) -> u8 {
+        self.var_entry(name).zp_addr
+    }
+    fn var_entry(&self, name: &str) -> &ultimate_basic::compiler::VarEntry {
         self.res
             .map
             .variables
             .iter()
             .find(|v| v.name == name)
             .unwrap_or_else(|| panic!("no variable '{}'", name))
-            .zp_addr
+    }
+    /// Address of a variable: zero page, or its RAM home when it was spilled.
+    pub fn var_addr(&self, name: &str) -> u16 {
+        self.var_entry(name).addr()
     }
     pub fn byte(&self, name: &str) -> u8 {
-        self.cpu.mem[self.var_zp(name) as usize]
+        self.cpu.mem[self.var_addr(name) as usize]
     }
     pub fn word(&self, name: &str) -> u16 {
-        let zp = self.var_zp(name) as usize;
-        u16::from_le_bytes([self.cpu.mem[zp], self.cpu.mem[zp + 1]])
+        let a = self.var_addr(name) as usize;
+        u16::from_le_bytes([self.cpu.mem[a], self.cpu.mem[a + 1]])
     }
     pub fn mem(&self, addr: u16) -> u8 {
         self.cpu.mem[addr as usize]
