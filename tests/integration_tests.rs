@@ -1956,10 +1956,10 @@ fn poke_emits_sta_abs() {
 fn poke_with_expression_address() {
     let prg = compile_raw("var idx = 10\npoke $0400 + idx, 42");
     let bytes = &prg[2..];
-    // Should contain STA (ptr),Y = $91
+    // const + byte var → STA $0400,Y (keeps the address high byte)
     assert!(
-        bytes.contains(&0x91),
-        "Should emit STA (ptr),Y for expression address"
+        bytes.windows(3).any(|w| w == [0x99, 0x00, 0x04]),
+        "Should emit STA $0400,Y for expression address"
     );
 }
 
@@ -2119,8 +2119,8 @@ poke SCRADDR + idx, c
     assert!(res.errors.is_empty(), "Errors: {:?}", res.errors);
     let bytes = &res.prg[2..];
     assert!(
-        bytes.contains(&0x91),
-        "Should use indirect indexed STA (ptr),Y"
+        bytes.windows(3).any(|w| w == [0x99, 0x00, 0x04]),
+        "Should use STA $0400,Y"
     );
 }
 

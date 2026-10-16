@@ -2479,26 +2479,30 @@ impl Codegen {
                                 self.emit(zp); // LDA (zp),Y
                             }
                         } else if let Some(zp) = self.var_addr(&name) {
-                            // 8-bit var used as ZP address
-                            self.emit(0xA5);
-                            self.emit(zp); // LDA zp
+                            // 8-bit var as address $00xx (`LDA zp` returned the variable itself)
+                            self.emit(0xA4);
+                            self.emit(zp); // LDY zp
+                            self.emit(0xB9);
+                            self.emit16(0x0000); // LDA $0000,Y
                         }
                     }
-                    _ => {
-                        let addr = addr.clone();
-                        let ptr = self.tmp_zp;
-                        self.tmp_zp += 2;
-                        self.eval_expr(&addr);
-                        self.emit(0x85);
-                        self.emit(ptr); // STA ptr_lo
-                        self.emit(0xA9);
-                        self.emit(0x00);
-                        self.emit(0x85);
-                        self.emit(ptr + 1); // STA ptr_hi = 0
-                        self.emit(0xA0);
-                        self.emit(0x00); // LDY #0
-                        self.emit(0xB1);
-                        self.emit(ptr); // LDA (ptr),Y
+                    other => {
+                        let other = other.clone();
+                        if let Some((base, e)) = self.split_const_plus_byte(&other) {
+                            // const + byte → LDA base,Y
+                            self.eval_expr(&e);
+                            self.emit(0xA8); // TAY
+                            self.emit(0xB9);
+                            self.emit16(base); // LDA base,Y
+                        } else {
+                            let ptr = self.tmp_zp;
+                            self.tmp_zp += 2;
+                            self.eval_addr16(&other, ptr, ptr + 1);
+                            self.emit(0xA0);
+                            self.emit(0x00); // LDY #0
+                            self.emit(0xB1);
+                            self.emit(ptr); // LDA (ptr),Y
+                        }
                     }
                 }
             }
@@ -2521,25 +2525,28 @@ impl Codegen {
                                 self.emit(zp); // LDA (zp),Y → lo byte
                             }
                         } else if let Some(zp) = self.var_addr(&name) {
-                            self.emit(0xA5);
-                            self.emit(zp); // LDA zp
+                            self.emit(0xA4);
+                            self.emit(zp); // LDY zp
+                            self.emit(0xB9);
+                            self.emit16(0x0000); // LDA $0000,Y
                         }
                     }
-                    _ => {
-                        let addr = addr.clone();
-                        let ptr = self.tmp_zp;
-                        self.tmp_zp += 2;
-                        self.eval_expr(&addr);
-                        self.emit(0x85);
-                        self.emit(ptr);
-                        self.emit(0xA9);
-                        self.emit(0x00);
-                        self.emit(0x85);
-                        self.emit(ptr + 1);
-                        self.emit(0xA0);
-                        self.emit(0x00);
-                        self.emit(0xB1);
-                        self.emit(ptr); // LDA (ptr),Y → lo byte
+                    other => {
+                        let other = other.clone();
+                        if let Some((base, e)) = self.split_const_plus_byte(&other) {
+                            self.eval_expr(&e);
+                            self.emit(0xA8); // TAY
+                            self.emit(0xB9);
+                            self.emit16(base); // LDA base,Y → lo byte
+                        } else {
+                            let ptr = self.tmp_zp;
+                            self.tmp_zp += 2;
+                            self.eval_addr16(&other, ptr, ptr + 1);
+                            self.emit(0xA0);
+                            self.emit(0x00);
+                            self.emit(0xB1);
+                            self.emit(ptr); // LDA (ptr),Y → lo byte
+                        }
                     }
                 }
             }
@@ -3522,6 +3529,57 @@ impl Codegen {
             Expr::ArrayGet(n, _) => self.float_arrays.contains(n.as_str()),
             Expr::BinOp(l, _, r) => self.is_float_like(l) || self.is_float_like(r),
             _ => false,
+        }
+    }
+
+    /// `const + byte` / `byte + const` with a byte operand: (constant, byte expression).
+    /// Used for `base,Y` addressing and the short 16-bit address add.
+    fn split_const_plus_byte(&self, expr: &Expr) -> Option<(u16, Expr)> {
+        match expr {
+            Expr::BinOp(l, BinOp::Add, r) => match (l.as_ref(), r.as_ref()) {
+                (Expr::Number(n), e) | (e, Expr::Number(n))
+                    if !self.can_be_word_result(e) && !self.is_real_expr(e) =>
+                {
+                    Some((*n as u16, e.clone()))
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Evaluate a 16-bit operand (address / length) into the ZP pair `lo`/`hi`.
+    /// `$07F8 + k` keeps the constant's high byte and the carry (it used to be
+    /// evaluated in 8 bits, giving `$00F8 + k`); pure byte expressions stay 8-bit.
+    fn eval_addr16(&mut self, expr: &Expr, lo: u8, hi: u8) {
+        if let Some((base, e)) = self.split_const_plus_byte(expr) {
+            self.eval_expr(&e);
+            self.emit(0x18); // CLC
+            self.emit(0x69);
+            self.emit(base as u8); // ADC #<base
+            self.emit(0x85);
+            self.emit(lo);
+            self.emit(0xA9);
+            self.emit((base >> 8) as u8); // LDA #>base
+            self.emit(0x69);
+            self.emit(0x00); // ADC #0
+            self.emit(0x85);
+            self.emit(hi);
+            return;
+        }
+        let wide = self.can_be_word_result(expr)
+            || self.is_real_expr(expr)
+            || matches!(expr, Expr::BinOp(_, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Shl, _));
+        if wide {
+            self.eval_expr_word(expr, lo, hi);
+        } else {
+            self.eval_expr(expr);
+            self.emit(0x85);
+            self.emit(lo);
+            self.emit(0xA9);
+            self.emit(0x00);
+            self.emit(0x85);
+            self.emit(hi);
         }
     }
 
@@ -8315,11 +8373,15 @@ impl Codegen {
             }
             _ => {
                 let expr = expr.clone();
-                self.eval_expr(&expr);
+                let t = self.tmp_zp;
+                self.tmp_zp += 2;
+                self.eval_addr16(&expr, t, t + 1);
+                self.emit(0xA5);
+                self.emit(t);
                 self.emit(0x8D);
                 self.emit16(lo_reg);
-                self.emit(0xA9);
-                self.emit(0x00);
+                self.emit(0xA5);
+                self.emit(t + 1);
                 self.emit(0x8D);
                 self.emit16(hi_reg);
             }
@@ -9511,13 +9573,7 @@ impl Codegen {
                         let other = other.clone();
                         let ptr = self.tmp_zp;
                         self.tmp_zp += 2;
-                        self.eval_expr(&other);
-                        self.emit(0x85);
-                        self.emit(ptr); // STA ptr_lo
-                        self.emit(0xA9);
-                        self.emit(0x00);
-                        self.emit(0x85);
-                        self.emit(ptr + 1); // STA ptr_hi = 0
+                        self.eval_addr16(&other, ptr, ptr + 1);
                         self.emit(0xA0);
                         self.emit(0x00); // LDY #0
                         self.emit(0xB1);
@@ -12811,15 +12867,7 @@ impl Codegen {
                             self.emit(ptr_hi);
                         }
                     }
-                    other => {
-                        self.eval_expr(&other);
-                        self.emit(0x85);
-                        self.emit(ptr_lo);
-                        self.emit(0xA9);
-                        self.emit(0x00);
-                        self.emit(0x85);
-                        self.emit(ptr_hi);
-                    }
+                    other => self.eval_addr16(&other, ptr_lo, ptr_hi),
                 }
 
                 // Store len → pg_ctr (hi byte) + partial_ctr (lo byte)
@@ -12860,15 +12908,7 @@ impl Codegen {
                             self.emit(pg_ctr);
                         }
                     }
-                    other => {
-                        self.eval_expr(&other);
-                        self.emit(0x85);
-                        self.emit(partial_ctr);
-                        self.emit(0xA9);
-                        self.emit(0x00);
-                        self.emit(0x85);
-                        self.emit(pg_ctr);
-                    }
+                    other => self.eval_addr16(&other, partial_ctr, pg_ctr),
                 }
 
                 // val → val_zp; keep A = val through fill loops
@@ -13611,15 +13651,7 @@ impl Codegen {
                                     self.emit($hi);
                                 }
                             }
-                            other => {
-                                self.eval_expr(&other);
-                                self.emit(0x85);
-                                self.emit($lo);
-                                self.emit(0xA9);
-                                self.emit(0x00);
-                                self.emit(0x85);
-                                self.emit($hi);
-                            }
+                            other => self.eval_addr16(&other, $lo, $hi),
                         }
                     };
                 }
@@ -13664,15 +13696,7 @@ impl Codegen {
                             self.emit(pg_ctr);
                         }
                     }
-                    other => {
-                        self.eval_expr(&other);
-                        self.emit(0x85);
-                        self.emit(partial_ctr);
-                        self.emit(0xA9);
-                        self.emit(0x00);
-                        self.emit(0x85);
-                        self.emit(pg_ctr);
-                    }
+                    other => self.eval_addr16(&other, partial_ctr, pg_ctr),
                 }
 
                 // Full-page copy
@@ -13797,15 +13821,7 @@ impl Codegen {
                                     self.emit($hi);
                                 }
                             }
-                            other => {
-                                self.eval_expr(&other);
-                                self.emit(0x85);
-                                self.emit($lo);
-                                self.emit(0xA9);
-                                self.emit(0x00);
-                                self.emit(0x85);
-                                self.emit($hi);
-                            }
+                            other => self.eval_addr16(&other, $lo, $hi),
                         }
                     };
                 }
@@ -14688,13 +14704,7 @@ impl Codegen {
                         }
                         ref other => {
                             let other = other.clone();
-                            self.eval_expr(&other);
-                            self.emit(0x85);
-                            self.emit(zp_start);
-                            self.emit(0xA9);
-                            self.emit(0x00);
-                            self.emit(0x85);
-                            self.emit(zp_start + 1);
+                            self.eval_addr16(&other, zp_start, zp_start + 1);
                         }
                     }
                     // Compute end = start + len (16-bit add)
@@ -15259,36 +15269,21 @@ impl Codegen {
                 self.tmp_zp += 1;
                 self.emit(0x85);
                 self.emit(tmp_val); // STA tmp_val
-                if let Expr::Var(_) = addr {
-                    {
-                        // 8-bit var used as lo-byte address (rare but valid)
-                        let ptr = self.tmp_zp;
-                        self.tmp_zp += 2;
-                        self.eval_expr(&addr);
-                        self.emit(0x85);
-                        self.emit(ptr);
-                        self.emit(0xA9);
-                        self.emit(0x00);
-                        self.emit(0x85);
-                        self.emit(ptr + 1);
-                        self.emit(0xA8);
-                        self.emit(0xA5);
-                        self.emit(tmp_val);
-                        self.emit(0x91);
-                        self.emit(ptr);
-                    }
+                if let Some((base, e)) = self.split_const_plus_byte(&addr) {
+                    // const + byte → STA base,Y (keeps the constant's high byte)
+                    self.eval_expr(&e);
+                    self.emit(0xA8); // TAY
+                    self.emit(0xA5);
+                    self.emit(tmp_val); // LDA tmp_val
+                    self.emit(0x99);
+                    self.emit16(base); // STA base,Y
                 } else {
-                    // General expression address: compute then indirect
+                    // General expression address (8-bit var = $00xx): compute then indirect
                     let ptr = self.tmp_zp;
                     self.tmp_zp += 2;
-                    self.eval_expr(&addr);
-                    self.emit(0x85);
-                    self.emit(ptr); // STA ptr_lo
-                    self.emit(0xA9);
-                    self.emit(0x00); // LDA #0
-                    self.emit(0x85);
-                    self.emit(ptr + 1); // STA ptr_hi
-                    self.emit(0xA8); // TAY (Y=0)
+                    self.eval_addr16(&addr, ptr, ptr + 1);
+                    self.emit(0xA0);
+                    self.emit(0x00); // LDY #0
                     self.emit(0xA5);
                     self.emit(tmp_val); // LDA tmp_val
                     self.emit(0x91);
@@ -15425,15 +15420,7 @@ impl Codegen {
                             self.emit(val_hi);
                         }
                     }
-                    _ => {
-                        self.eval_expr(&val);
-                        self.emit(0x85);
-                        self.emit(val_lo);
-                        self.emit(0xA9);
-                        self.emit(0x00);
-                        self.emit(0x85);
-                        self.emit(val_hi);
-                    }
+                    _ => self.eval_addr16(&val, val_lo, val_hi),
                 }
                 // Write lo byte to addr, hi byte to addr+1
                 match &addr {
@@ -15472,13 +15459,7 @@ impl Codegen {
                     _ => {
                         let ptr = self.tmp_zp;
                         self.tmp_zp += 2;
-                        self.eval_expr(&addr);
-                        self.emit(0x85);
-                        self.emit(ptr);
-                        self.emit(0xA9);
-                        self.emit(0x00);
-                        self.emit(0x85);
-                        self.emit(ptr + 1);
+                        self.eval_addr16(&addr, ptr, ptr + 1);
                         self.emit(0xA0);
                         self.emit(0x00); // LDY #0
                         self.emit(0xA5);
