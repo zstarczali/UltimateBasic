@@ -2,7 +2,7 @@
 
 <img src="assets/logo.png" alt="Ultimate Basic C64 banner" width="30%">
 
-Current version: **1.6.4**
+Current version: **1.6.5**
 
 A modern BASIC-like language that compiles directly to 6502 machine code for the
 **Commodore 64** and **Commodore 64 Ultimate**. It produces `.prg` files that run in
@@ -81,6 +81,19 @@ bytes. Compiler-generated helper routines are included in the same listing.
 The output uses KickAssembler syntax and can be assembled again. Known data regions—such
 as `data`, maps, sprite/character definitions, lookup tables, SID/Koala payloads, and
 `incbin` content—are emitted as `.byte` blocks instead of being mistaken for instructions.
+
+## What's new in 1.6.5
+
+Bug fix release: **16-bit address expressions.**
+
+- `peek($07F8 + k)`, `poke $07F8 + k, v`, `peek16` / `poke16` and the address and length
+  operands of `fill`, `memcopy`, `drawmem`, `save` and `reu` are computed in 16 bits. Before,
+  a constant plus a byte variable was added in 8 bits and the constant's high byte was
+  dropped (`$07F8 + k` became `$00F8 + k`). `constant + byte` now compiles to a single
+  `LDA $07F8,Y` / `STA $07F8,Y`.
+- `poke ptr + i, v` with a `word` pointer is a full 16-bit add as well.
+- `peek(k)` with a byte variable reads memory at `$00kk` (it returned `k` itself).
+- `poke16 addr, base + k` writes the full 16-bit value.
 
 ## What's new in 1.6.4
 

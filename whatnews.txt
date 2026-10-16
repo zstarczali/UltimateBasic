@@ -1,5 +1,19 @@
-Ultimate Basic v1.6.4 – Release Notes
+Ultimate Basic v1.6.5 – Release Notes
 ======================================
+
+2026-10-17 – Release 1.6.5: 16-bit address expressions
+------------------------------------------------------------------
+  Fixed
+  - An address made of a 16-bit constant plus a byte variable was
+    computed in 8 bits: peek($07F8 + k) read $00F8 + k, and
+    poke $07F8 + k, v wrote into zero page. Addresses are now 16-bit
+    in peek, poke, peek16, poke16, fill, memcopy, drawmem, save and
+    reu (also the fill / memcopy length, e.g. 40 * rows).
+    constant + byte compiles to LDA / STA $07F8,Y.
+  - poke ptr + i, v with a word pointer adds in 16 bits.
+  - peek(k) with a byte variable returned k itself; it now reads
+    memory at $00kk.
+  - poke16 addr, base + k wrote only the low byte of the value.
 
 2026-10-09 – Release 1.6.4: floating point, variables in RAM, 12 KB arrays
 ------------------------------------------------------------------

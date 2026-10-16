@@ -1326,3 +1326,11 @@ fn zero_page_error_when_nothing_can_move() {
     );
     assert!(res.errors.iter().any(|e| e.contains("out of zero page")), "{:?}", res.errors);
 }
+
+/// `word var + byte var` as an address is a full 16-bit add (crosses the page here).
+#[test]
+fn word_ptr_plus_index_address() {
+    let r = run_src("var ptr: word = $C3F0\nvar i = 20\npoke ptr + i, 9\nvar v = peek(ptr + i)\n");
+    assert_eq!(r.mem(0xC404), 9);
+    assert_eq!(r.byte("v"), 9);
+}
