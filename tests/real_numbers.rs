@@ -128,7 +128,7 @@ while x < 1
   x = x + 0.125
   k = k + 1
 wend
-dim t as byte
+dim t as byte, i as byte
 t = (x > 0.9)
 ",
     );
@@ -480,3 +480,62 @@ poke 53280, 7
     assert_eq!(r.word("w"), 40000);
     assert_eq!(r.mem(0xD020), 7);
 }
+
+const IRQ_SRC: &str = "dim s as double, h as double
+dim n as word
+dim t as byte, i as byte
+sub tick()
+    poke $D019, $FF
+    h = h * 0.5 + sqr(n + 2)
+    n = n + 1
+    irq_exit
+end sub
+sub plain()
+    t = t + 1
+    irq_exit
+end sub
+irq tick, 100
+for i = 1 to 60
+    s = s + sqr(i) / 3 - sin(i) * 2.5
+next
+print s
+";
+
+/// Run `src`, firing an IRQ every `every` main-program instructions once
+/// $0314 is set.
+fn run_with_irqs(src: &str, every: u64) -> Run {
+    let res = compile_src(src);
+    let mut cpu = Cpu::new(&res.prg);
+    let vector = (cpu.mem[0x0314], cpu.mem[0x0315]);
+    let mut main_steps = 0u64;
+    while cpu.step() {
+        assert!(cpu.steps < 50_000_000, "step budget");
+        if cpu.i {
+            continue;
+        }
+        main_steps += 1;
+        if every > 0 && main_steps % every == 0 && (cpu.mem[0x0314], cpu.mem[0x0315]) != vector {
+            cpu.irq();
+        }
+    }
+    Run { res, cpu }
+}
+
+#[test]
+fn float_irq_handler_does_not_disturb_the_program() {
+    let quiet = run_with_irqs(IRQ_SRC, 0);
+    for every in [1009, 2003, 4001] {
+        let r = run_with_irqs(IRQ_SRC, every);
+        assert!(r.word("n") > 20, "handler ran {} times", r.word("n"));
+        let a = r.var_addr("s") as usize;
+        assert_eq!(r.cpu.mem[a..a + 5], quiet.cpu.mem[a..a + 5], "every {every}");
+        assert_eq!(r.output(), quiet.output(), "every {every}");
+    }
+    // save at entry, restore before irq_exit; the plain handler gets BIT $0000
+    let code = &quiet.res.prg;
+    assert_eq!(code.windows(3).filter(|w| *w == [0x2C, 0, 0]).count(), 0);
+    let both = IRQ_SRC.replace("irq tick, 100", "irq tick, 100\nnmi plain");
+    let r = run_src(&both);
+    assert_eq!(r.res.prg.windows(3).filter(|w| *w == [0x2C, 0, 0]).count(), 2);
+}
+

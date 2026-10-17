@@ -43,13 +43,21 @@ The three big items of the 1.6.3 roadmap are implemented:
   `Expr::FixedLit(_, v, true)` for them; every other statement keeps the 16-bit
   `Expr::Number`, so integer code is unchanged. Untyped `var x = 2.5` names are not in
   the set (a statement using only those still reads `40000` as 16 bits).
+- **Floating point in IRQ / NMI handlers:** in a program with floating point, a sub named
+  by `irq`, `nmi` or `cia_timer` gets `JSR save` at its start and `JSR restore` before
+  each `irq_exit` / `nmi_exit` (`flt_handler_hook`). After the runtime is assembled,
+  handlers that reach floating point (`flt_routines` + the AST call graph) get their own
+  routines and buffer (`emit_flt_handler_state`): runtime RAM up to the float stack
+  (`float_lib::state_range`), scratch zero page `$50-$7F` and the runtime pointer; `fsp`
+  moves up one spare slot. Other handlers get `BIT $0000` instead (3 bytes, no effect).
+  Programs without floating point are unchanged. Cost: about 2 × (state + 50) bytes
+  copied per interrupt (~4-5k cycles). Not covered: a handler set by address or word
+  variable, and a handler that leaves through a plain `RTS` / `RTI`.
 
 ---
 
 ## Next candidates
 
-- **Floating point in IRQ handlers:** the runtime keeps its state in fixed RAM; it would
-  need a save/restore (or a second state block) around handlers.
 - **`RND` as a float** (0 ≤ x < 1, QBasic / C64 BASIC style) and `MOD` on floats.
 - **`PRINT USING`** / fixed decimals for floats.
 

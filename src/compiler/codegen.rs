@@ -644,6 +644,16 @@ pub struct Codegen {
     flt_patches: Vec<(usize, &'static str)>,
     flt_consts: Vec<[u8; 5]>,
     flt_const_patches: Vec<(usize, usize, usize)>,
+    /// IRQ / NMI handler subs (`irq`, `nmi`, `cia_timer`) of a program with
+    /// floating point, and the subs each routine calls (from the AST).
+    flt_handlers: std::collections::HashSet<String>,
+    flt_call_graph: HashMap<String, Vec<String>>,
+    /// Routines whose code calls the runtime.
+    flt_routines: std::collections::HashSet<String>,
+    /// `JSR save|restore` placeholders in handlers: (position, handler, save?).
+    flt_hooks: Vec<(usize, String, bool)>,
+    /// The sub / fn being generated (pass 2).
+    cur_routine: Option<String>,
     cur_fn: Option<String>,
     rnd_seeded: bool,
     plot_zp: Option<u8>,              // base of 5-byte ZP block for plot helper
@@ -802,6 +812,11 @@ impl Codegen {
             flt_patches: vec![],
             flt_consts: vec![],
             flt_const_patches: vec![],
+            flt_handlers: std::collections::HashSet::new(),
+            flt_call_graph: HashMap::new(),
+            flt_routines: std::collections::HashSet::new(),
+            flt_hooks: vec![],
+            cur_routine: None,
             cur_fn: None,
             rnd_seeded: false,
             plot_zp: None,
@@ -1763,6 +1778,9 @@ impl Codegen {
             self.perm_zp += 2;
         }
         let real_slots = if self.flt_zp.is_some() { self.scan_reals(stmts) } else { 0 };
+        if self.flt_zp.is_some() {
+            self.scan_float_handlers(stmts);
+        }
         let mut seen = std::collections::HashSet::new();
         let mut need: u32 = if Self::has_paint_stmt(stmts) { 512 } else { 0 };
         for (name, _, bytes) in &decls {
@@ -11540,10 +11558,12 @@ impl Codegen {
                 self.emit16(*addr); // JSR addr
             }
             Stmt::IrqExit => {
+                self.flt_handler_hook(false);
                 self.emit(0x4C);
                 self.emit16(0xEA81); // JMP $EA81 (KERNAL end-of-IRQ: restores Y/X/A, RTI)
             }
             Stmt::NmiExit => {
+                self.flt_handler_hook(false);
                 self.emit(0x4C);
                 self.emit16(0xFE47); // JMP $FE47 (KERNAL NMI exit: restores A/X/Y, RTI)
             }
@@ -12040,7 +12060,10 @@ impl Codegen {
                 }
                 let prev_level = self.spill_level;
                 self.spill_level = self.routine_level(name);
+                let prev_routine = self.cur_routine.replace(name.clone());
+                self.flt_handler_hook(true);
                 self.gen_stmts(body);
+                self.cur_routine = prev_routine;
                 self.spill_level = prev_level;
                 self.emit(0x60); // RTS
                 self.restore_real_params(shadowed_reals);
@@ -12073,7 +12096,10 @@ impl Codegen {
                 let prev_fn = self.cur_fn.replace(name.clone());
                 let prev_level = self.spill_level;
                 self.spill_level = self.routine_level(name);
+                let prev_routine = self.cur_routine.replace(name.clone());
+                self.flt_handler_hook(true);
                 self.gen_stmts(body);
+                self.cur_routine = prev_routine;
                 self.spill_level = prev_level;
                 self.fn_ret_type = prev_ret_type;
                 self.cur_fn = prev_fn;

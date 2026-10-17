@@ -214,6 +214,15 @@ fn prune(src: &str, roots: &[&str]) -> String {
     out
 }
 
+/// RAM state of an assembled runtime that an interrupt handler must save:
+/// from its first data label up to the float stack (or `end`).
+pub fn state_range(labels: &HashMap<String, u16>, end: u16) -> (u16, u16) {
+    let data = DATA.lines().filter_map(|l| l.split_once(':').map(|(n, _)| n.trim()));
+    let start = data.filter_map(|n| labels.get(n).copied()).min().unwrap_or(end);
+    let stop = labels.get("fstk").copied().unwrap_or(end);
+    (start, stop.max(start))
+}
+
 fn runtime_source() -> String {
     let mut src = String::from(LIB);
     // constants

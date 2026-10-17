@@ -148,6 +148,8 @@ pooled 5-byte MFLPT after it. Parser: `Token::FixedLit(q88, exact, real_only)`, 
 BinOps; `ast::fold_int` gives integer contexts the old wrapped value). A 32768-65535 literal (`Token::Addr`) in a
 statement that `Parser::stmt_is_real` (SINGLE/DOUBLE name from `pre_scan_real_names`, `^`, real-only
 literal, float builtin) becomes `FixedLit(_, v, true)`; elsewhere it stays `Number(v as i16)`.
+IRQ/NMI handler subs that reach floating point save/restore the runtime state (`flt_handler_hook`,
+`emit_flt_handler_state`); the test CPU simulates IRQs with `Cpu::irq()` (`JMP $EA81` returns).
 ---
 
 ## Language Reference
