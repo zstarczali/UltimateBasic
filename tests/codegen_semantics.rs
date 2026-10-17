@@ -1416,3 +1416,33 @@ print b, i, w, \"END\"
     // default: unchanged
     assert_eq!(run_basic_print("var b = 7\nprint b, 2; \"X\"\n", false), "72X\r");
 }
+
+#[test]
+fn word_and_signed_mod_and_shr() {
+    let signed: [(i16, i16); 10] =
+        [(-7, 3), (7, -3), (-7, -3), (1000, 7), (-1000, 7), (32767, 10), (-32768, 7), (5, 0), (-5, 0), (300, 256)];
+    let words: [(u16, u16); 5] = [(65535, 10), (1005, 7), (40000, 300), (7, 1000), (9, 0)];
+    let shifts: [(i16, i16); 5] = [(-8, 1), (-7, 1), (-32768, 15), (1000, 3), (-1, 4)];
+    let mut src = String::new();
+    let mut want = vec![];
+    for (k, (a, b)) in signed.iter().enumerate() {
+        src += &format!("dim sa{k} as integer = {a}\ndim sb{k} as integer = {b}\ndim sr{k} as integer\nsr{k} = sa{k} mod sb{k}\n");
+        want.push((format!("sr{k}"), (if *b == 0 { *a } else { a % b }) as u16));
+    }
+    for (k, (a, b)) in words.iter().enumerate() {
+        src += &format!("dim wa{k} as word = {a}\ndim wb{k} as word = {b}\ndim wr{k} as word\nwr{k} = (wa{k} + 0) mod (wb{k} + 0)\n");
+        want.push((format!("wr{k}"), if *b == 0 { *a } else { a % b }));
+    }
+    for (k, (a, n)) in shifts.iter().enumerate() {
+        src += &format!("dim ha{k} as integer = {a}\ndim hr{k} as integer\nhr{k} = ha{k} shr {n}\n");
+        want.push((format!("hr{k}"), (a >> n) as u16));
+    }
+    src += "dim c as integer = -9\nprint c mod 4; \" \"; c shr 1; \" \"; 7 mod -3\n";
+    src += "var b8 = 200\nvar r8 = b8 mod 7\n";
+    let r = run_src(&src);
+    for (name, w) in want {
+        assert_eq!(r.word(&name), w, "{name}");
+    }
+    assert_eq!(r.output(), "-1 -5 1\r");
+    assert_eq!(r.byte("r8"), 200 % 7);
+}

@@ -302,7 +302,9 @@ n = x shr 2              # shift right 2 bits (unrolled LSR loop)
 `not x` is **logical NOT** (0 → 1, non-zero → 0) — for bitwise complement use `x xor 255`.
 `*` by a constant is shifts / shift-add (`x * 8` → 3× `ASL`), otherwise a ≤8-round shift-add loop.
 `/` and `mod` by a power of two are `LSR` / `AND #(n-1)`, otherwise an 8-round shift-subtract
-loop (no longer proportional to the quotient). Division by zero is defined: `x / 0 = 255`,
+loop (no longer proportional to the quotient). With a word / INTEGER operand (or a negative
+constant) `mod` is a 16-bit remainder with the sign of the dividend (`-7 mod 3` = -1,
+`emit_word_mod`), and `shr` of an INTEGER is arithmetic (`-8 shr 1` = -4, `emit_shr_hi`). Division by zero is defined: `x / 0 = 255`,
 `x mod 0 = x` (it hung before 1.6.0).
 
 ### Increment / Decrement

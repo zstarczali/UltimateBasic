@@ -77,6 +77,12 @@ The three big items of the 1.6.3 roadmap are implemented:
 - **PRINT spacing (opt-in):** `--basic-print` / `option basic print` — numbers with the
   C64 leading (sign) and trailing space, `,` to the next 10-column zone, trailing `,`
   keeps the line. Default output is unchanged (existing screen layouts rely on it).
+- **16-bit / signed `mod`, arithmetic `shr`:** a word or signed `mod` is a real 16-bit
+  remainder with the sign of the dividend, like QBasic (`-7 mod 3` = -1, `7 mod -3` = 1,
+  `(w + 5) mod 7` no longer drops to 8 bits; `x mod 0` = x) — `emit_word_mod`,
+  `mod_is_signed`. `shr` of an INTEGER is arithmetic (`-8 shr 1` = -4, `emit_shr_hi`);
+  WORD and byte `shr` stay logical. `gen_word_assign` sends these to `eval_expr_word`.
+  Still open: a signed `/` with a negative or 16-bit divisor uses the 8-bit divisor path.
 
 ---
 
@@ -95,7 +101,5 @@ All items of the 1.6.4 list are done (above); see *Smaller open items*.
 - **Byte arithmetic:** untyped `var` values are 8-bit and wrap silently
   (`var c = a + b` with 200 + 100 gives 44) — by design; `DIM … AS INTEGER` avoids it.
   A compile-time warning for likely overflow would help.
-- **`mod` and `shr` on 16-bit values:** `mod` is 8-bit only (`-7 mod 3` gives 0) and `shr`
-  is a logical shift; a 16-bit / signed `mod` and an arithmetic `shr` are missing.
 - **`END` inside a SUB/FUNCTION** closes the routine (block syntax); use `bye` there to
   stop the program.

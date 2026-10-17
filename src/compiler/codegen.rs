@@ -3550,6 +3550,123 @@ impl Codegen {
         }
     }
 
+    /// `mod` follows the sign of the dividend (QBasic) when an operand is signed
+    /// or a negative constant (`7 mod -3` = 1, `-7 mod 3` = -1).
+    fn mod_is_signed(&self, l: &Expr, r: &Expr) -> bool {
+        let neg = |e: &Expr| matches!(e, Expr::Number(n) if *n < 0);
+        self.is_signed_expr(l) || self.is_signed_expr(r) || neg(l) || neg(r)
+    }
+
+    /// One right shift of a word's high byte: `LSR hi`, or with `arith` the
+    /// sign bit copied back in (`LDA hi; CMP #$80; ROR hi`).
+    fn emit_shr_hi(&mut self, hi: u8, arith: bool) {
+        if arith {
+            self.emit(0xA5);
+            self.emit(hi); // LDA hi
+            self.emit(0xC9);
+            self.emit(0x80); // CMP #$80 (C = sign)
+            self.emit(0x66);
+            self.emit(hi); // ROR hi
+        } else {
+            self.emit(0x46);
+            self.emit(hi); // LSR hi
+        }
+    }
+
+    /// lo/hi = l mod r in 16 bits: the remainder of the magnitudes, with the
+    /// sign of the dividend when signed (`mod_is_signed`); `x mod 0` = x.
+    fn emit_word_mod(&mut self, l: &Expr, r: &Expr, lo: u8, hi: u8) {
+        let t = self.tmp_zp;
+        self.tmp_zp += 6;
+        let (nlo, nhi, dlo, dhi, rlo, rhi) = (t, t + 1, t + 2, t + 3, t + 4, t + 5);
+        let signed = self.mod_is_signed(l, r);
+        self.eval_expr_word(l, nlo, nhi);
+        if signed {
+            self.emit(0xA5);
+            self.emit(nhi);
+            self.emit(0x48); // PHA (dividend sign in bit 7)
+            self.emit_negate_if_minus(nlo, nhi);
+        }
+        match r {
+            // a constant divisor: its magnitude when signed
+            Expr::Number(n) => {
+                let v = if signed { n.unsigned_abs() } else { *n as u16 };
+                self.emit(0xA9);
+                self.emit(v as u8);
+                self.emit(0x85);
+                self.emit(dlo);
+                self.emit(0xA9);
+                self.emit((v >> 8) as u8);
+                self.emit(0x85);
+                self.emit(dhi);
+            }
+            _ => {
+                self.eval_expr_word(r, dlo, dhi);
+                if signed {
+                    self.emit_negate_if_minus(dlo, dhi);
+                }
+            }
+        }
+        self.emit(0xA9);
+        self.emit(0x00);
+        self.emit(0x85);
+        self.emit(rlo);
+        self.emit(0x85);
+        self.emit(rhi); // remainder = 0
+        self.emit(0xA2);
+        self.emit(0x10); // LDX #16
+        let top = self.current_addr();
+        self.emit(0x06);
+        self.emit(nlo); // ASL nlo
+        self.emit(0x26);
+        self.emit(nhi); // ROL nhi
+        self.emit(0x26);
+        self.emit(rlo); // ROL rlo
+        self.emit(0x26);
+        self.emit(rhi); // ROL rhi
+        self.emit(0x38); // SEC
+        self.emit(0xA5);
+        self.emit(rlo);
+        self.emit(0xE5);
+        self.emit(dlo); // LDA rlo; SBC dlo
+        self.emit(0xA8); // TAY
+        self.emit(0xA5);
+        self.emit(rhi);
+        self.emit(0xE5);
+        self.emit(dhi); // LDA rhi; SBC dhi
+        self.emit(0x90);
+        let bcc = self.code.len();
+        self.emit(0x00); // BCC skip (remainder < divisor)
+        self.emit(0x85);
+        self.emit(rhi);
+        self.emit(0x84);
+        self.emit(rlo); // remainder -= divisor
+        let skip = self.current_addr();
+        self.patch_bxx(bcc, skip);
+        self.emit(0xCA); // DEX
+        self.emit(0xD0);
+        let bne = self.code.len();
+        self.emit(0x00);
+        self.patch_bxx(bne, top); // BNE loop
+        if signed {
+            self.emit(0x68); // PLA
+            self.emit(0x10); // BPL done
+            let p = self.code.len();
+            self.emit(0x00);
+            self.emit_negate(rlo, rhi);
+            let here = self.current_addr();
+            self.patch_bxx(p, here);
+        }
+        self.emit(0xA5);
+        self.emit(rlo);
+        self.emit(0x85);
+        self.emit(lo);
+        self.emit(0xA5);
+        self.emit(rhi);
+        self.emit(0x85);
+        self.emit(hi);
+    }
+
     fn is_float_like(&self, expr: &Expr) -> bool {
         match expr {
             Expr::FixedLit(..) => true,
@@ -4144,12 +4261,13 @@ impl Codegen {
             Expr::BinOp(l, BinOp::Shr, r) => {
                 let l = l.clone();
                 self.eval_expr_word(&l, lo, hi);
+                // signed (INTEGER): arithmetic shift, the sign bit is kept
+                let arith = self.is_signed_expr(&l) && !self.is_float_like(&l);
                 match r.as_ref() {
                     Expr::Number(n) => {
                         let n = (*n as usize).min(15);
                         for _ in 0..n {
-                            self.emit(0x46);
-                            self.emit(hi); // LSR hi (MSB first)
+                            self.emit_shr_hi(hi, arith); // MSB first
                             self.emit(0x66);
                             self.emit(lo); // ROR lo
                         }
@@ -4165,8 +4283,7 @@ impl Codegen {
                         self.emit(0x85);
                         self.emit(cnt);
                         let loop_top = self.current_addr();
-                        self.emit(0x46);
-                        self.emit(hi);
+                        self.emit_shr_hi(hi, arith);
                         self.emit(0x66);
                         self.emit(lo);
                         self.emit(0xC6);
@@ -4265,6 +4382,10 @@ impl Codegen {
                 self.emit(d1);
                 self.emit(0x85);
                 self.emit(hi);
+            }
+            Expr::BinOp(l, BinOp::Mod, r) if !self.is_float_like(l) && !self.is_float_like(r) => {
+                let (l, r) = ((**l).clone(), (**r).clone());
+                self.emit_word_mod(&l, &r, lo, hi);
             }
             Expr::BinOp(l, BinOp::Div, r) => {
                 let dlo = self.tmp_zp;
@@ -10099,7 +10220,7 @@ impl Codegen {
                 false
             }
             // ── word SHR rhs (16-bit shift right) ────────────────────────────────
-            Expr::BinOp(l, BinOp::Shr, r) if matches!(l.as_ref(), Expr::Var(n) if matches!(self.var_types.get(n), Some(VarType::Word))) =>
+            Expr::BinOp(l, BinOp::Shr, r) if matches!(l.as_ref(), Expr::Var(n) if matches!(self.var_types.get(n), Some(VarType::Word))) && !self.is_signed_expr(l) =>
             {
                 if let Expr::Var(lname) = l.as_ref() {
                     if let Some(lzp) = self.var_addr(lname) {
@@ -10398,7 +10519,10 @@ impl Codegen {
                 false
             }
             // ── word mod rhs (16-bit modulo — same as div but yield remainder) ────
-            Expr::BinOp(l, BinOp::Mod, r) if matches!(l.as_ref(), Expr::Var(n) if matches!(self.var_types.get(n), Some(VarType::Word))) =>
+            Expr::BinOp(l, BinOp::Mod, r)
+                if matches!(l.as_ref(), Expr::Var(n) if matches!(self.var_types.get(n), Some(VarType::Word)))
+                    && !self.mod_is_signed(l, r)
+                    && (matches!(r.as_ref(), Expr::Number(_) | Expr::Var(_)) || !self.can_be_word_result(r)) =>
             {
                 if let Expr::Var(lname) = l.as_ref() {
                     if let Some(lzp) = self.var_addr(lname) {
@@ -10645,6 +10769,16 @@ impl Codegen {
             // product / left shift of bytes, which can exceed 255: `cy * 8 + fy`)
             Expr::BinOp(_, BinOp::Add | BinOp::Sub, _)
                 if self.can_be_word_result(expr) || Self::has_mul_or_shl(expr) =>
+            {
+                let expr = expr.clone();
+                self.eval_expr_word(&expr, dst_zp, dst_zp + 1);
+                true
+            }
+            // 16-bit / signed `mod` and `shr` (the fast arms above take unsigned
+            // word variables): `(w + 5) mod 7`, `i mod 3`, `k shr 1` (arithmetic)
+            Expr::BinOp(l, BinOp::Mod | BinOp::Shr, r)
+                if (self.can_be_word_result(expr) || self.is_signed_expr(expr) || self.mod_is_signed(l, r))
+                    && !self.is_float_like(expr) =>
             {
                 let expr = expr.clone();
                 self.eval_expr_word(&expr, dst_zp, dst_zp + 1);
