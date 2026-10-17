@@ -77,9 +77,144 @@ fn bytes(name: &str, b: &[u8]) -> String {
     format!("{name}: .byte {}\n", list.join(", "))
 }
 
-/// Assemble the runtime at `base`, with the 2-byte zero-page pointer `ptr`.
-/// Returns the code and every label (entry points `f_*`, data).
+/// Assemble the whole runtime at `base`, with the 2-byte zero-page pointer
+/// `ptr`. Returns the code and every label (entry points `f_*`, data).
 pub fn float_runtime(base: u16, ptr: u8) -> (Vec<u8>, HashMap<String, u16>) {
+    assemble_runtime(&runtime_source(), base, ptr)
+}
+
+/// Assemble only the parts of the runtime that `entries` reach (by calls,
+/// jumps, data references and fall-through), so a program that only adds and
+/// prints does not carry SIN / LOG / EXP / text input.
+pub fn float_runtime_for(base: u16, ptr: u8, entries: &[&str]) -> (Vec<u8>, HashMap<String, u16>) {
+    assemble_runtime(&prune(&runtime_source(), entries), base, ptr)
+}
+
+fn assemble_runtime(src: &str, base: u16, ptr: u8) -> (Vec<u8>, HashMap<String, u16>) {
+    let mut known = HashMap::new();
+    known.insert("PTR".to_string(), ptr as u16);
+    let a = super::rtasm::assemble(src, base, &known)
+        .unwrap_or_else(|e| panic!("float runtime does not assemble: {e}"));
+    (a.code, a.labels)
+}
+
+/// Symbols used on an (already comment-stripped) line: identifiers outside
+/// character literals and numbers. The caller filters for defined names.
+fn idents(line: &str) -> Vec<&str> {
+    let b = line.as_bytes();
+    let mut out = vec![];
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        if c == b'\'' {
+            i += 1;
+            while i < b.len() && b[i] != b'\'' {
+                i += 1;
+            }
+            i += 1;
+        } else if c == b'$' || c == b'%' || c.is_ascii_digit() {
+            i += 1;
+            while i < b.len() && b[i].is_ascii_alphanumeric() {
+                i += 1;
+            }
+        } else if c.is_ascii_alphabetic() || c == b'_' {
+            let st = i;
+            while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+                i += 1;
+            }
+            out.push(&line[st..i]);
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Keep the chunks of `src` (a chunk starts at a label in column 0) that
+/// `roots` reach. A chunk whose last instruction is not RTS / JMP / RTI falls
+/// through into the next one, which is then needed too. Constant lines
+/// (`NAME = expr`) are transparent: using NAME uses what its expression uses,
+/// and the line is kept when all of those are kept.
+fn prune(src: &str, roots: &[&str]) -> String {
+    struct Chunk<'a> {
+        lines: Vec<&'a str>,
+        refs: Vec<&'a str>,
+        falls: bool,
+    }
+    let mut equs: Vec<(&str, &str, Vec<&str>)> = vec![]; // (line, name, uses)
+    let mut chunks: Vec<Chunk> = vec![];
+    let mut owner: HashMap<&str, usize> = HashMap::new();
+    for raw in src.lines() {
+        let line = super::rtasm::strip(raw);
+        if line.is_empty() {
+            continue;
+        }
+        if let Some((name, expr)) = line.split_once('=') {
+            equs.push((line, name.trim(), idents(expr)));
+            continue;
+        }
+        let mut body = line;
+        if !raw.starts_with([' ', '\t']) {
+            if let Some((label, rest)) = line.split_once(':') {
+                chunks.push(Chunk { lines: vec![], refs: vec![], falls: true });
+                owner.insert(label.trim(), chunks.len() - 1);
+                body = rest.trim();
+            }
+        }
+        let c = chunks.last_mut().expect("runtime code before the first label");
+        c.lines.push(raw);
+        if body.is_empty() {
+            continue;
+        }
+        let mnem = body.split_whitespace().next().unwrap_or("");
+        c.falls = !matches!(mnem, "RTS" | "JMP" | "RTI" | ".byte" | ".word" | ".res");
+        let ops = body[mnem.len()..].trim();
+        c.refs.extend(idents(ops));
+    }
+    let equ_uses: HashMap<&str, &Vec<&str>> = equs.iter().map(|(_, n, u)| (*n, u)).collect();
+    let mut keep = vec![false; chunks.len()];
+    let mut work: Vec<&str> = roots.to_vec();
+    let mut seen_equ: Vec<&str> = vec![];
+    while let Some(sym) = work.pop() {
+        if let Some(uses) = equ_uses.get(sym) {
+            if !seen_equ.contains(&sym) {
+                seen_equ.push(sym);
+                work.extend(uses.iter());
+            }
+            continue;
+        }
+        let Some(&start) = owner.get(sym) else { continue };
+        let mut i = start;
+        loop {
+            if keep[i] {
+                break;
+            }
+            keep[i] = true;
+            work.extend(chunks[i].refs.iter());
+            if !chunks[i].falls || i + 1 == chunks.len() {
+                break;
+            }
+            i += 1;
+        }
+    }
+    let kept = |n: &str| owner.get(n).is_none_or(|&i| keep[i]) || equ_uses.contains_key(n);
+    let mut out = String::new();
+    for (line, _, uses) in &equs {
+        if uses.iter().all(|u| kept(u)) {
+            out += line;
+            out.push('\n');
+        }
+    }
+    for (c, _) in chunks.iter().zip(&keep).filter(|(_, k)| **k) {
+        for l in &c.lines {
+            out += l;
+            out.push('\n');
+        }
+    }
+    out
+}
+
+fn runtime_source() -> String {
     let mut src = String::from(LIB);
     // constants
     src += &bytes("c_one", &to_mflpt(1.0));
@@ -125,11 +260,7 @@ pub fn float_runtime(base: u16, ptr: u8) -> (Vec<u8>, HashMap<String, u16>) {
         (0..8).rev().map(|k| if k % 2 == 0 { 1.0 } else { -1.0 } / (2 * k + 1) as f64),
     );
     src += DATA;
-    let mut known = HashMap::new();
-    known.insert("PTR".to_string(), ptr as u16);
-    let a = super::rtasm::assemble(&src, base, &known)
-        .unwrap_or_else(|e| panic!("float runtime does not assemble: {e}"));
-    (a.code, a.labels)
+    src
 }
 
 /// `name: .byte degree, c_n, …, c_0` (packed coefficients, highest power first).
@@ -1947,5 +2078,31 @@ mod tests {
         for l in ["f_load", "f_store", "f_add", "f_mul", "f_div", "f_cmp", "f_out", "f_in", "fac"] {
             assert!(labels.contains_key(l), "{l}");
         }
+    }
+
+    #[test]
+    fn pruned_runtime_keeps_only_reached_parts() {
+        let (full, _) = float_runtime(0x4000, 0x60);
+        let (code, labels) = float_runtime_for(0x4000, 0x60, &["f_load", "f_store", "f_mul", "f_out"]);
+        assert!(code.len() + 1500 < full.len(), "{} vs {}", code.len(), full.len());
+        // fall-through and JSR targets come along
+        for l in ["f_mularg", "f_round", "f_norm", "obuf", "pw", "fac", "arg"] {
+            assert!(labels.contains_key(l), "{l}");
+        }
+        for l in ["f_sin", "f_log", "f_exp", "f_in", "ibuf", "t_sin", "fstk"] {
+            assert!(!labels.contains_key(l), "{l}");
+        }
+    }
+
+    #[test]
+    fn every_entry_assembles_alone() {
+        let (_, all) = float_runtime(0x4000, 0x60);
+        let mut n = 0;
+        for name in all.keys().filter(|k| k.starts_with("f_")) {
+            let (_, labels) = float_runtime_for(0x4000, 0x60, &[name.as_str()]);
+            assert!(labels.contains_key(name), "{name}");
+            n += 1;
+        }
+        assert!(n > 40);
     }
 }

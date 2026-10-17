@@ -95,7 +95,10 @@ impl Codegen {
         }
         let base = self.current_addr();
         let zp = self.flt_zp.expect("float pointer");
-        let (code, labels) = super::float_lib::float_runtime(base, zp);
+        let mut entries: Vec<&str> = self.flt_patches.iter().map(|&(_, n)| n).collect();
+        entries.sort_unstable();
+        entries.dedup();
+        let (code, labels) = super::float_lib::float_runtime_for(base, zp, &entries);
         self.listing_symbol("ub_float_runtime");
         let start = self.code.len();
         self.code.extend_from_slice(&code);

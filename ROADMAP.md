@@ -28,11 +28,18 @@ The three big items of the 1.6.3 roadmap are implemented:
 
 ---
 
+## Done after 1.6.5
+
+- **Float runtime size:** only the parts of the runtime a program reaches are linked
+  (`float_lib::float_runtime_for` + `prune`: the source is split into chunks at every
+  column-0 label, kept by reachability from the called `f_*` entries through operand
+  references and fall-through). A program that only multiplies, adds and prints went from
+  4603 to 2293 bytes; `examples/float_demo.ub` from 6319 to 5660.
+
+---
+
 ## Next candidates
 
-- **Float runtime size:** the whole ~4.4 KB library is appended as soon as a program uses
-  floating point. Splitting it into parts (core / text / transcendental functions) that are
-  included on demand would save 1-2 KB for simple programs.
 - **Integer literals 32768-65535 in floating-point context** are read as 16-bit patterns
   (negative); the lexer/parser would need to keep "unsigned literal" information on
   `Expr::Number` (write `40000.0` meanwhile).

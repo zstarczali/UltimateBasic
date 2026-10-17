@@ -141,7 +141,8 @@ at the top of `gen_stmt_inner`, `real_eval_byte` / `real_eval_word` at the top o
 (strings), `real_param_store`, real compare arms in `gen_cond_jump`. `is_real_expr`: real
 var/array/fn, `^`, real builtins, decimal literals once floats are on. `eval_real` leaves the
 value in FAC (simple right operands straight from memory, else `f_push` / `f_*p`). Runtime calls
-are `JSR` patched in `emit_float_runtime` (appended before `patch_forward_refs`); constants are
+are `JSR` patched in `emit_float_runtime` (appended before `patch_forward_refs`; only the
+chunks reached from the called entries are assembled — `float_runtime_for` / `prune`); constants are
 pooled 5-byte MFLPT after it. Parser: `Token::FixedLit(q88, exact, real_only)`, `Token::Caret`,
 `parse_power`; constant folding only folds exact results within i16 (`7/2`, `300*300` stay
 BinOps; `ast::fold_int` gives integer contexts the old wrapped value).
