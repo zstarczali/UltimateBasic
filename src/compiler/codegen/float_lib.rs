@@ -284,6 +284,9 @@ fn poly(name: &str, coeffs: impl Iterator<Item = f64>) -> String {
 
 const DATA: &str = "
 pp:     .res 2
+mda:    .res 5
+mdb:    .res 5
+rt:     .res 4
 pn:     .res 1
 px2:    .res 5
 pk:     .res 1
@@ -1210,6 +1213,104 @@ f_cmpp: JSR f_poparg
         JMP f_cmparg
 f_cmpr: JSR f_ldarg         ; raw compare with mem(A/Y), FAC not rounded
         JMP f_cmpraw
+
+; ---------------------------------------------------------------- mod
+f_mod:  JSR f_ldarg         ; FAC = FAC mod mem(A/Y)
+        JMP f_modarg
+f_modp: JSR f_poparg        ; FAC = FAC mod pop
+f_modarg:                   ; FAC = FAC - ARG * fix(FAC / ARG) (sign of FAC); ARG = 0: FAC
+        LDA ARGE
+        BEQ md_ret
+        LDA #<mda
+        LDY #>mda
+        JSR f_store
+        JSR f_swap
+        LDA #<mdb
+        LDY #>mdb
+        JSR f_store
+        LDA #<mda
+        LDY #>mda
+        JSR f_load
+        LDA #<mdb
+        LDY #>mdb
+        JSR f_div
+        JSR f_fix
+        LDA #<mdb
+        LDY #>mdb
+        JSR f_mul
+        JSR f_neg
+        LDA #<mda
+        LDY #>mda
+        JMP f_add
+md_ret: RTS
+
+; ---------------------------------------------------------------- rnd
+f_rnd:              ; FAC = random number, 0 <= x < 1 (xorshift32 13/17/5)
+        LDA rnd_f
+        BNE rd_go
+        INC rnd_f           ; first call: mix in the raster line
+        LDA $D012
+        EOR rnd_s
+        STA rnd_s
+rd_go:  LDA #0              ; x ^= x << 13  (t = x << 8, then << 5)
+        STA rt
+        LDA rnd_s
+        STA rt+1
+        LDA rnd_s+1
+        STA rt+2
+        LDA rnd_s+2
+        STA rt+3
+        LDX #5
+        JSR rd_shl
+        JSR rd_xor
+        LDA rnd_s+2         ; x ^= x >> 17  (t = x >> 16, then >> 1)
+        STA rt
+        LDA rnd_s+3
+        STA rt+1
+        LDA #0
+        STA rt+2
+        STA rt+3
+        LSR rt+1
+        ROR rt
+        JSR rd_xor
+        LDX #3              ; x ^= x << 5
+rd_cp:  LDA rnd_s,X
+        STA rt,X
+        DEX
+        BPL rd_cp
+        LDX #5
+        JSR rd_shl
+        JSR rd_xor
+        LDA rnd_s+3         ; FAC = x / 2^32
+        STA FAC1
+        LDA rnd_s+2
+        STA FAC2
+        LDA rnd_s+1
+        STA FAC3
+        LDA rnd_s
+        STA FAC4
+        LDA #$80
+        STA FACE
+        LDA #0
+        STA FACS
+        STA FACR
+        JMP f_norm
+rd_shl: ASL rt              ; t <<= X
+        ROL rt+1
+        ROL rt+2
+        ROL rt+3
+        DEX
+        BNE rd_shl
+        RTS
+rd_xor: LDX #3              ; x ^= t
+rd_xl:  LDA rnd_s,X
+        EOR rt,X
+        STA rnd_s,X
+        DEX
+        BPL rd_xl
+        RTS
+rnd_s:  .byte $5D, $E3, $27, $9A    ; state (little-endian); outside the saved IRQ state
+rnd_f:  .byte 0
 
 ; ---------------------------------------------------------------- number -> text
 f_out:              ; A/Y = text of FAC (null-terminated, in obuf); FAC destroyed

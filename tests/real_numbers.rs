@@ -539,3 +539,55 @@ fn float_irq_handler_does_not_disturb_the_program() {
     assert_eq!(r.res.prg.windows(3).filter(|w| *w == [0x2C, 0, 0]).count(), 2);
 }
 
+
+#[test]
+fn mod_on_floats() {
+    let cases: [(f64, f64); 8] =
+        [(7.5, 2.0), (-7.5, 2.0), (10.0, 2.5), (5.25, -2.0), (100.0, 7.0), (1e6, 3.5), (0.75, 0.5), (3.0, 0.0)];
+    let mut src = String::from("dim a as double, b as double\n");
+    for (i, _) in cases.iter().enumerate() {
+        src += &format!("dim r{i} as double\n");
+    }
+    for (i, (a, b)) in cases.iter().enumerate() {
+        src += &format!("a = {a:?}\nb = {b:?}\nr{i} = a mod b\n");
+    }
+    src += "dim k as double\nk = 17 mod 5.5 + 1\n";
+    let r = run_src(&src);
+    for (i, (a, b)) in cases.iter().enumerate() {
+        let want = if *b == 0.0 { *a } else { a - b * (a / b).trunc() };
+        let got = real(&r, &format!("r{i}"));
+        assert!(near(got, want), "{a} mod {b}: {got} vs {want}");
+    }
+    assert!(near(real(&r, "k"), 1.5), "{}", real(&r, "k"));
+}
+
+#[test]
+fn rnd_in_float_statements() {
+    let r = run_src(
+        "dim v(199) as double
+dim i as byte, lo as byte, hi as byte, d as byte
+dim s as double, x as double
+for i = 0 to 199
+    v(i) = rnd
+next
+x = rnd() * 6
+for i = 0 to 199
+    s = s + v(i)
+    if v(i) < 0.5 then lo = lo + 1 else hi = hi + 1
+next
+d = rnd(6)
+",
+    );
+    let base = r.res.map.arrays.iter().find(|a| a.name == "v").unwrap().base_addr as usize;
+    let vals: Vec<f64> = (0..200).map(|k| from_mflpt(r.cpu.mem[base + 5 * k..base + 5 * k + 5].try_into().unwrap())).collect();
+    assert!(vals.iter().all(|&v| (0.0..1.0).contains(&v)), "{vals:?}");
+    let mut sorted = vals.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    sorted.dedup();
+    assert_eq!(sorted.len(), 200, "values repeat");
+    let mean = real(&r, "s") / 200.0;
+    assert!((0.4..0.6).contains(&mean), "mean {mean}");
+    assert!(r.byte("lo") > 70 && r.byte("hi") > 70, "{} / {}", r.byte("lo"), r.byte("hi"));
+    assert!((0.0..6.0).contains(&real(&r, "x")));
+    assert!(r.byte("d") < 6);
+}

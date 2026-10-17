@@ -150,6 +150,8 @@ statement that `Parser::stmt_is_real` (SINGLE/DOUBLE name from `pre_scan_real_na
 literal, float builtin) becomes `FixedLit(_, v, true)`; elsewhere it stays `Number(v as i16)`.
 IRQ/NMI handler subs that reach floating point save/restore the runtime state (`flt_handler_hook`,
 `emit_flt_handler_state`); the test CPU simulates IRQs with `Cpu::irq()` (`JMP $EA81` returns).
+`rnd`/`rnd()` in a float statement → `FnCall("rnd")` → `f_rnd` (0 <= x < 1); `mod` with a real operand →
+`f_mod`/`f_modp` (fmod: `a - b*fix(a/b)`, `x mod 0 = x`).
 ---
 
 ## Language Reference

@@ -23,7 +23,7 @@ use std::collections::HashMap;
 pub(super) fn is_real_builtin(name: &str) -> bool {
     matches!(
         name,
-        "fix" | "cint" | "csng" | "cdbl" | "sqr" | "exp" | "log" | "atn" | "tan"
+        "fix" | "cint" | "csng" | "cdbl" | "sqr" | "exp" | "log" | "atn" | "tan" | "rnd"
     )
 }
 
@@ -292,7 +292,7 @@ impl Codegen {
                 self.real_fns.contains_key(n) || (is_real_builtin(n) && !self.is_user_routine(n))
             }
             Expr::BinOp(_, BinOp::Pow, _) => true,
-            Expr::BinOp(l, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div, r) => {
+            Expr::BinOp(l, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod, r) => {
                 !self.is_string_expr(e) && (self.is_real_expr(l) || self.is_real_expr(r))
             }
             Expr::Abs(x) | Expr::Sgn(x) | Expr::FixedToInt(x) | Expr::Sin(x) | Expr::Cos(x) => {
@@ -333,12 +333,13 @@ impl Codegen {
                 self.eval_real(&r);
                 self.flt_call("f_neg");
             }
-            Expr::BinOp(l, op @ (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div), r) => {
+            Expr::BinOp(l, op @ (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod), r) => {
                 let (l, r) = ((**l).clone(), (**r).clone());
                 let (mem, pop) = match op {
                     BinOp::Add => ("f_add", "f_addp"),
                     BinOp::Sub => ("f_sub", "f_subp"),
                     BinOp::Mul => ("f_mul", "f_mulp"),
+                    BinOp::Mod => ("f_mod", "f_modp"),
                     _ => ("f_div", "f_divp"),
                 };
                 let commutative = matches!(op, BinOp::Add | BinOp::Mul);
@@ -381,6 +382,8 @@ impl Codegen {
                 self.emit_ay(ROp::Addr(slot));
                 self.flt_call("f_load");
             }
+            // `rnd` in a floating-point statement (the parser makes it a call)
+            Expr::FnCall(name, args) if name == "rnd" && args.is_empty() => self.flt_call("f_rnd"),
             Expr::FnCall(name, args) if is_real_builtin(name) && !self.is_user_routine(name) => {
                 let name = name.clone();
                 let arg = args.first().cloned().unwrap_or(Expr::Number(0));

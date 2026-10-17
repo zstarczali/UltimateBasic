@@ -5001,11 +5001,19 @@ impl Parser {
                 Expr::Peek16(Box::new(arg))
             }
             Token::Rnd => {
+                // in a floating-point statement `rnd` / `rnd()` is 0 <= x < 1
+                let float_rnd = |p: &Self| {
+                    if p.stmt_is_real() {
+                        Expr::FnCall("rnd".into(), vec![])
+                    } else {
+                        Expr::Rnd
+                    }
+                };
                 if self.peek() == &Token::LParen {
                     self.advance(); // consume '('
                     if self.peek() == &Token::RParen {
                         self.advance(); // consume ')' — empty rnd()
-                        Expr::Rnd
+                        float_rnd(self)
                     } else {
                         let n = self.parse_expr();
                         if self.peek() == &Token::RParen {
@@ -5014,7 +5022,7 @@ impl Parser {
                         Expr::RndN(Box::new(n))
                     }
                 } else {
-                    Expr::Rnd
+                    float_rnd(self)
                 }
             }
             Token::Abs => {

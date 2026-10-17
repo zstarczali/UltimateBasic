@@ -53,12 +53,20 @@ The three big items of the 1.6.3 roadmap are implemented:
   Programs without floating point are unchanged. Cost: about 2 × (state + 50) bytes
   copied per interrupt (~4-5k cycles). Not covered: a handler set by address or word
   variable, and a handler that leaves through a plain `RTS` / `RTI`.
+- **`RND` as a float:** in a floating-point statement (`Parser::stmt_is_real`) `rnd` /
+  `rnd()` is `FnCall("rnd")`, 0 <= x < 1 from `f_rnd` (xorshift32 13/17/5, the raster
+  line mixed in on the first call; its state sits outside the IRQ-saved block).
+  `rnd(n)` keeps its integer meaning (0 … n-1), and `rnd` in integer statements is still
+  the byte generator — `INT(RND * 6)` into an INTEGER is not a floating-point statement,
+  use `rnd(6)` there.
+- **`MOD` on floats:** with a SINGLE / DOUBLE operand, `a mod b` = `a - b * FIX(a / b)`
+  (sign of `a`, like VB / C `fmod`; `7.5 mod 2` = 1.5), `x mod 0` = x
+  (`f_mod` / `f_modp` / `f_modarg`).
 
 ---
 
 ## Next candidates
 
-- **`RND` as a float** (0 ≤ x < 1, QBasic / C64 BASIC style) and `MOD` on floats.
 - **`PRINT USING`** / fixed decimals for floats.
 
 ---
