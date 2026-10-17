@@ -117,6 +117,10 @@ pub struct Parser {
     in_condition: bool,
     /// Nesting depth of QBasic `select case` (names its hidden selector var).
     select_depth: usize,
+    /// Names declared `as single|double` (variables, arrays, parameters,
+    /// function results): a statement that mentions one is a floating-point
+    /// statement, where 32768-65535 literals keep their unsigned value.
+    real_names: std::collections::HashSet<String>,
 }
 
 impl Parser {
@@ -143,6 +147,7 @@ impl Parser {
             call_graph: std::collections::HashMap::new(),
             in_condition: false,
             select_depth: 0,
+            real_names: std::collections::HashSet::new(),
         }
     }
 
@@ -169,6 +174,7 @@ impl Parser {
             call_graph: std::collections::HashMap::new(),
             in_condition: false,
             select_depth: 0,
+            real_names: std::collections::HashSet::new(),
         }
     }
 
@@ -198,6 +204,7 @@ impl Parser {
             call_graph: std::collections::HashMap::new(),
             in_condition: false,
             select_depth: 0,
+            real_names: std::collections::HashSet::new(),
         }
     }
 
@@ -228,6 +235,7 @@ impl Parser {
             call_graph: std::collections::HashMap::new(),
             in_condition: false,
             select_depth: 0,
+            real_names: std::collections::HashSet::new(),
         }
     }
 
@@ -1552,7 +1560,67 @@ impl Parser {
 
     /// Pre-scan tokens to collect all `var name` declarations.
     /// Handles `include` recursively by spawning sub-parsers for included files.
+    /// `name as single|double`, `name(…) as double` (arrays, function
+    /// results) and `dim a, b as double`: collect the names into `real_names`.
+    fn pre_scan_real_names(&mut self) {
+        let t = &self.tokens;
+        let is_real_type = |tok: &Token| matches!(tok, Token::Ident(n) if n == "single" || n == "double");
+        for i in 1..t.len().saturating_sub(1) {
+            if !(matches!(&t[i], Token::Ident(a) if a == "as") && is_real_type(&t[i + 1])) {
+                continue;
+            }
+            let mut j = i - 1;
+            if t[j] == Token::RParen {
+                let mut depth = 0;
+                loop {
+                    match t[j] {
+                        Token::RParen => depth += 1,
+                        Token::LParen => depth -= 1,
+                        _ => {}
+                    }
+                    if depth == 0 || j == 0 {
+                        break;
+                    }
+                    j -= 1;
+                }
+                if j == 0 {
+                    continue;
+                }
+                j -= 1;
+            }
+            // the name, and the names before it in a `dim a, b as …` list
+            while let Token::Ident(n) = &t[j] {
+                self.real_names.insert(n.clone());
+                if j < 2 || t[j - 1] != Token::Comma {
+                    break;
+                }
+                j -= 2;
+            }
+        }
+    }
+
+    /// Does the statement around the current token compute in floating
+    /// point? It mentions a SINGLE / DOUBLE name, `^`, a literal only floating
+    /// point can hold, or a floating-point builtin.
+    fn stmt_is_real(&self) -> bool {
+        if self.real_names.is_empty() && !self.tokens.iter().any(|t| matches!(t, Token::Caret | Token::FixedLit(_, _, true))) {
+            return false;
+        }
+        let end_of_stmt = |t: &Token| matches!(t, Token::Newline | Token::Colon | Token::Eof);
+        let start = self.tokens[..self.pos].iter().rposition(end_of_stmt).map_or(0, |i| i + 1);
+        let end = self.tokens[self.pos..].iter().position(end_of_stmt).map_or(self.tokens.len(), |i| self.pos + i);
+        self.tokens[start..end].iter().any(|t| match t {
+            Token::Ident(n) => {
+                self.real_names.contains(n)
+                    || matches!(n.as_str(), "sqr" | "exp" | "log" | "atn" | "tan" | "fix" | "cint" | "csng" | "cdbl")
+            }
+            Token::Caret | Token::FixedLit(_, _, true) => true,
+            _ => false,
+        })
+    }
+
     fn pre_scan_var_decls(&mut self) {
+        self.pre_scan_real_names();
         let saved_pos = self.pos;
         let saved_line = self.line;
         self.pos = 0;
@@ -1583,6 +1651,7 @@ impl Parser {
                         self.fn_names.extend(sub.fn_names);
                         self.array_names.extend(sub.array_names);
                         self.array_elem_types.extend(sub.array_elem_types);
+                        self.real_names.extend(sub.real_names);
                     }
                 }
             } else if matches!(self.peek(), Token::Sub | Token::Fn) {
@@ -1826,6 +1895,7 @@ impl Parser {
                             sub.fn_names = self.fn_names.clone();
                             sub.array_names = self.array_names.clone();
                             sub.array_elem_types = self.array_elem_types.clone();
+                            sub.real_names = self.real_names.clone();
                             let sub_stmts = sub.parse();
                             self.statement_lines.extend(sub.take_statement_lines());
                             self.consts.extend(sub.consts.into_iter());
@@ -4604,7 +4674,15 @@ impl Parser {
                 inner => Expr::BinOp(Box::new(Expr::Number(0)), BinOp::Sub, Box::new(inner)),
             },
             Token::Number(n) => Expr::Number(n),
-            Token::Addr(a) => Expr::Number(a as i16),
+            // 32768-65535: a 16-bit pattern for integer code, the unsigned
+            // value in a floating-point statement (`d = 40000`)
+            Token::Addr(a) => {
+                if self.stmt_is_real() {
+                    Expr::FixedLit(a & 0xFF00, a as f64, true)
+                } else {
+                    Expr::Number(a as i16)
+                }
+            }
             Token::FixedLit(q, v, r) => Expr::FixedLit(q, v, r),
             Token::StringLit(s) => Expr::StringLit(s),
             Token::Int => {

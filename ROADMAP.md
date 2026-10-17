@@ -35,14 +35,19 @@ The three big items of the 1.6.3 roadmap are implemented:
   column-0 label, kept by reachability from the called `f_*` entries through operand
   references and fall-through). A program that only multiplies, adds and prints went from
   4603 to 2293 bytes; `examples/float_demo.ub` from 6319 to 5660.
+- **Literals 32768-65535 in floating-point statements** keep their unsigned value
+  (`d = 40000`, `a + 50000`, `-40000`, `$FFFF * 2`). The parser decides per statement
+  (`Parser::stmt_is_real`): a statement that mentions a SINGLE / DOUBLE name
+  (`pre_scan_real_names`: variables, arrays, parameters, `AS DOUBLE` functions), `^`, a
+  literal only floating point can hold, or a floating-point builtin gets
+  `Expr::FixedLit(_, v, true)` for them; every other statement keeps the 16-bit
+  `Expr::Number`, so integer code is unchanged. Untyped `var x = 2.5` names are not in
+  the set (a statement using only those still reads `40000` as 16 bits).
 
 ---
 
 ## Next candidates
 
-- **Integer literals 32768-65535 in floating-point context** are read as 16-bit patterns
-  (negative); the lexer/parser would need to keep "unsigned literal" information on
-  `Expr::Number` (write `40000.0` meanwhile).
 - **Floating point in IRQ handlers:** the runtime keeps its state in fixed RAM; it would
   need a save/restore (or a second state block) around handlers.
 - **`RND` as a float** (0 ≤ x < 1, QBasic / C64 BASIC style) and `MOD` on floats.

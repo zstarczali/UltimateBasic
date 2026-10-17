@@ -450,3 +450,33 @@ fn float_demo_runs() {
         assert!(out.contains(want), "{want:?} missing in {out:?}");
     }
 }
+
+#[test]
+fn unsigned_16_bit_literals_in_float_statements() {
+    let r = run_src(
+        "dim a as double = 40000
+dim b as double, c as double, d as double, e as double
+dim w as word
+dim k as byte
+b = a + 50000
+c = -40000
+d = $FFFF * 2
+function big(x as double) as double
+    big = x + 32768
+end function
+e = big(1)
+if a > 39999 then k = 1
+w = 40000
+poke 53280, 7
+",
+    );
+    assert_eq!(real(&r, "a"), 40000.0);
+    assert_eq!(real(&r, "b"), 90000.0);
+    assert_eq!(real(&r, "c"), -40000.0);
+    assert_eq!(real(&r, "d"), 131070.0);
+    assert_eq!(real(&r, "e"), 32769.0);
+    assert_eq!(r.byte("k"), 1);
+    // integer statements keep the 16-bit value
+    assert_eq!(r.word("w"), 40000);
+    assert_eq!(r.mem(0xD020), 7);
+}
