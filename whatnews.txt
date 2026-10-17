@@ -1,7 +1,7 @@
-Ultimate Basic v1.6.5 – Release Notes
+Ultimate Basic v1.6.6 – Release Notes
 ======================================
 
-2026-10-17 – Unreleased (after 1.6.5): PRINT USING, string order, floats
+2026-10-17 – Release 1.6.6: PRINT USING, string order, floats
 ------------------------------------------------------------------
   New
   - PRINT USING "format"; values (QBasic subset): numeric fields with

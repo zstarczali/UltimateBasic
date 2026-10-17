@@ -2,7 +2,7 @@
 
 <img src="assets/logo.png" alt="Ultimate Basic C64 banner" width="30%">
 
-Current version: **1.6.5**
+Current version: **1.6.6**
 
 A modern BASIC-like language that compiles directly to 6502 machine code for the
 **Commodore 64** and **Commodore 64 Ultimate**. It produces `.prg` files that run in
@@ -82,7 +82,7 @@ The output uses KickAssembler syntax and can be assembled again. Known data regi
 as `data`, maps, sprite/character definitions, lookup tables, SID/Koala payloads, and
 `incbin` content—are emitted as `.byte` blocks instead of being mistaken for instructions.
 
-## What's new since 1.6.5 (unreleased)
+## What's new in 1.6.6
 
 - **`PRINT USING`** (QBasic subset): `PRINT USING "#,###.## Ft"; ar` — `#` digits, `.`,
   thousands `,`, leading `+`, trailing `-`, `%` when a number does not fit, string fields `&`,

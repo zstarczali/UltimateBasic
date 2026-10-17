@@ -28,7 +28,7 @@ The three big items of the 1.6.3 roadmap are implemented:
 
 ---
 
-## Done after 1.6.5
+## Done in 1.6.6
 
 - **Float runtime size:** only the parts of the runtime a program reaches are linked
   (`float_lib::float_runtime_for` + `prune`: the source is split into chunks at every
