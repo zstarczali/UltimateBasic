@@ -997,7 +997,7 @@ fn word_for_loops() {
 #[test]
 fn recursion_is_a_compile_error() {
     use ultimate_basic::compiler::{compile, CompileOptions};
-    let opts = CompileOptions { basic_stub: false, explicit: false };
+    let opts = CompileOptions { basic_stub: false, explicit: false, basic_print: false };
     let direct = compile("fn fact(n)\n if n <= 1 then return 1 end\n return n * fact(n - 1)\nend\nprint fact(5)\n", &opts);
     assert!(direct.errors.iter().any(|e| e.contains("recursion") && e.contains("fact → fact")), "{:?}", direct.errors);
     let mutual = compile("sub a()\n b()\nend\nsub b()\n a()\nend\na()\n", &opts);
@@ -1222,7 +1222,7 @@ fn arrays_under_basic_rom() {
     // more than 12 KB is an error
     let res = ultimate_basic::compiler::compile(
         "DIM a(6000) AS INTEGER\nDIM b(500) AS INTEGER\n",
-        &ultimate_basic::compiler::CompileOptions { basic_stub: false, explicit: false },
+        &ultimate_basic::compiler::CompileOptions { basic_stub: false, explicit: false, basic_print: false },
     );
     assert!(res.errors.iter().any(|e| e.contains("12288")), "{:?}", res.errors);
 }
@@ -1322,7 +1322,7 @@ fn zero_page_error_when_nothing_can_move() {
     }
     let res = ultimate_basic::compiler::compile(
         &src,
-        &ultimate_basic::compiler::CompileOptions { basic_stub: false, explicit: false },
+        &ultimate_basic::compiler::CompileOptions { basic_stub: false, explicit: false, basic_print: false },
     );
     assert!(res.errors.iter().any(|e| e.contains("out of zero page")), "{:?}", res.errors);
 }
@@ -1355,4 +1355,64 @@ fn string_ordering() {
         assert_eq!(r.byte(&format!("r{i}")), want, "{a:?} vs {b:?}");
     }
     assert_eq!(r.byte("k"), 7);
+}
+
+fn run_basic_print(src: &str, flag: bool) -> String {
+    let res = ultimate_basic::compiler::compile(
+        src,
+        &ultimate_basic::compiler::CompileOptions { basic_stub: false, explicit: false, basic_print: flag },
+    );
+    assert!(res.errors.is_empty(), "{:?}", res.errors);
+    let mut cpu = Cpu::new(&res.prg);
+    cpu.run(5_000_000);
+    cpu.output.iter().map(|&b| b as char).collect()
+}
+
+#[test]
+fn basic_print_spacing_and_zones() {
+    let src = "dim i as integer = -42
+dim w as word = 1000
+dim d as double = 3.5
+var f: float = 2.5
+var b = 7
+print 5
+print -3
+print i; w
+print d
+print f
+print \"N=\"; b
+print \"A\", \"B\"
+print 1, 2
+print \"AB\",
+print \"C\"
+print b, i, w, \"END\"
+";
+    // items separated by `,`: each starts at the next multiple of 10
+    let zones = |items: &[&str]| {
+        let mut line = String::new();
+        for (k, it) in items.iter().enumerate() {
+            if k > 0 {
+                line.push_str(&" ".repeat(10 - line.len() % 10));
+            }
+            line.push_str(it);
+        }
+        line
+    };
+    let want = [
+        " 5 ".to_string(),
+        "-3 ".into(),
+        "-42  1000 ".into(),
+        " 3.5 ".into(),
+        " 2.50 ".into(),
+        "N= 7 ".into(),
+        zones(&["A", "B"]),
+        zones(&[" 1 ", " 2 "]),
+        zones(&["AB", "C"]),
+        zones(&[" 7 ", "-42 ", " 1000 ", "END"]),
+    ];
+    assert_eq!(run_basic_print(src, true), want.join("\r") + "\r");
+    // `option basic print` in the source does the same
+    assert_eq!(run_basic_print(&format!("option basic print\n{src}"), false), want.join("\r") + "\r");
+    // default: unchanged
+    assert_eq!(run_basic_print("var b = 7\nprint b, 2; \"X\"\n", false), "72X\r");
 }

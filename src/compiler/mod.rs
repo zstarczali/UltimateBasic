@@ -17,6 +17,10 @@ pub struct CompileOptions {
     /// If true, all `var`, `sub`-param, and `fn`-param declarations must carry
     /// a `:type` annotation. Enabled from the CLI via `--explicit`.
     pub explicit: bool,
+    /// C64 BASIC PRINT spacing: numbers get a leading space (or `-`) and a
+    /// trailing space, `,` moves to the next 10-column zone. CLI `--basic-print`;
+    /// a program can also say `option basic print`.
+    pub basic_print: bool,
 }
 
 impl Default for CompileOptions {
@@ -24,6 +28,7 @@ impl Default for CompileOptions {
         Self {
             basic_stub: true,
             explicit: false,
+            basic_print: false,
         }
     }
 }
@@ -166,16 +171,21 @@ pub fn compile_with_path(
     if opts.explicit {
         parser.set_explicit(true);
     }
+    if opts.basic_print {
+        parser.set_basic_print(true);
+    }
     let mut ast = ast::flatten_blocks(parser.parse());
     parser.check_recursion();
     let mut signed = ast::SignedNames::default();
     ast::extract_signed(&mut ast, &mut signed);
     let source_lines = parser.take_statement_lines();
+    let basic_print = parser.basic_print();
     let mut errors = lex_errors;
     errors.extend(parser.errors().iter().cloned());
     let mut cg = Codegen::new(load_addr);
     cg.set_source_lines(source_lines.clone());
     cg.set_signed(signed.clone());
+    cg.set_basic_print(basic_print);
     let mut raw = cg.compile(&ast);
     // Out of zero page: compile again with the least used variables in RAM
     // (compiler/spill.rs). Programs that fit are never touched.
@@ -184,6 +194,7 @@ pub fn compile_with_path(
         let mut retry = Codegen::new(load_addr);
         retry.set_source_lines(source_lines.clone());
         retry.set_signed(signed.clone());
+        retry.set_basic_print(basic_print);
         retry.set_spill(analysis.plan(analysis.candidate_count()));
         raw = retry.compile(&ast);
         cg = retry;
@@ -196,6 +207,7 @@ pub fn compile_with_path(
                 let mut retry = Codegen::new(load_addr);
                 retry.set_source_lines(source_lines.clone());
                 retry.set_signed(signed.clone());
+                retry.set_basic_print(basic_print);
                 retry.set_spill(analysis.plan(k));
                 let retry_raw = retry.compile(&ast);
                 match retry.zp_overflow() {

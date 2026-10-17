@@ -114,6 +114,11 @@ impl Cpu {
                 self.a = 0;
                 self.set_zn(0);
             }
+            // PLOT with C=1 (read): Y = column since the last CR
+            0xFFF0 if self.c => {
+                let col = self.output.iter().rev().take_while(|&&b| b != 0x0D).count();
+                self.y = (col % 40) as u8;
+            }
             BASIN => {
                 let k = self.input.pop_front().unwrap_or(0x0D);
                 self.output.push(k); // BASIN echoes
@@ -617,6 +622,7 @@ pub fn compile_src(src: &str) -> CompileResult {
         &CompileOptions {
             basic_stub: false,
             explicit: false,
+            basic_print: false,
         },
     );
     assert!(

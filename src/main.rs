@@ -48,6 +48,7 @@ fn print_help() {
     println!("  --asm                  Produce a readable codegen .asm listing");
     println!("  --add <file>           Add extra file(s) to the .d64 image (repeatable)");
     println!("  --explicit             Require :type on every var / sub-param / fn-param");
+    println!("  --basic-print          C64 BASIC PRINT spacing: spaces around numbers, ',' = 10-column zones");
     println!("  -h, --help             Show this help");
     println!();
     println!("Examples:");
@@ -66,6 +67,7 @@ fn cmd_build(args: &[String]) {
     let mut debug_files = false;
     let mut asm_file = false;
     let mut explicit = false;
+    let mut basic_print = false;
 
     let mut i = 2;
     while i < args.len() {
@@ -81,6 +83,7 @@ fn cmd_build(args: &[String]) {
             "--debug" => debug_files = true,
             "--asm" => asm_file = true,
             "--explicit" => explicit = true,
+            "--basic-print" => basic_print = true,
             "--d64" => {
                 // --d64           → auto: <output>.d64  (empty PathBuf as sentinel)
                 // --d64 <file>    → explicit path
@@ -134,6 +137,7 @@ fn cmd_build(args: &[String]) {
     let opts = CompileOptions {
         basic_stub,
         explicit,
+        basic_print,
     };
     let result = compile_with_path(&source, &opts, Some(&input));
 

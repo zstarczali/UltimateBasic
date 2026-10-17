@@ -61,6 +61,9 @@ pub enum Expr {
     FixedLit(u16, f64, bool),
     FixedToInt(Box<Expr>), // int(f) — extract integer part (hi byte) of a float variable
     FnCall(String, Vec<Expr>), // fn_name(args) — call a function, result in A
+    /// A `,` between print items with C64 BASIC spacing: move to the next
+    /// 10-column zone.
+    PrintZone,
 }
 
 #[derive(Debug, Clone)]

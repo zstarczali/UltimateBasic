@@ -654,6 +654,8 @@ pub struct Codegen {
     flt_hooks: Vec<(usize, String, bool)>,
     /// The sub / fn being generated (pass 2).
     cur_routine: Option<String>,
+    /// C64 BASIC PRINT spacing (`CompileOptions::basic_print`).
+    basic_print: bool,
     cur_fn: Option<String>,
     rnd_seeded: bool,
     plot_zp: Option<u8>,              // base of 5-byte ZP block for plot helper
@@ -817,6 +819,7 @@ impl Codegen {
             flt_routines: std::collections::HashSet::new(),
             flt_hooks: vec![],
             cur_routine: None,
+            basic_print: false,
             cur_fn: None,
             rnd_seeded: false,
             plot_zp: None,
@@ -2003,6 +2006,7 @@ impl Codegen {
             return self.eval_expr(&Expr::Number(n));
         }
         match expr {
+            Expr::PrintZone => {} // a print separator (BASIC spacing), no value
             Expr::BinOp(l, op @ (BinOp::Eq | BinOp::NotEq), r)
                 if self.is_string_expr(l) || self.is_string_expr(r) =>
             {
@@ -9141,6 +9145,9 @@ impl Codegen {
     /// Print a single argument. Handles the `+` operator as string concat
     /// when at least one operand is a string; otherwise evaluates numerically.
     fn print_single_arg(&mut self, arg: &Expr) {
+        if self.basic_print && self.print_basic_item(arg) {
+            return;
+        }
         if self.real_print(arg) {
             return;
         }
@@ -11042,6 +11049,80 @@ impl Codegen {
     }
 
     /// Signed (`as integer`) variables / arrays / parameters and functions.
+    pub fn set_basic_print(&mut self, on: bool) {
+        self.basic_print = on;
+    }
+
+    /// C64 BASIC PRINT spacing: `,` → next 10-column zone; a number → its text
+    /// with a leading space (none when it starts with `-`) and a trailing space.
+    /// False for the other items (strings, `spc`, `hex` …), printed as usual.
+    fn print_basic_item(&mut self, arg: &Expr) -> bool {
+        match arg {
+            Expr::PrintZone => {
+                // spaces = 10 - column mod 10 (1..10); KERNAL PLOT with C=1 reads Y = column
+                self.emit(0x38); // SEC
+                self.emit(0x20);
+                self.emit16(0xFFF0); // JSR PLOT
+                self.emit(0x98); // TYA
+                self.emit(0x38); // SEC
+                let l = self.current_addr();
+                self.emit(0xE9);
+                self.emit(10); // SBC #10
+                self.bxx_back(0xB0, l); // BCS loop — A = column mod 10 - 10, C = 0
+                self.emit(0x49);
+                self.emit(0xFF); // EOR #$FF
+                self.emit(0x69);
+                self.emit(0x01); // ADC #1 → 10 - column mod 10
+                self.emit(0xAA); // TAX
+                self.emit(0xA9);
+                self.emit(0x20); // LDA #' '
+                let s = self.current_addr();
+                self.emit(0x20);
+                self.emit16(CHROUT);
+                self.emit(0xCA); // DEX
+                self.bxx_back(0xD0, s); // BNE
+                true
+            }
+            Expr::StringLit(_)
+            | Expr::ChrStr(_)
+            | Expr::StrN(_)
+            | Expr::HexFmt(_)
+            | Expr::BinFmt(_)
+            | Expr::DecFmt(..)
+            | Expr::Spc(_)
+            | Expr::Tab(_) => false,
+            _ if self.is_string_expr(arg) => false,
+            Expr::Number(n) => {
+                let text = format!("{}{n} ", if *n < 0 { "" } else { " " });
+                self.print_str_inline(&text);
+                true
+            }
+            _ => {
+                let arg = arg.clone();
+                let src = self.str_number_text_ptr(&arg);
+                self.emit(0xA0);
+                self.emit(0x00); // LDY #0
+                self.emit(0xB1);
+                self.emit(src); // LDA (src),Y
+                self.emit(0xC9);
+                self.emit(b'-'); // CMP #'-'
+                let neg = self.bxx_fwd(0xF0); // BEQ: the '-' takes the sign place
+                self.emit(0xA9);
+                self.emit(0x20);
+                self.emit(0x20);
+                self.emit16(CHROUT); // LDA #' '; JSR CHROUT
+                let at = self.current_addr();
+                self.patch_bxx(neg, at);
+                self.print_str_via_ptr(src);
+                self.emit(0xA9);
+                self.emit(0x20);
+                self.emit(0x20);
+                self.emit16(CHROUT); // trailing ' '
+                true
+            }
+        }
+    }
+
     pub fn set_signed(&mut self, names: super::ast::SignedNames) {
         self.signed_vars = names.vars;
         self.signed_fns = names.fns;

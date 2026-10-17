@@ -295,7 +295,7 @@ fn differential_single_file() {
     std::fs::create_dir_all(&dir).unwrap();
     let res = ultimate_basic::compiler::compile(
         &src,
-        &ultimate_basic::compiler::CompileOptions { basic_stub: false, explicit: false },
+        &ultimate_basic::compiler::CompileOptions { basic_stub: false, explicit: false, basic_print: false },
     );
     let verdict = match (res.errors.is_empty(), compile_reference(&exe, &src, &dir, 0)) {
         (true, Some(ref_prg)) => match (final_state(&res.prg), final_state(&ref_prg)) {

@@ -165,6 +165,14 @@ string fields (`left$(v + spaces, w)`) plus `Stmt::PrintUsingNum` → `f_using` 
 ub build foo.ub --explicit    # require :type on every var / sub-param / fn-param
 ```
 
+`--basic-print` (or a line `option basic print` in the source) switches PRINT to C64 BASIC
+spacing: a number prints with a leading space (or its `-`) and a trailing space (`print 5` →
+` 5 `), a `,` between items moves to the next 10-column zone (KERNAL PLOT read, then spaces),
+and a trailing `,` keeps the line. Strings, `spc`/`tab`/`hex`/`bin`/`dec`/`chr$`/`str$` print as
+before; without the flag nothing changes. Implementation: `Parser::take_option_directives`,
+`Expr::PrintZone` (parser, for `,`), `Codegen::print_basic_item` (number text via the string
+engine's `emit_number_text`; constants at compile time); `CompileOptions::basic_print`.
+
 `--explicit` is a CLI flag (not a source-level keyword). When passed to `ub build`,
 the parser refuses `var name = expr` and `sub foo(a, b)` / `fn foo(a, b)` without
 explicit `: int|word|float|string` annotations. Arrays (`array(N)`, `array_word(N)`)
@@ -1808,6 +1816,7 @@ ub build <input.ub> [OPTIONS]
   --add <file>          Add an extra file to the .d64 disk image;
                           may be repeated for multiple files
   --explicit            Require :type on every var / sub-param / fn-param
+  --basic-print         C64 BASIC PRINT spacing (spaces around numbers, ',' zones)
   -h, --help            Show help
 ```
 

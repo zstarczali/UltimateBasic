@@ -153,13 +153,13 @@ impl Codegen {
         self.emit16(addr);
     }
     /// Branch with a forward target patched later; returns the offset position.
-    fn bxx_fwd(&mut self, op: u8) -> usize {
+    pub(super) fn bxx_fwd(&mut self, op: u8) -> usize {
         self.emit(op);
         let p = self.code.len();
         self.emit(0);
         p
     }
-    fn bxx_back(&mut self, op: u8, target_addr: u16) {
+    pub(super) fn bxx_back(&mut self, op: u8, target_addr: u16) {
         self.emit(op);
         let p = self.code.len();
         self.emit(0);
@@ -593,6 +593,12 @@ impl Codegen {
     }
 
     /// Numeric expression → decimal text in num_buf; SRC ← num_buf.
+    /// ZP pair pointing at the text of number `e` (`print` with BASIC spacing).
+    pub(super) fn str_number_text_ptr(&mut self, e: &Expr) -> u8 {
+        self.emit_number_text(e);
+        self.str_zp() + SRC
+    }
+
     fn emit_number_text(&mut self, e: &Expr) {
         let z = self.str_zp();
         if self.real_number_text(e, z + SRC) {

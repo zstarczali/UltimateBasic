@@ -5,7 +5,7 @@ mod common;
 use common::cpu6502::Cpu;
 use ultimate_basic::compiler::{compile_with_path, CompileOptions, CompileResult};
 
-const OPTS: CompileOptions = CompileOptions { basic_stub: false, explicit: false };
+const OPTS: CompileOptions = CompileOptions { basic_stub: false, explicit: false, basic_print: false };
 
 /// A VisualAssembler Level Editor project: `screens` library screens of 2000 bytes
 /// (1000 screen codes + 1000 colors), a w x h grid of slots and the VA metadata trailer.

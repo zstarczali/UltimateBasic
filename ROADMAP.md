@@ -74,6 +74,9 @@ The three big items of the 1.6.3 roadmap are implemented:
 - **String ordering:** `<` `>` `<=` `>=` between strings, PETSCII byte order (a prefix
   sorts first), like C64 BASIC: `Helper::Order` returns $FF / 0 / 1, `emit_str_order`
   maps it to 1 / 0. Conditions take the value path (`is_byte_compare` excludes strings).
+- **PRINT spacing (opt-in):** `--basic-print` / `option basic print` — numbers with the
+  C64 leading (sign) and trailing space, `,` to the next 10-column zone, trailing `,`
+  keeps the line. Default output is unchanged (existing screen layouts rely on it).
 
 ---
 
@@ -87,8 +90,6 @@ All items of the 1.6.4 list are done (above); see *Smaller open items*.
 
 - **String size:** computed strings are capped at 80 characters per variable and 31 per
   string-array element; there is no heap / garbage collection.
-- **PRINT spacing:** numbers are printed without the leading/trailing space QBasic and
-  C64 BASIC add, and `,` does not tab to print zones.
 - **`STR$` of a byte** keeps the old 3-digit form (`"007"`) for compatibility; 16-bit
   and signed values print without padding.
 - **Byte arithmetic:** untyped `var` values are 8-bit and wrap silently

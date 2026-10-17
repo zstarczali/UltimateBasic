@@ -186,6 +186,9 @@ pub struct Parser {
     /// `explicit` directive is active — every var / sub-param / fn-param must
     /// declare its type. Set by a pre-scan that looks for the `explicit` token.
     explicit_types: bool,
+    /// C64 BASIC PRINT spacing (`--basic-print` / `option basic print`): a `,`
+    /// between print items becomes `Expr::PrintZone`.
+    basic_print: bool,
     /// Names of every `sub` / `fn` (pre-scanned), for QBasic-style bare calls
     /// (`koszont "zsolt"`) and for telling `;` print separators from statements.
     sub_names: std::collections::HashSet<String>,
@@ -226,6 +229,7 @@ impl Parser {
             skip_var_check: false,
             statement_lines: vec![],
             explicit_types: false,
+            basic_print: false,
             sub_names: std::collections::HashSet::new(),
             fn_names: std::collections::HashSet::new(),
             fn_result: None,
@@ -253,6 +257,7 @@ impl Parser {
             skip_var_check: false,
             statement_lines: vec![],
             explicit_types: false,
+            basic_print: false,
             sub_names: std::collections::HashSet::new(),
             fn_names: std::collections::HashSet::new(),
             fn_result: None,
@@ -283,6 +288,7 @@ impl Parser {
             skip_var_check: false,
             statement_lines: vec![],
             explicit_types: false,
+            basic_print: false,
             sub_names: std::collections::HashSet::new(),
             fn_names: std::collections::HashSet::new(),
             fn_result: None,
@@ -314,6 +320,7 @@ impl Parser {
             skip_var_check: false,
             statement_lines: vec![],
             explicit_types: false,
+            basic_print: false,
             sub_names: std::collections::HashSet::new(),
             fn_names: std::collections::HashSet::new(),
             fn_result: None,
@@ -335,6 +342,37 @@ impl Parser {
     /// `--explicit`, not by any source-level keyword.
     pub fn set_explicit(&mut self, on: bool) {
         self.explicit_types = on;
+    }
+
+    pub fn set_basic_print(&mut self, on: bool) {
+        self.basic_print = on;
+    }
+
+    /// C64 BASIC PRINT spacing on (option, or `option basic print` in the source).
+    pub fn basic_print(&self) -> bool {
+        self.basic_print
+    }
+
+    /// `option basic print` at the start of a statement: switch the mode on and
+    /// drop the three tokens (the line stays, empty).
+    fn take_option_directives(&mut self) {
+        let mut i = 0;
+        while i + 2 < self.tokens.len() {
+            let at_start = i == 0 || matches!(self.tokens[i - 1], Token::Newline | Token::Colon);
+            if at_start
+                && matches!(&self.tokens[i], Token::Ident(o) if o == "option")
+                && matches!(&self.tokens[i + 1], Token::Ident(b) if b == "basic")
+                && self.tokens[i + 2] == Token::Print
+            {
+                self.basic_print = true;
+                self.tokens.drain(i..i + 3);
+                if i > 0 && self.tokens.get(i) == Some(&Token::Colon) {
+                    self.tokens.remove(i);
+                }
+                continue;
+            }
+            i += 1;
+        }
     }
 
     /// Parse a SID file at compile time and build a LoadSid statement.
@@ -2036,6 +2074,7 @@ impl Parser {
     }
 
     pub fn parse(&mut self) -> Vec<Stmt> {
+        self.take_option_directives();
         // Pre-scan: collect all var declarations (including from included files)
         self.pre_scan_var_decls();
 
@@ -2674,7 +2713,10 @@ impl Parser {
                     while self.peek() == &Token::Comma
                         || (self.peek() == &Token::Semicolon && self.semicolon_continues_print())
                     {
-                        self.advance();
+                        let comma = self.advance() == Token::Comma;
+                        if comma && self.basic_print {
+                            args.push(Expr::PrintZone);
+                        }
                         if !matches!(
                             self.peek(),
                             Token::Newline | Token::Eof | Token::Colon | Token::Semicolon
@@ -2683,12 +2725,13 @@ impl Parser {
                         }
                     }
                 }
-                // Consume optional trailing ';' (C64 BASIC print-modifier: suppress newline)
+                // Consume optional trailing ';' (C64 BASIC print-modifier: suppress newline);
+                // with BASIC spacing a trailing `,` does the same
                 let no_newline = if self.peek() == &Token::Semicolon {
                     self.advance();
                     true
                 } else {
-                    false
+                    matches!(args.last(), Some(Expr::PrintZone))
                 };
                 self.expect_newline();
                 Some(Stmt::Print { args, no_newline })
