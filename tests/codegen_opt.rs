@@ -408,3 +408,11 @@ fn load_after_store_kept_at_loop_top() {
     let code = delta("var x = 1", "x = 2\nloop\n if x == 3 then break end\n inc x\nend");
     assert!(contains(&code, &[0x85, 0x02, 0xA5, 0x02]), "{code:02X?}");
 }
+
+#[test]
+fn const_plus_byte_address_uses_base_y() {
+    // peek/poke($07F8 + k): absolute,Y with the full 16-bit base (was `($50),Y` with hi = 0)
+    let code = code_of("var k = 1\nvar v = peek($07F8 + k)\npoke $07F8 + k, v\n");
+    assert!(contains(&code, &[0xA8, 0xB9, 0xF8, 0x07]), "TAY; LDA $07F8,Y");
+    assert!(contains(&code, &[0x99, 0xF8, 0x07]), "STA $07F8,Y");
+}

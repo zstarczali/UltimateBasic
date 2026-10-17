@@ -1,6 +1,6 @@
 # NUltimate Basic
 
-Current version: **1.6.4** (1.6.4 = SINGLE/DOUBLE real 5-byte floating point (`codegen/float.rs` codegen, `codegen/float_lib.rs` runtime assembled by `codegen/rtasm.rs`), variables spilled to RAM when zero page runs out (`compiler/spill.rs`), 12 KB arrays at `$A000-$CFFF` with BASIC banked out, `%` binary literals, unary-minus precedence fix; 1.6.3 = QBasic-style syntax: `dim … as …` scalars and arrays of every type, `function`/`sub` with `as` types, return-by-name, `end sub`/`end if`, bare sub calls, `print a; b`, ELSEIF / DO-LOOP / WHILE-WEND / SELECT CASE, runtime strings (`codegen/strings.rs`), signed INTEGER, 16-bit for loops, recursion check; deferred work in `ROADMAP.md`; 1.6.2 = `tune` instrument modulation: `imod` / `ifilt` / `igate` / `itab`, frame-based player in `compiler/tune.rs`; 1.6.1 = `map view` smooth scrolling, `compiler/map_view.rs`, `map load` of Level Editor projects and to an address; 1.6.0 = optimised 6502 codegen, `codegen/opt.rs`; release notes in `whatnews.txt`, user docs in `README.md` / `MANUAL.md`).
+Current version: **1.6.5** (1.6.5 = 16-bit address expressions: `eval_addr16` / `split_const_plus_byte` in codegen.rs used by peek/poke/peek16/poke16/fill/memcopy/drawmem/save/reu, `const + byte` → `LDA/STA base,Y`; 1.6.4 = SINGLE/DOUBLE real 5-byte floating point (`codegen/float.rs` codegen, `codegen/float_lib.rs` runtime assembled by `codegen/rtasm.rs`), variables spilled to RAM when zero page runs out (`compiler/spill.rs`), 12 KB arrays at `$A000-$CFFF` with BASIC banked out, `%` binary literals, unary-minus precedence fix; 1.6.3 = QBasic-style syntax: `dim … as …` scalars and arrays of every type, `function`/`sub` with `as` types, return-by-name, `end sub`/`end if`, bare sub calls, `print a; b`, ELSEIF / DO-LOOP / WHILE-WEND / SELECT CASE, runtime strings (`codegen/strings.rs`), signed INTEGER, 16-bit for loops, recursion check; deferred work in `ROADMAP.md`; 1.6.2 = `tune` instrument modulation: `imod` / `ifilt` / `igate` / `itab`, frame-based player in `compiler/tune.rs`; 1.6.1 = `map view` smooth scrolling, `compiler/map_view.rs`, `map load` of Level Editor projects and to an address; 1.6.0 = optimised 6502 codegen, `codegen/opt.rs`; release notes in `whatnews.txt`, user docs in `README.md` / `MANUAL.md`).
 
 A custom BASIC-like language compiler targeting the Commodore 64 and Commodore 64 Ultimate. Produces `.prg` files runnable in VICE or on real hardware.
 
@@ -1136,6 +1136,14 @@ poke16 ptr, w                 # word var as address; word var as value
 ```
 
 `peek16(addr)` reads two consecutive bytes (lo, hi) and returns them as a 16-bit `word`. In an 8-bit context (e.g. assigned to an `int` var) only the low byte is returned.
+
+1.6.5: address operands go through `eval_addr16(expr, lo, hi)`: `split_const_plus_byte`
+(`const + byte` / `byte + const`, byte side not `can_be_word_result`) → `CLC; ADC #<c; LDA #>c;
+ADC #0`; `can_be_word_result` / real / top-level `+ - * shl` → `eval_expr_word`; else 8-bit with
+hi = 0. `peek`/`peek16`/`poke` use `LDA/STA base,Y` for `const + byte`; `peek(byte var)` is
+`LDY zp; LDA $0000,Y`. Before, these arms used `eval_expr` + hi = 0 (`$07F8 + k` → `$00F8 + k`).
+Tests: `const_plus_byte_addresses_are_16_bit`, `word_ptr_plus_index_address`,
+`const_plus_byte_address_uses_base_y`.
 `poke16 addr, val` writes two bytes: lo(val) → addr, hi(val) → addr+1. Both `addr` and `val` may be constants, `word` variables, or expressions.
 
 ### String Functions
@@ -1861,6 +1869,5 @@ labels. The `.dbg` format does not yet include instruction-to-source-line mappin
 | `chr$` | No PETSCII↔ASCII mapping — n is passed as-is to CHROUT |
 | `music play` | Requires `load sid`; emits one shared wrapper (last `music play` wins if called multiple times) |
 | Error reporting | Compile-time only; `onerr goto` handles KERNAL I/O errors at runtime |
-| `poke`/`peek` with offset | `poke ptr + i, val` truncates `ptr+i` to 8 bits when `i` is a variable; use `msg[i]` for 16-bit-safe indexed access |
 | `fn` return values | 16-bit (`: word` / `as integer`) and float returns are word results everywhere since 1.6.3 (`can_be_word_result` knows `fn_ret_types`); a 16-bit result in a pure 8-bit expression still uses the lo byte |
 | `fn` bodies inside `sub` | Not scanned recursively by pre_scan helpers (has_plot_stmt, etc.) — any required ZP helpers must be detected at the top level |

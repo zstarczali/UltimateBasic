@@ -527,6 +527,44 @@ fn poke_and_peek() {
     assert_eq!(r.byte("q"), 5);
 }
 
+/// `$07F8 + k` (16-bit constant + byte) used as an address keeps the constant's high
+/// byte and the carry; it used to be evaluated in 8 bits, reading/writing `$00F8 + k`.
+#[test]
+fn const_plus_byte_addresses_are_16_bit() {
+    let src = "poke $07F8, 11\npoke $07F9, 22\npoke $07FA, 33\n\
+               var anim = array(3)\nvar k = 0\n\
+               for k = 0 to 2\n  anim[k] = peek($07F8 + k)\nnext\n\
+               var j = 2\n\
+               poke $C2FF + j, 44\n\
+               poke j + $C310, 55\n\
+               var a = peek($C2FF + j)\nvar b = peek(j + $C310)\n\
+               poke $C320 + j + 1, 66\nvar c = peek($C320 + j + 1)\n\
+               poke $C330 - j, 77\nvar d = peek($C330 - j)\n\
+               poke16 $C340 + j, $1234\n\
+               var w: word = peek16($C340 + j)\nvar lo = peek16($C340 + j)\n\
+               poke16 $C350, $C300 + j\n\
+               poke $40, 88\nvar zp = 0\nzp = $40\nvar e = peek(zp)\n\
+               var n = 8\nfill $C400, 40 * n, 9\n\
+               memcopy $C400 + j, $C600 + j, 4\n";
+    let r = run_src(src);
+    let arr = r.res.map.arrays.iter().find(|a| a.name == "anim").unwrap().base_addr;
+    assert_eq!([r.mem(arr), r.mem(arr + 1), r.mem(arr + 2)], [11, 22, 33]);
+    assert_eq!(r.mem(0x00F8), 0, "8-bit address leaked into zero page");
+    assert_eq!(r.mem(0xC301), 44); // $C2FF + 2 carries into the high byte
+    assert_eq!(r.mem(0xC312), 55);
+    assert_eq!((r.byte("a"), r.byte("b")), (44, 55));
+    assert_eq!((r.mem(0xC323), r.byte("c")), (66, 66));
+    assert_eq!((r.mem(0xC32E), r.byte("d")), (77, 77));
+    assert_eq!((r.mem(0xC342), r.mem(0xC343)), (0x34, 0x12));
+    assert_eq!(r.word("w"), 0x1234);
+    assert_eq!(r.byte("lo"), 0x34);
+    assert_eq!((r.mem(0xC350), r.mem(0xC351)), (0x02, 0xC3)); // poke16 value $C300 + j
+    assert_eq!(r.byte("e"), 88, "peek(byte var) must read memory at $00xx");
+    assert_eq!(r.mem(0xC400 + 319), 9); // fill length 40 * 8 = 320
+    assert_eq!(r.mem(0xC400 + 320), 0);
+    assert_eq!(r.mem(0xC602), 9);
+}
+
 #[test]
 fn subs_and_functions() {
     let src = "var r = 0\nvar g = 0\n\
@@ -1287,4 +1325,12 @@ fn zero_page_error_when_nothing_can_move() {
         &ultimate_basic::compiler::CompileOptions { basic_stub: false, explicit: false },
     );
     assert!(res.errors.iter().any(|e| e.contains("out of zero page")), "{:?}", res.errors);
+}
+
+/// `word var + byte var` as an address is a full 16-bit add (crosses the page here).
+#[test]
+fn word_ptr_plus_index_address() {
+    let r = run_src("var ptr: word = $C3F0\nvar i = 20\npoke ptr + i, 9\nvar v = peek(ptr + i)\n");
+    assert_eq!(r.mem(0xC404), 9);
+    assert_eq!(r.byte("v"), 9);
 }

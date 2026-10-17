@@ -1,4 +1,4 @@
-# Ultimate Basic v1.6.4 — Language Manual
+# Ultimate Basic v1.6.5 — Language Manual
 
 Complete language and CLI reference for Ultimate Basic, a BASIC-like language that
 compiles directly to 6502 machine code for the Commodore 64. Output: `.prg` files
@@ -1439,9 +1439,21 @@ var v = peek(addr_var)   # LDA (addr_var),Y  — if addr_var is word type
 var w: word = peek16($C000)   # read 16-bit little-endian: lo=$C000, hi=$C001
 poke16 $0314, $EA81           # write 16-bit little-endian: lo→$0314, hi→$0315
 poke16 ptr, w                 # word var as address; word var as value
+
+var k = 2
+var p = peek($07F8 + k)       # LDA $07F8,Y — constant + byte variable
+poke $07F8 + k, p             # STA $07F8,Y
+poke ptr + k, 1               # word + byte: full 16-bit address
 ```
 
 `peek16(addr)` reads two consecutive bytes (lo, hi) as a `word`. `poke16` writes lo then hi.
+
+An address is always a 16-bit value. Since 1.6.5 an address expression such as
+`$07F8 + k` keeps the constant's high byte and the carry (before, it was computed in
+8 bits and `peek($07F8 + k)` read `$00F8 + k`). This holds for `peek`, `poke`, `peek16`,
+`poke16`, `fill`, `memcopy`, `drawmem`, `save` and `reu`; `fill` / `memcopy` lengths
+such as `40 * rows` are 16-bit too. `peek(k)` with a byte variable reads address
+`$00kk` (it returned the value of `k` itself before 1.6.5).
 
 ### Disk I/O
 
