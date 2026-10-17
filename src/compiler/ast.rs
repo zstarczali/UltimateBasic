@@ -223,6 +223,15 @@ pub enum Stmt {
         args: Vec<Expr>,
         no_newline: bool,
     },
+    /// One numeric field of `print using` (the parser lowers the rest to plain
+    /// prints): positions before the point, decimals, flags (1 commas, 2 '+',
+    /// 4 trailing '-', 8 point). Printed in floating point (`f_using`).
+    PrintUsingNum {
+        expr: Expr,
+        width: u8,
+        decimals: u8,
+        flags: u8,
+    },
     /// `print at col, row, expr...` — cursor position then print (shorthand for cursor+print).
     PrintAt {
         col: Expr,

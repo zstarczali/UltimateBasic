@@ -152,6 +152,9 @@ IRQ/NMI handler subs that reach floating point save/restore the runtime state (`
 `emit_flt_handler_state`); the test CPU simulates IRQs with `Cpu::irq()` (`JMP $EA81` returns).
 `rnd`/`rnd()` in a float statement → `FnCall("rnd")` → `f_rnd` (0 <= x < 1); `mod` with a real operand →
 `f_mod`/`f_modp` (fmod: `a - b*fix(a/b)`, `x mod 0 = x`).
+`print using "fmt"; …`: `Parser::parse_print_using` / `parse_using_format` lower it to `Stmt::Print` text and
+string fields (`left$(v + spaces, w)`) plus `Stmt::PrintUsingNum` → `f_using` (A positions, X decimals, Y flags
+1 comma / 2 plus / 4 trailing minus / 8 point; text in `ubuf`).
 ---
 
 ## Language Reference

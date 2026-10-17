@@ -11557,6 +11557,10 @@ impl Codegen {
                 self.emit(0x20);
                 self.emit16(*addr); // JSR addr
             }
+            Stmt::PrintUsingNum { expr, width, decimals, flags } => {
+                let expr = expr.clone();
+                self.gen_print_using_num(&expr, *width, *decimals, *flags);
+            }
             Stmt::IrqExit => {
                 self.flt_handler_hook(false);
                 self.emit(0x4C);

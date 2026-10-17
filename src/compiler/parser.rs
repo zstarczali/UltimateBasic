@@ -66,6 +66,93 @@ fn fold_const_expr(e: Expr) -> Expr {
     }
 }
 
+/// One piece of a PRINT USING format string.
+#[derive(Debug, Clone, PartialEq)]
+enum UsingPiece {
+    Text(String),
+    /// numeric field: positions before the point (with sign / commas), decimals, flags
+    /// (1 commas, 2 leading '+', 4 trailing '-', 8 point) — `f_using`'s A / X / Y
+    Num(u8, u8, u8),
+    /// string field: `&` (0 = whole string), `!` (1), `\  \` (its width)
+    Str(u8),
+}
+
+/// Split a PRINT USING format (QBasic subset) into text and fields.
+fn parse_using_format(fmt: &str) -> Result<Vec<UsingPiece>, String> {
+    let c: Vec<char> = fmt.chars().collect();
+    let at = |i: usize| c.get(i).copied().unwrap_or('\0');
+    let mut out = vec![];
+    let mut text = String::new();
+    let flush = |text: &mut String, out: &mut Vec<UsingPiece>, piece: UsingPiece| {
+        if !text.is_empty() {
+            out.push(UsingPiece::Text(std::mem::take(text)));
+        }
+        out.push(piece);
+    };
+    let mut i = 0;
+    while i < c.len() {
+        let ch = c[i];
+        let starts_num =
+            ch == '#' || (ch == '.' && at(i + 1) == '#') || (ch == '+' && (at(i + 1) == '#' || at(i + 1) == '.' && at(i + 2) == '#'));
+        if ch == '_' && i + 1 < c.len() {
+            text.push(c[i + 1]);
+            i += 2;
+        } else if (ch == '*' && at(i + 1) == '*' || ch == '$' && at(i + 1) == '$') && matches!(at(i + 2), '#' | '.' | '*' | '$') {
+            return Err(format!("PRINT USING: '{ch}{ch}' fields are not supported (use '#', '.', ',', '+', '-')"));
+        } else if ch == '&' || ch == '!' {
+            flush(&mut text, &mut out, UsingPiece::Str(if ch == '!' { 1 } else { 0 }));
+            i += 1;
+        } else if ch == '\\' && c[i + 1..].contains(&'\\') {
+            let close = i + 1 + c[i + 1..].iter().position(|&x| x == '\\').unwrap();
+            flush(&mut text, &mut out, UsingPiece::Str((close - i + 1) as u8));
+            i = close + 1;
+        } else if starts_num {
+            let (mut w, mut d, mut f) = (0u8, 0u8, 0u8);
+            if ch == '+' {
+                f |= 2;
+                w += 1;
+                i += 1;
+            }
+            while at(i) == '#' || (at(i) == ',' && w > 0) {
+                if at(i) == ',' {
+                    f |= 1;
+                }
+                w += 1;
+                i += 1;
+            }
+            if at(i) == '.' {
+                f |= 8;
+                i += 1;
+                while at(i) == '#' {
+                    d += 1;
+                    i += 1;
+                }
+            }
+            if at(i) == '^' {
+                return Err("PRINT USING: '^^^^' (exponent) fields are not supported".into());
+            }
+            if at(i) == '-' {
+                f |= 4;
+                i += 1;
+            }
+            if d > 9 {
+                return Err("PRINT USING: at most 9 decimals".into());
+            }
+            if w as usize + d as usize > 30 {
+                return Err("PRINT USING: a numeric field is at most 30 characters".into());
+            }
+            flush(&mut text, &mut out, UsingPiece::Num(w, d, f));
+        } else {
+            text.push(ch);
+            i += 1;
+        }
+    }
+    if !text.is_empty() {
+        out.push(UsingPiece::Text(text));
+    }
+    Ok(out)
+}
+
 /// Integer constant (array bounds, `const`): folded with the integer rules,
 /// whatever the result.
 fn fold_int_const(e: Expr) -> Expr {
@@ -922,6 +1009,92 @@ impl Parser {
         };
         self.advance();
         Ok(vt)
+    }
+
+    /// `print using "fmt"; a, b; …` — the format is split at compile time and
+    /// lowered to plain prints (text, string fields) and `PrintUsingNum`.
+    /// Values cycle through the fields; after the last one the text up to the
+    /// next field is printed. A trailing `;` / `,` keeps the cursor on the line.
+    fn parse_print_using(&mut self) -> Option<Stmt> {
+        self.advance(); // 'using'
+        let fmt = match self.advance() {
+            Token::StringLit(s) => s,
+            _ => {
+                self.errors.push(format!("line {}: PRINT USING needs a literal format string", self.line));
+                return None;
+            }
+        };
+        let pieces = match parse_using_format(&fmt) {
+            Ok(p) => p,
+            Err(e) => {
+                self.errors.push(format!("line {}: {e}", self.line));
+                return None;
+            }
+        };
+        if matches!(self.peek(), Token::Semicolon | Token::Comma) {
+            self.advance();
+        }
+        let end = |t: &Token| matches!(t, Token::Newline | Token::Eof | Token::Colon);
+        let mut values = vec![];
+        let mut no_newline = false;
+        while !end(self.peek()) {
+            values.push(self.parse_expr());
+            let sep = self.peek() == &Token::Comma
+                || (self.peek() == &Token::Semicolon && self.semicolon_continues_print());
+            if sep || self.peek() == &Token::Semicolon {
+                self.advance();
+                if sep && !end(self.peek()) {
+                    continue;
+                }
+                no_newline = true;
+            }
+            break;
+        }
+        self.expect_newline();
+        let n = pieces.len();
+        if !values.is_empty() && pieces.iter().all(|p| matches!(p, UsingPiece::Text(_))) {
+            self.errors.push(format!("line {}: PRINT USING: the format has no field", self.line));
+            return None;
+        }
+        let text = |t: &str| Stmt::Print { args: vec![Expr::StringLit(t.to_string())], no_newline: true };
+        let mut stmts = vec![];
+        let mut k = 0;
+        for v in values {
+            while let UsingPiece::Text(t) = &pieces[k % n] {
+                stmts.push(text(t));
+                k += 1;
+            }
+            stmts.push(match pieces[k % n] {
+                UsingPiece::Num(width, decimals, flags) => Stmt::PrintUsingNum { expr: v, width, decimals, flags },
+                UsingPiece::Str(0) => Stmt::Print { args: vec![v], no_newline: true },
+                UsingPiece::Str(w) => {
+                    // left$(v + "<w spaces>", w): cut or padded to the field
+                    let padded = Expr::BinOp(Box::new(v), BinOp::Add, Box::new(Expr::StringLit(" ".repeat(w as usize))));
+                    Stmt::Print {
+                        args: vec![Expr::FnCall("left$".into(), vec![padded, Expr::Number(w as i16)])],
+                        no_newline: true,
+                    }
+                }
+                UsingPiece::Text(_) => unreachable!(),
+            });
+            k += 1;
+        }
+        if k == 0 || k % n != 0 {
+            let mut j = k % n;
+            while j < n {
+                let UsingPiece::Text(t) = &pieces[j] else { break };
+                stmts.push(text(t));
+                j += 1;
+            }
+        }
+        if !no_newline || stmts.is_empty() {
+            stmts.push(Stmt::Print { args: vec![], no_newline });
+        }
+        // one line-map entry per statement (parse_stmt pushed one)
+        for _ in 1..stmts.len() {
+            self.statement_lines.push(self.line);
+        }
+        Some(Stmt::Block(stmts))
     }
 
     /// Inside `print`: does the `;` at the current position separate two print
@@ -2460,6 +2633,9 @@ impl Parser {
             }
             Token::Print => {
                 self.advance();
+                if matches!(self.peek(), Token::Ident(u) if u == "using") {
+                    return self.parse_print_using();
+                }
                 // `print at col, row, expr...` — position cursor then print
                 if self.peek() == &Token::At {
                     self.advance(); // consume 'at'

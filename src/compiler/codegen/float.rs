@@ -758,7 +758,11 @@ impl Codegen {
 /// runtime's 2-byte zero-page pointer.
 pub(super) fn program_uses_reals(stmts: &[Stmt]) -> bool {
     let text = format!("{stmts:?}");
-    if text.contains("Some(Real)") || text.contains("Some(RealArray)") || text.contains(", Pow, ") {
+    if text.contains("Some(Real)")
+        || text.contains("Some(RealArray)")
+        || text.contains(", Pow, ")
+        || text.contains("PrintUsingNum")
+    {
         return true;
     }
     if text.contains(", true)") && text.contains("FixedLit(") {
@@ -1001,6 +1005,31 @@ impl Codegen {
         self.emit(t + 1);
         self.print_str_via_ptr(t);
         true
+    }
+
+    /// A `print using` numeric field: the value in floating point, formatted
+    /// by `f_using` (A = positions, X = decimals, Y = flags), then printed.
+    pub(super) fn gen_print_using_num(&mut self, e: &Expr, width: u8, decimals: u8, flags: u8) {
+        if self.is_string_expr(e) {
+            let e = e.clone();
+            self.gen_stmt(&Stmt::Print { args: vec![e], no_newline: true });
+            return;
+        }
+        self.eval_real(e);
+        self.emit(0xA9);
+        self.emit(width); // LDA #width
+        self.emit(0xA2);
+        self.emit(decimals); // LDX #decimals
+        self.emit(0xA0);
+        self.emit(flags); // LDY #flags
+        self.flt_call("f_using");
+        let t = self.tmp_zp;
+        self.tmp_zp += 2;
+        self.emit(0x85);
+        self.emit(t);
+        self.emit(0x84);
+        self.emit(t + 1);
+        self.print_str_via_ptr(t);
     }
 
     /// A string-engine number part: SRC (`src_zp`) ← text of `e`.

@@ -236,6 +236,8 @@ fn runtime_source() -> String {
         p10.extend_from_slice(&(10u32.pow(k)).to_be_bytes());
     }
     src += &bytes("p10", &p10);
+    let u10: Vec<u8> = (0..10).rev().flat_map(|k| 10u32.pow(k).to_be_bytes()).collect();
+    src += &bytes("u10", &u10);
     let mut pw = vec![];
     for k in 0..=17 {
         pw.extend_from_slice(&to_mflpt(10f64.powi(k)));
@@ -287,6 +289,22 @@ pp:     .res 2
 mda:    .res 5
 mdb:    .res 5
 rt:     .res 4
+uw:     .res 1
+ud:     .res 1
+uf:     .res 1
+usg:    .res 1
+uk:     .res 1
+ue:     .res 1
+ufst:   .res 1
+ulen:   .res 1
+ugl:    .res 1
+usc:    .res 1
+uneed:  .res 1
+uidx:   .res 1
+ucnt:   .res 1
+ux:     .res 5
+udg:    .res 10
+ubuf:   .res 48
 pn:     .res 1
 px2:    .res 5
 pk:     .res 1
@@ -1311,6 +1329,240 @@ rd_xl:  LDA rnd_s,X
         RTS
 rnd_s:  .byte $5D, $E3, $27, $9A    ; state (little-endian); outside the saved IRQ state
 rnd_f:  .byte 0
+
+; ---------------------------------------------------------------- print using
+f_using:            ; A/Y = PRINT USING field text of FAC (in ubuf); FAC destroyed.
+                    ; A = positions before the point (sign / commas included),
+                    ; X = decimals (0-9), Y = flags: 1 commas, 2 '+', 4 trailing '-', 8 point
+        STA uw
+        STX ud
+        STY uf
+        LDA #<ux
+        LDY #>ux
+        JSR f_store         ; (rounds FAC) the value, for an overflow
+        LDA FACE
+        BEQ us_pz
+        LDA FACS
+us_pz:  STA usg             ; $80 = negative
+        LDA #0
+        STA FACS
+        LDA ud              ; n = round(|x| * 10^decimals)
+        JSR fo_pw
+        JSR f_mul
+        LDA #<c_half
+        LDY #>c_half
+        JSR f_add
+        JSR f_fix
+        LDA FACE
+        BEQ us_i0
+        CMP #161
+        BCC us_sh
+        JMP us_big          ; 2^32 or more
+us_sh:  CMP #160            ; mantissa -> 32-bit integer
+        BEQ us_dg
+        LSR FAC1
+        ROR FAC2
+        ROR FAC3
+        ROR FAC4
+        INC FACE
+        LDA FACE
+        JMP us_sh
+us_i0:  STA FAC1            ; n = 0: no sign
+        STA FAC2
+        STA FAC3
+        STA FAC4
+        STA usg
+us_dg:  LDX #0              ; ten digits into udg, 10^9 first
+        STX uk
+us_dl:  LDA #'0'
+        STA udg,X
+        LDY uk
+us_ds:  SEC
+        LDA FAC4
+        SBC u10+3,Y
+        STA tq+3
+        LDA FAC3
+        SBC u10+2,Y
+        STA tq+2
+        LDA FAC2
+        SBC u10+1,Y
+        STA tq+1
+        LDA FAC1
+        SBC u10,Y
+        BCC us_dn
+        STA FAC1
+        LDA tq+1
+        STA FAC2
+        LDA tq+2
+        STA FAC3
+        LDA tq+3
+        STA FAC4
+        INC udg,X
+        JMP us_ds
+us_dn:  LDA uk
+        CLC
+        ADC #4
+        STA uk
+        INX
+        CPX #10
+        BNE us_dl
+        LDA #10             ; integer digits: udg[ufst .. ue)
+        SEC
+        SBC ud
+        STA ue
+        LDX #0
+us_fz:  CPX ue
+        BEQ us_f0
+        LDA udg,X
+        CMP #'0'
+        BNE us_f1
+        INX
+        JMP us_fz
+us_f0:  DEX                 ; integer part 0: a single '0'
+us_f1:  STX ufst
+        LDA ue
+        SEC
+        SBC ufst
+        STA ulen
+        LDA uf              ; commas: (ulen - 1) / 3
+        AND #1
+        BEQ us_g1
+        LDX ulen
+        DEX
+        TXA
+        LDX #0
+us_g0:  CMP #3
+        BCC us_g2
+        SBC #3
+        INX
+        JMP us_g0
+us_g2:  TXA
+us_g1:  CLC
+        ADC ulen
+        STA ugl             ; integer part with commas
+        LDA #0              ; sign character
+        STA usc
+        LDA uf
+        AND #2
+        BEQ us_s1
+        LDA #'+'
+        STA usc
+us_s1:  LDA usg
+        BPL us_s2
+        LDA uf
+        AND #4
+        BNE us_s2
+        LDA #'-'
+        STA usc
+us_s2:  LDA usc
+        BEQ us_n0
+        LDA #1
+us_n0:  CLC
+        ADC ugl
+        STA uneed
+        LDA uw
+        CMP uneed
+        BCS us_fit
+        LDA ulen            ; no room: drop a lone leading 0 ("-.50")
+        CMP #1
+        BNE us_ovf
+        LDX ufst
+        LDA udg,X
+        CMP #'0'
+        BNE us_ovf
+        LDA #0
+        STA ulen
+        STA ugl
+        DEC uneed
+        LDA uw
+        CMP uneed
+        BCS us_fit
+us_ovf: LDA #'%'            ; does not fit: '%' and the whole number
+        STA ubuf
+        LDA #1
+        STA uidx
+        JMP us_body
+us_fit: LDA #0
+        STA uidx
+        LDA uw
+        SEC
+        SBC uneed
+        TAX
+        BEQ us_body
+us_pad: LDA #' '
+        JSR us_put
+        DEX
+        BNE us_pad
+us_body:
+        LDA usc
+        BEQ us_b1
+        JSR us_put
+us_b1:  LDA ulen
+        BEQ us_pt
+        STA ucnt            ; integer digits left
+        LDX ufst
+us_il:  LDA udg,X
+        JSR us_put
+        INX
+        DEC ucnt
+        BEQ us_pt
+        LDA uf
+        AND #1
+        BEQ us_il
+        LDA ucnt            ; a comma when a multiple of 3 is left
+us_m3:  CMP #3
+        BCC us_m3e
+        SBC #3
+        JMP us_m3
+us_m3e: CMP #0
+        BNE us_il
+        LDA #','
+        JSR us_put
+        JMP us_il
+us_pt:  LDA uf
+        AND #8
+        BEQ us_tm
+        LDA #'.'
+        JSR us_put
+        LDX ue
+us_fl:  CPX #10
+        BEQ us_tm
+        LDA udg,X
+        JSR us_put
+        INX
+        JMP us_fl
+us_tm:  LDA uf
+        AND #4
+        BEQ us_end
+        LDA #' '
+        LDX usg
+        BPL us_tp
+        LDA #'-'
+us_tp:  JSR us_put
+us_end: LDA #0
+        JSR us_put
+        LDA #<ubuf
+        LDY #>ubuf
+        RTS
+us_put: LDY uidx            ; append A to ubuf, keeps X
+        STA ubuf,Y
+        INC uidx
+        RTS
+us_big: LDA #<ux            ; too many digits: '%' and the plain number
+        LDY #>ux
+        JSR f_load
+        JSR f_out
+        LDA #'%'
+        STA ubuf
+        LDX #0
+us_bc:  LDA obuf,X
+        STA ubuf+1,X
+        BEQ us_be
+        INX
+        BNE us_bc
+us_be:  LDA #<ubuf
+        LDY #>ubuf
+        RTS
 
 ; ---------------------------------------------------------------- number -> text
 f_out:              ; A/Y = text of FAC (null-terminated, in obuf); FAC destroyed

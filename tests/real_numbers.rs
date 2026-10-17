@@ -591,3 +591,42 @@ d = rnd(6)
     assert!((0.0..6.0).contains(&real(&r, "x")));
     assert!(r.byte("d") < 6);
 }
+
+#[test]
+fn print_using() {
+    let r = run_src(
+        r######"dim x as double = 3.14159
+dim n as integer = -42
+dim big as double = 1234567.891
+dim s as string = "ALMA"
+print using "###.##"; x
+print using "Total: ##.## EUR"; 12.5
+print using "##.##"; -1.5; 0.255
+print using "#.##"; -0.5
+print using "+###"; 7
+print using "##.##-"; -2.25
+print using "#,###,###.#"; big
+print using "##"; 123
+print using "#####"; n
+print using "[&] [!] [\ \] [\  \]"; s; s; s; s
+print using "## "; 1, 2, 3
+print using "#.#"; 9.96;
+print "!"
+"######,
+    );
+    let want = [
+        "  3.14",
+        "Total: 12.50 EUR",
+        "-1.50 0.26",
+        "-.50",
+        "  +7",
+        " 2.25-",
+        "1,234,567.9",
+        "%123",
+        "  -42",
+        "[ALMA] [A] [ALM] [ALMA]",
+        " 1  2  3 ",
+        "%10.0!",
+    ];
+    assert_eq!(r.output(), want.join("\r") + "\r");
+}

@@ -62,12 +62,21 @@ The three big items of the 1.6.3 roadmap are implemented:
 - **`MOD` on floats:** with a SINGLE / DOUBLE operand, `a mod b` = `a - b * FIX(a / b)`
   (sign of `a`, like VB / C `fmod`; `7.5 mod 2` = 1.5), `x mod 0` = x
   (`f_mod` / `f_modp` / `f_modarg`).
+- **`PRINT USING`** (QBasic subset): `print using "fmt"; a, b; …` with a literal format.
+  Numeric fields `#` / `.` / `,` (thousands) / leading `+` / trailing `-`, `%` prefix when
+  the number does not fit (`-.50` drops a lone 0 first); string fields `&`, `!`,
+  `\  \`; `_` escapes; values cycle through the fields, a trailing `;` / `,` keeps the
+  line. The parser splits the format (`parse_using_format`) and lowers the statement to
+  plain prints plus `Stmt::PrintUsingNum`, formatted by `f_using` (exact 32-bit → decimal
+  digits, so up to ~9-10 significant digits; beyond 2^32 it prints `%` + the normal
+  text). Not supported (compile errors): `**`, `$$`, `^^^^`, a non-literal format.
+  A program with PRINT USING links the float runtime.
 
 ---
 
 ## Next candidates
 
-- **`PRINT USING`** / fixed decimals for floats.
+All items of the 1.6.4 list are done (above); see *Smaller open items*.
 
 ---
 
