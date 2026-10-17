@@ -82,6 +82,21 @@ The output uses KickAssembler syntax and can be assembled again. Known data regi
 as `data`, maps, sprite/character definitions, lookup tables, SID/Koala payloads, and
 `incbin` content—are emitted as `.byte` blocks instead of being mistaken for instructions.
 
+## What's new since 1.6.5 (unreleased)
+
+- **`PRINT USING`** (QBasic subset): `PRINT USING "#,###.## Ft"; ar` — `#` digits, `.`,
+  thousands `,`, leading `+`, trailing `-`, `%` when a number does not fit, string fields `&`,
+  `!`, `\  \`.
+- **String ordering:** `<` `>` `<=` `>=` between strings, in PETSCII order (`"AB" < "ABC"`).
+- **Floating point:** `RND` is 0 ≤ x < 1 in SINGLE / DOUBLE statements; `MOD` works on
+  floating-point values (`7.5 mod 2` = 1.5); IRQ / NMI handlers may use floating point;
+  `d = 40000` keeps its value (it became -25536); programs carry only the floating-point
+  routines they use (a small program went from 4.6 KB to 2.3 KB).
+- **Integer `mod` / `shr`:** `mod` on WORD / INTEGER values is a real 16-bit remainder with the
+  sign of the dividend (`-7 mod 3` = -1), `shr` of an INTEGER is arithmetic (`-8 shr 1` = -4).
+- **`--basic-print`** (or `option basic print`): C64 BASIC PRINT spacing — ` 5 ` for numbers,
+  `,` to the next 10-column zone. The default output is unchanged.
+
 ## What's new in 1.6.5
 
 Bug fix release: **16-bit address expressions.**

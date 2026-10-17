@@ -1,6 +1,47 @@
 Ultimate Basic v1.6.5 – Release Notes
 ======================================
 
+2026-10-17 – Unreleased (after 1.6.5): PRINT USING, string order, floats
+------------------------------------------------------------------
+  New
+  - PRINT USING "format"; values (QBasic subset): numeric fields with
+    # digits, . point, , thousands separators, a leading + (always a
+    sign) and a trailing - (sign after the number); a number that
+    does not fit is printed with a % in front. String fields & (whole
+    string), ! (first character) and \  \ (as wide as the field);
+    _ prints the next character as it is. Values cycle through the
+    fields; a trailing ; or , keeps the cursor on the line. The format
+    must be a string literal.
+  - Strings can be ordered: < > <= >= compare in PETSCII order, a
+    shorter string first when it starts the other ("AB" < "ABC").
+  - RND as a floating-point number: in a statement that computes in
+    floating point, rnd / rnd() is 0 <= x < 1 (d = rnd, x = rnd() * 6).
+    rnd(n) and integer statements keep the 0-255 / 0..n-1 generator.
+  - MOD with a SINGLE / DOUBLE operand works in floating point, like
+    VB / C fmod: 7.5 mod 2 = 1.5, -7.5 mod 2 = -1.5; x mod 0 = x.
+  - Floating point in IRQ / NMI handlers: a handler sub (irq, nmi,
+    cia_timer) that uses SINGLE / DOUBLE saves and restores the
+    runtime state, so it no longer disturbs the main program. Handlers
+    without floating point cost nothing extra.
+  - --basic-print (or a line "option basic print" in the program):
+    C64 BASIC PRINT spacing - numbers print with a leading space (or
+    their minus sign) and a trailing space (print 5 gives " 5 "), a ,
+    between items moves to the next 10-column zone, a trailing , keeps
+    the line. Without it the output is unchanged.
+  Changed
+  - Programs carry only the floating-point routines they use: a small
+    program with + * and PRINT went from 4603 to 2293 bytes,
+    examples/float_demo.ub from 6319 to 5660.
+  - MOD with a WORD or INTEGER operand is a real 16-bit remainder with
+    the sign of the dividend, like QBasic: -7 mod 3 = -1, 7 mod -3 = 1,
+    (w + 5) mod 7 is no longer cut to 8 bits.
+  - SHR of an INTEGER is an arithmetic shift: -8 shr 1 = -4. WORD and
+    byte SHR stay logical.
+  Fixed
+  - A literal from 32768 to 65535 in a floating-point statement was
+    read as a negative 16-bit pattern: d = 40000 gave -25536. It keeps
+    its value now; integer statements are unchanged.
+
 2026-10-17 – Release 1.6.5: 16-bit address expressions
 ------------------------------------------------------------------
   Fixed
