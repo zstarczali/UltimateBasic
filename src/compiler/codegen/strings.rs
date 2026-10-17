@@ -54,6 +54,7 @@ pub(super) enum Helper {
     Itoa,
     Atoi,
     Cmp,
+    Order,
 }
 
 impl Codegen {
@@ -467,6 +468,37 @@ impl Codegen {
                 self.lda_imm(0);
                 self.emit(0x60);
             }
+            Helper::Order => {
+                // A = $FF / 0 / 1 for (DST) < = > (SRC) — `l` is in DST —
+                // in PETSCII byte order; a string sorts before every longer
+                // string it starts
+                self.emit(0xA0);
+                self.emit(0x00); // LDY #0
+                let l = self.current_addr();
+                self.emit(0xB1);
+                self.emit(z + SRC); // LDA (SRC),Y
+                self.emit(0xD1);
+                self.emit(z + DST); // CMP (DST),Y
+                let ne = self.bxx_fwd(0xD0); // BNE differ
+                self.emit(0xC9);
+                self.emit(0x00); // CMP #0
+                let eq = self.bxx_fwd(0xF0); // BEQ equal
+                self.emit(0xC8); // INY
+                self.bxx_back(0xD0, l); // BNE loop
+                let e = self.current_addr();
+                self.patch_bxx(eq, e);
+                self.lda_imm(0);
+                self.emit(0x60);
+                let d = self.current_addr();
+                self.patch_bxx(ne, d);
+                let lt = self.bxx_fwd(0xB0); // BCS: (SRC) > (DST), so l < r
+                self.lda_imm(1);
+                self.emit(0x60);
+                let at = self.current_addr();
+                self.patch_bxx(lt, at);
+                self.lda_imm(0xFF);
+                self.emit(0x60);
+            }
         }
         let past = self.current_addr();
         self.patch_abs(jmp, past);
@@ -805,9 +837,32 @@ impl Codegen {
         self.print_str_via_ptr(z + SRC);
     }
 
-    /// A ← 1 if the two string expressions are equal (0 otherwise);
-    /// `negate` gives `<>`.
-    pub(super) fn emit_str_compare(&mut self, l: &Expr, r: &Expr, negate: bool) {
+    /// A ← 1 / 0 for `l op r` with `<`, `>`, `<=`, `>=` between strings.
+    pub(super) fn emit_str_order(&mut self, l: &Expr, r: &Expr, op: &BinOp) {
+        self.emit_str_pair(l, r);
+        let ord = self.str_helper(Helper::Order);
+        self.jsr(ord);
+        // true when the order result is `v` (Lt / Gt), or when it is not (GtEq / LtEq)
+        let (v, when_eq) = match op {
+            BinOp::Lt => (0xFF, true),
+            BinOp::GtEq => (0xFF, false),
+            BinOp::Gt => (1, true),
+            _ => (1, false),
+        };
+        self.emit(0xC9);
+        self.emit(v); // CMP #v
+        let is_v = self.bxx_fwd(0xF0); // BEQ is_v
+        self.lda_imm(!when_eq as u8);
+        let done = self.bxx_fwd(if when_eq { 0xF0 } else { 0xD0 }); // BEQ / BNE done (always)
+        let at = self.current_addr();
+        self.patch_bxx(is_v, at);
+        self.lda_imm(when_eq as u8);
+        let at = self.current_addr();
+        self.patch_bxx(done, at);
+    }
+
+    /// DST ← text of `l`, SRC ← text of `r` (the compare helpers' operands).
+    fn emit_str_pair(&mut self, l: &Expr, r: &Expr) {
         let z = self.str_zp();
         self.emit_str_src(l, 1);
         // keep l's pointer on the stack while r is evaluated
@@ -820,6 +875,12 @@ impl Codegen {
         self.sta_zp(z + DST + 1);
         self.emit(0x68);
         self.sta_zp(z + DST);
+    }
+
+    /// A ← 1 if the two string expressions are equal (0 otherwise);
+    /// `negate` gives `<>`.
+    pub(super) fn emit_str_compare(&mut self, l: &Expr, r: &Expr, negate: bool) {
+        self.emit_str_pair(l, r);
         let cmp = self.str_helper(Helper::Cmp);
         self.jsr(cmp);
         if negate {

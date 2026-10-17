@@ -634,8 +634,9 @@ IF s = "ABC" OR t <> "" THEN PRINT "compare with = / <>"
 - **`STR$` / `VAL`:** `STR$` of a 16-bit or signed value has no leading zeros (`"-42"`). For
   compatibility, `STR$` of a byte keeps the 3-digit form (`"007"`). `VAL` reads 16-bit
   signed numbers (`VAL("1234") + 1` = 1235).
-- **Comparison:** only `=` / `<>` (and `==` / `!=`); there is no `<` / `>` ordering of
-  strings.
+- **Comparison:** `=` / `<>` (and `==` / `!=`), and `<` `>` `<=` `>=` in PETSCII
+  byte order (a prefix sorts first: `"AB" < "ABC"`), like C64 BASIC (`Helper::Order`,
+  `emit_str_order`).
 
 #### Signed INTEGER, INPUT, DOUBLE (1.6.3)
 
@@ -1868,7 +1869,7 @@ labels. The `.dbg` format does not yet include instruction-to-source-line mappin
 | Integer arithmetic | `var`/`byte` 8-bit unsigned, wraps silently (`var c = a + b` stays a byte by design — see `can_be_word_result`); `integer` signed 16-bit (`signed_vars`), `word` unsigned 16-bit |
 | Zero page budget | Permanent ZP is `$02–$4F` (78 bytes): every variable and sub/fn parameter takes 2 bytes, every running `for` loop 2 more (freed when the loop ends, if its body declared no variables). Since 1.6.4 `compile()` retries with variables spilled to RAM (`spill.rs`, `spill_enter`/`spill_exit` proxy slots); "out of zero page" only when even that fails |
 | Subroutines | No recursion — ZP parameter slots are statically allocated |
-| String vars | Computed values: 80-char buffer per variable (cut at 80); string-array element values: 31-char slots; no `<`/`>` ordering of strings |
+| String vars | Computed values: 80-char buffer per variable (cut at 80); string-array element values: 31-char slots; ordering is PETSCII byte order (no locale) |
 | `rnd()` | Simple LCG, not cryptographic; period = 256 |
 | `abs()` / `sgn()` / `min()` / `max()` | 8-bit values only; `abs`/`sgn` treat values as signed (bit 7 = negative → `abs` two's-complements, `sgn` returns `$FF`); `min`/`max` are unsigned (0–255) |
 | `plot` | Out-of-range pixels are silently clipped (CheckPlot: Y ≥ 200 or X ≥ 320 → skip) |

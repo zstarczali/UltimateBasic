@@ -693,7 +693,7 @@ pub struct Codegen {
     signed_fns: std::collections::HashSet<String>, // functions returning a signed integer
     // runtime string engine (codegen/strings.rs)
     str_zp: Option<u8>,
-    str_helpers: [Option<u16>; 7],
+    str_helpers: [Option<u16>; 8],
     str_var_bufs: HashMap<String, u16>,
     str_param_bufs: HashMap<String, u16>,
     str_tmp_bufs: Vec<u16>,
@@ -855,7 +855,7 @@ impl Codegen {
             signed_vars: std::collections::HashSet::new(),
             signed_fns: std::collections::HashSet::new(),
             str_zp: None,
-            str_helpers: [None; 7],
+            str_helpers: [None; 8],
             str_var_bufs: HashMap::new(),
             str_param_bufs: HashMap::new(),
             str_tmp_bufs: vec![],
@@ -2008,6 +2008,12 @@ impl Codegen {
             {
                 let (l, r) = ((**l).clone(), (**r).clone());
                 self.emit_str_compare(&l, &r, matches!(op, BinOp::NotEq));
+            }
+            Expr::BinOp(l, op @ (BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq), r)
+                if self.is_string_expr(l) || self.is_string_expr(r) =>
+            {
+                let (l, r, op) = ((**l).clone(), (**r).clone(), op.clone());
+                self.emit_str_order(&l, &r, &op);
             }
             Expr::FnCall(f, _) if strings::is_builtin_str_fn(f) => {
                 self.str_errors.push(format!(

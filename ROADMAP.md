@@ -71,6 +71,9 @@ The three big items of the 1.6.3 roadmap are implemented:
   digits, so up to ~9-10 significant digits; beyond 2^32 it prints `%` + the normal
   text). Not supported (compile errors): `**`, `$$`, `^^^^`, a non-literal format.
   A program with PRINT USING links the float runtime.
+- **String ordering:** `<` `>` `<=` `>=` between strings, PETSCII byte order (a prefix
+  sorts first), like C64 BASIC: `Helper::Order` returns $FF / 0 / 1, `emit_str_order`
+  maps it to 1 / 0. Conditions take the value path (`is_byte_compare` excludes strings).
 
 ---
 
@@ -82,7 +85,6 @@ All items of the 1.6.4 list are done (above); see *Smaller open items*.
 
 ## Smaller open items
 
-- **String ordering:** `<` / `>` between strings (only `=` / `<>` exist).
 - **String size:** computed strings are capped at 80 characters per variable and 31 per
   string-array element; there is no heap / garbage collection.
 - **PRINT spacing:** numbers are printed without the leading/trailing space QBasic and

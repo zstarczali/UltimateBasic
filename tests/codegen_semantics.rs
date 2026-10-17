@@ -1334,3 +1334,25 @@ fn word_ptr_plus_index_address() {
     assert_eq!(r.mem(0xC404), 9);
     assert_eq!(r.byte("v"), 9);
 }
+
+#[test]
+fn string_ordering() {
+    let pairs = [("ABC", "ABD"), ("ABC", "ABC"), ("AB", "ABC"), ("B", "ABC"), ("", "A"), ("Z", ""), ("HELLO", "HELP")];
+    let mut src = String::from("dim a as string, b as string\ndim k as byte\n");
+    for (i, _) in pairs.iter().enumerate() {
+        src += &format!("dim r{i} as byte\n");
+    }
+    for (i, (a, b)) in pairs.iter().enumerate() {
+        src += &format!(
+            "a = \"{a}\"\nb = \"{b}\" + \"\"\nr{i} = (a < b) + (a > b) * 2 + (a <= b) * 4 + (a >= b) * 8\n"
+        );
+    }
+    src += "if \"APPLE\" < \"BANANA\" then k = k + 1\nif a + \"X\" > a then k = k + 2\nb = \"\"\nwhile b <\"ZZ\" : b = b + \"Z\" : wend\nif b >= \"ZZ\" then k = k + 4\n";
+    let r = run_src(&src);
+    for (i, (a, b)) in pairs.iter().enumerate() {
+        let (pa, pb) = (a.as_bytes(), b.as_bytes());
+        let want = (pa < pb) as u8 + (pa > pb) as u8 * 2 + (pa <= pb) as u8 * 4 + (pa >= pb) as u8 * 8;
+        assert_eq!(r.byte(&format!("r{i}")), want, "{a:?} vs {b:?}");
+    }
+    assert_eq!(r.byte("k"), 7);
+}
