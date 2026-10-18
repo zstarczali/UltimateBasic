@@ -997,7 +997,7 @@ fn word_for_loops() {
 #[test]
 fn recursion_is_a_compile_error() {
     use ultimate_basic::compiler::{compile, CompileOptions};
-    let opts = CompileOptions { basic_stub: false, explicit: false };
+    let opts = CompileOptions { basic_stub: false, explicit: false, basic_print: false };
     let direct = compile("fn fact(n)\n if n <= 1 then return 1 end\n return n * fact(n - 1)\nend\nprint fact(5)\n", &opts);
     assert!(direct.errors.iter().any(|e| e.contains("recursion") && e.contains("fact → fact")), "{:?}", direct.errors);
     let mutual = compile("sub a()\n b()\nend\nsub b()\n a()\nend\na()\n", &opts);
@@ -1222,7 +1222,7 @@ fn arrays_under_basic_rom() {
     // more than 12 KB is an error
     let res = ultimate_basic::compiler::compile(
         "DIM a(6000) AS INTEGER\nDIM b(500) AS INTEGER\n",
-        &ultimate_basic::compiler::CompileOptions { basic_stub: false, explicit: false },
+        &ultimate_basic::compiler::CompileOptions { basic_stub: false, explicit: false, basic_print: false },
     );
     assert!(res.errors.iter().any(|e| e.contains("12288")), "{:?}", res.errors);
 }
@@ -1322,7 +1322,7 @@ fn zero_page_error_when_nothing_can_move() {
     }
     let res = ultimate_basic::compiler::compile(
         &src,
-        &ultimate_basic::compiler::CompileOptions { basic_stub: false, explicit: false },
+        &ultimate_basic::compiler::CompileOptions { basic_stub: false, explicit: false, basic_print: false },
     );
     assert!(res.errors.iter().any(|e| e.contains("out of zero page")), "{:?}", res.errors);
 }
@@ -1333,4 +1333,313 @@ fn word_ptr_plus_index_address() {
     let r = run_src("var ptr: word = $C3F0\nvar i = 20\npoke ptr + i, 9\nvar v = peek(ptr + i)\n");
     assert_eq!(r.mem(0xC404), 9);
     assert_eq!(r.byte("v"), 9);
+}
+
+#[test]
+fn string_ordering() {
+    let pairs = [("ABC", "ABD"), ("ABC", "ABC"), ("AB", "ABC"), ("B", "ABC"), ("", "A"), ("Z", ""), ("HELLO", "HELP")];
+    let mut src = String::from("dim a as string, b as string\ndim k as byte\n");
+    for (i, _) in pairs.iter().enumerate() {
+        src += &format!("dim r{i} as byte\n");
+    }
+    for (i, (a, b)) in pairs.iter().enumerate() {
+        src += &format!(
+            "a = \"{a}\"\nb = \"{b}\" + \"\"\nr{i} = (a < b) + (a > b) * 2 + (a <= b) * 4 + (a >= b) * 8\n"
+        );
+    }
+    src += "if \"APPLE\" < \"BANANA\" then k = k + 1\nif a + \"X\" > a then k = k + 2\nb = \"\"\nwhile b <\"ZZ\" : b = b + \"Z\" : wend\nif b >= \"ZZ\" then k = k + 4\n";
+    let r = run_src(&src);
+    for (i, (a, b)) in pairs.iter().enumerate() {
+        let (pa, pb) = (a.as_bytes(), b.as_bytes());
+        let want = (pa < pb) as u8 + (pa > pb) as u8 * 2 + (pa <= pb) as u8 * 4 + (pa >= pb) as u8 * 8;
+        assert_eq!(r.byte(&format!("r{i}")), want, "{a:?} vs {b:?}");
+    }
+    assert_eq!(r.byte("k"), 7);
+}
+
+fn run_basic_print(src: &str, flag: bool) -> String {
+    let res = ultimate_basic::compiler::compile(
+        src,
+        &ultimate_basic::compiler::CompileOptions { basic_stub: false, explicit: false, basic_print: flag },
+    );
+    assert!(res.errors.is_empty(), "{:?}", res.errors);
+    let mut cpu = Cpu::new(&res.prg);
+    cpu.run(5_000_000);
+    cpu.output.iter().map(|&b| b as char).collect()
+}
+
+#[test]
+fn basic_print_spacing_and_zones() {
+    let src = "dim i as integer = -42
+dim w as word = 1000
+dim d as double = 3.5
+var f: float = 2.5
+var b = 7
+print 5
+print -3
+print i; w
+print d
+print f
+print \"N=\"; b
+print \"A\", \"B\"
+print 1, 2
+print \"AB\",
+print \"C\"
+print b, i, w, \"END\"
+";
+    // items separated by `,`: each starts at the next multiple of 10
+    let zones = |items: &[&str]| {
+        let mut line = String::new();
+        for (k, it) in items.iter().enumerate() {
+            if k > 0 {
+                line.push_str(&" ".repeat(10 - line.len() % 10));
+            }
+            line.push_str(it);
+        }
+        line
+    };
+    let want = [
+        " 5 ".to_string(),
+        "-3 ".into(),
+        "-42  1000 ".into(),
+        " 3.5 ".into(),
+        " 2.50 ".into(),
+        "N= 7 ".into(),
+        zones(&["A", "B"]),
+        zones(&[" 1 ", " 2 "]),
+        zones(&["AB", "C"]),
+        zones(&[" 7 ", "-42 ", " 1000 ", "END"]),
+    ];
+    assert_eq!(run_basic_print(src, true), want.join("\r") + "\r");
+    // `option basic print` in the source does the same
+    assert_eq!(run_basic_print(&format!("option basic print\n{src}"), false), want.join("\r") + "\r");
+    // default: unchanged
+    assert_eq!(run_basic_print("var b = 7\nprint b, 2; \"X\"\n", false), "72X\r");
+}
+
+#[test]
+fn word_and_signed_mod_and_shr() {
+    let signed: [(i16, i16); 10] =
+        [(-7, 3), (7, -3), (-7, -3), (1000, 7), (-1000, 7), (32767, 10), (-32768, 7), (5, 0), (-5, 0), (300, 256)];
+    let words: [(u16, u16); 5] = [(65535, 10), (1005, 7), (40000, 300), (7, 1000), (9, 0)];
+    let shifts: [(i16, i16); 5] = [(-8, 1), (-7, 1), (-32768, 15), (1000, 3), (-1, 4)];
+    let mut src = String::new();
+    let mut want = vec![];
+    for (k, (a, b)) in signed.iter().enumerate() {
+        src += &format!("dim sa{k} as integer = {a}\ndim sb{k} as integer = {b}\ndim sr{k} as integer\nsr{k} = sa{k} mod sb{k}\n");
+        want.push((format!("sr{k}"), (if *b == 0 { *a } else { a % b }) as u16));
+    }
+    for (k, (a, b)) in words.iter().enumerate() {
+        src += &format!("dim wa{k} as word = {a}\ndim wb{k} as word = {b}\ndim wr{k} as word\nwr{k} = (wa{k} + 0) mod (wb{k} + 0)\n");
+        want.push((format!("wr{k}"), if *b == 0 { *a } else { a % b }));
+    }
+    for (k, (a, n)) in shifts.iter().enumerate() {
+        src += &format!("dim ha{k} as integer = {a}\ndim hr{k} as integer\nhr{k} = ha{k} shr {n}\n");
+        want.push((format!("hr{k}"), (a >> n) as u16));
+    }
+    src += "dim c as integer = -9\nprint c mod 4; \" \"; c shr 1; \" \"; 7 mod -3\n";
+    src += "var b8 = 200\nvar r8 = b8 mod 7\n";
+    let r = run_src(&src);
+    for (name, w) in want {
+        assert_eq!(r.word(&name), w, "{name}");
+    }
+    assert_eq!(r.output(), "-1 -5 1\r");
+    assert_eq!(r.byte("r8"), 200 % 7);
+}
+
+#[test]
+fn word_and_signed_division() {
+    let signed: [(i16, i16); 10] =
+        [(-700, -7), (-700, 7), (700, -7), (-700, 300), (-700, -3), (32767, -2), (-32768, 2), (-1, 1000), (12345, 123), (-9, 10)];
+    let words: [(u16, u16); 4] = [(50000, 300), (65535, 256), (40000, 7), (1000, 1001)];
+    let mut src = String::new();
+    let mut want = vec![];
+    for (k, (a, b)) in signed.iter().enumerate() {
+        src += &format!("dim sa{k} as integer = {a}\ndim sb{k} as integer = {b}\ndim sq{k} as integer, sc{k} as integer\nsq{k} = sa{k} / sb{k}\nsc{k} = sa{k} / {b}\n");
+        want.push((format!("sq{k}"), a.wrapping_div(*b) as u16));
+        want.push((format!("sc{k}"), a.wrapping_div(*b) as u16));
+    }
+    for (k, (a, b)) in words.iter().enumerate() {
+        src += &format!("dim wa{k} as word = {a}\ndim wb{k} as word = {b}\ndim wq{k} as word\nwq{k} = (wa{k} + 0) / (wb{k} + 0)\n");
+        want.push((format!("wq{k}"), a / b));
+    }
+    src += "dim i as integer = -700\nprint i / -7; \" \"; 700 / (i + 0)\n";
+    let r = run_src(&src);
+    for (name, w) in want {
+        assert_eq!(r.word(&name), w, "{name}");
+    }
+    assert_eq!(r.output(), "100 -1\r");
+}
+
+#[test]
+fn byte_overflow_warnings() {
+    let res = compile_src(
+        "var a = 10
+var b = 0
+dim w as word
+b = 300
+b = a + 1000
+b = 200 * 2
+b = (a + 1000) and 255
+b = a * 3
+w = a + 1000
+b = -1
+",
+    );
+    let lines: Vec<&str> = res.warnings.iter().map(|w| w.split(':').next().unwrap()).collect();
+    assert_eq!(lines, ["line 4", "line 5", "line 6"], "{:?}", res.warnings);
+    assert!(res.warnings[0].contains("'b' is a byte") && res.warnings[0].contains("300"));
+}
+
+#[test]
+fn end_in_qbasic_routine_ends_the_program() {
+    let r = run_src(
+        "dim n as integer
+dim k as byte
+sub old_style(x)
+    if x == 9 then
+        k = k + 100
+    end
+end
+SUB Check (x AS INTEGER)
+    old_style x
+    IF x > 2 THEN
+        PRINT \"STOP\"
+        END
+    END IF
+    WHILE k < 0 : WEND
+    IF x = 1 THEN k = k + 1 END
+    PRINT \"OK\"; x
+END SUB
+FOR n = 1 TO 5
+    Check n
+NEXT
+PRINT \"NEVER\"
+",
+    );
+    assert_eq!(r.output(), "OK1\rOK2\rSTOP\r");
+    assert_eq!(r.byte("k"), 1);
+    // `bye` inside an (old-style) sub leaves the program too, not just the sub
+    let r = run_src("sub quit()\n    print \"Q\"\n    bye\nend\nquit()\nprint \"AFTER\"\n");
+    assert_eq!(r.output(), "Q\r");
+}
+
+#[test]
+fn str_in_basic_print_mode() {
+    let src = "var b = 7
+dim i as integer = -42
+dim d as double = 3.5
+dim s as string
+s = str$(b) + \":\" + str$(i) + \":\" + str$(d)
+print s
+print str$(b); str$(i)
+print \"[\" + str$(200) + \"]\"
+if str$(b) = \" 7\" then print \"EQ\"
+";
+    assert_eq!(run_basic_print(src, true), " 7:-42: 3.5\r 7-42\r[ 200]\rEQ\r");
+    // default: the byte form stays 3 digits
+    assert_eq!(run_basic_print("var b = 7\nprint str$(b)\n", false), "007\r");
+}
+
+#[test]
+fn option_strings_sets_string_lengths() {
+    let body = "dim s as string, t as string
+dim a(2) as string
+dim k as byte, n as byte, m as byte
+for k = 1 to 15
+    s = s + \"0123456789\"
+next
+t = s + \"\"
+a(1) = s
+n = len(t)
+m = len(a(1))
+";
+    let r = run_src(body);
+    assert_eq!((r.byte("n"), r.byte("m")), (80, 31));
+    let r = run_src(&format!("option strings 200, 100\n{body}"));
+    assert_eq!((r.byte("n"), r.byte("m")), (150, 127));
+    let r = run_src(&format!("option strings 255\n{body}"));
+    assert_eq!((r.byte("n"), r.byte("m")), (150, 31));
+    let opts = ultimate_basic::compiler::CompileOptions { basic_stub: false, explicit: false, basic_print: false };
+    let bad = ultimate_basic::compiler::compile(&format!("option strings 300\n{body}"), &opts);
+    assert!(!bad.errors.is_empty());
+}
+
+#[test]
+fn struct_defaults_nesting_strings_and_params() {
+    let r = run_src(
+        "type TPoint
+    var x: int = 3
+    var y: word = 1000
+endtype
+TYPE TEntity
+    pos AS TPoint
+    hp AS WORD = 100
+    name AS STRING * 6 = \"NOBODY\"
+    lives AS BYTE
+END TYPE
+var e: TEntity = array(100)
+dim i as byte, a as byte, b as word, c as word, d as byte
+dim s as string, t as string
+sub heal(p AS TEntity, amount AS WORD)
+    p.hp = p.hp + amount
+    p.pos.x = p.pos.x + 1
+    rename p
+end sub
+sub rename(q: TEntity)
+    q.name = \"HEALED-TOO-LONG\"
+end sub
+FUNCTION Dist (p AS TEntity) AS WORD
+    Dist = p.pos.x + p.pos.y
+END FUNCTION
+a = e[5].pos.x
+b = e[5].pos.y
+c = e[5].hp
+s = e[5].name
+i = 90
+e[i].hp = 4000
+e[i].pos.x = 7
+e[i].name = \"ZS\" + \"OLT\"
+heal(e[i], 25)
+d = e[i].pos.x
+t = e[i].name
+print e[i].hp; \" \"; Dist(e[i]); \" \"; e[i].name; \" \"; e[3].name + \"!\"
+if e[90].name = \"HEALED\" then print \"EQ\"
+",
+    );
+    assert_eq!((r.byte("a"), r.word("b"), r.word("c")), (3, 1000, 100));
+    assert_eq!(r.byte("d"), 8);
+    assert_eq!(r.output(), "4025 1008 HEALED NOBODY!\rEQ\r");
+    // element 90 lies 90 * 13 = 1170 bytes in (the index used to wrap at 256)
+    let base = r.res.map.arrays.iter().find(|a| a.name == "e").unwrap().base_addr as usize;
+    assert_eq!(u16::from_le_bytes([r.cpu.mem[base + 1170 + 3], r.cpu.mem[base + 1170 + 4]]), 4025);
+}
+
+#[test]
+fn word_plus_minus_16_bit_operands() {
+    let r = run_src(
+        "var wa = array_word(4)
+dim w as word = 1000
+dim v as word = 3000
+dim i as byte = 2
+dim a as word, b as word, c as word
+fn big() : word
+    return 700
+end
+wa[i] = 5000
+a = w + wa[i]
+b = v - wa[1] - big()
+c = w + (v + 1)
+",
+    );
+    assert_eq!((r.word("a"), r.word("b"), r.word("c")), (6000, 2300, 4001));
+}
+
+#[test]
+fn struct_element_at_most_256_bytes() {
+    let opts = ultimate_basic::compiler::CompileOptions { basic_stub: false, explicit: false, basic_print: false };
+    let ok = ultimate_basic::compiler::compile("type T\n  var a: string * 200\n  var b: string * 54\nendtype\nvar t: T = array(2)\n", &opts);
+    assert!(ok.errors.is_empty(), "{:?}", ok.errors);
+    let bad = ultimate_basic::compiler::compile("type T\n  var a: string * 200\n  var b: string * 60\nendtype\n", &opts);
+    assert!(bad.errors.iter().any(|e| e.contains("at most 256 bytes")), "{:?}", bad.errors);
 }

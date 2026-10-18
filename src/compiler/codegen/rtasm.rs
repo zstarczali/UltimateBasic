@@ -53,7 +53,7 @@ enum Item {
     Res { n: u16 },
 }
 
-fn strip(line: &str) -> &str {
+pub(super) fn strip(line: &str) -> &str {
     // `;` starts a comment unless it is inside a character literal
     let mut in_chr = false;
     for (i, c) in line.char_indices() {

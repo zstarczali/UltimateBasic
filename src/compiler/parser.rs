@@ -66,6 +66,93 @@ fn fold_const_expr(e: Expr) -> Expr {
     }
 }
 
+/// One piece of a PRINT USING format string.
+#[derive(Debug, Clone, PartialEq)]
+enum UsingPiece {
+    Text(String),
+    /// numeric field: positions before the point (with sign / commas), decimals, flags
+    /// (1 commas, 2 leading '+', 4 trailing '-', 8 point) — `f_using`'s A / X / Y
+    Num(u8, u8, u8),
+    /// string field: `&` (0 = whole string), `!` (1), `\  \` (its width)
+    Str(u8),
+}
+
+/// Split a PRINT USING format (QBasic subset) into text and fields.
+fn parse_using_format(fmt: &str) -> Result<Vec<UsingPiece>, String> {
+    let c: Vec<char> = fmt.chars().collect();
+    let at = |i: usize| c.get(i).copied().unwrap_or('\0');
+    let mut out = vec![];
+    let mut text = String::new();
+    let flush = |text: &mut String, out: &mut Vec<UsingPiece>, piece: UsingPiece| {
+        if !text.is_empty() {
+            out.push(UsingPiece::Text(std::mem::take(text)));
+        }
+        out.push(piece);
+    };
+    let mut i = 0;
+    while i < c.len() {
+        let ch = c[i];
+        let starts_num =
+            ch == '#' || (ch == '.' && at(i + 1) == '#') || (ch == '+' && (at(i + 1) == '#' || at(i + 1) == '.' && at(i + 2) == '#'));
+        if ch == '_' && i + 1 < c.len() {
+            text.push(c[i + 1]);
+            i += 2;
+        } else if (ch == '*' && at(i + 1) == '*' || ch == '$' && at(i + 1) == '$') && matches!(at(i + 2), '#' | '.' | '*' | '$') {
+            return Err(format!("PRINT USING: '{ch}{ch}' fields are not supported (use '#', '.', ',', '+', '-')"));
+        } else if ch == '&' || ch == '!' {
+            flush(&mut text, &mut out, UsingPiece::Str(if ch == '!' { 1 } else { 0 }));
+            i += 1;
+        } else if ch == '\\' && c[i + 1..].contains(&'\\') {
+            let close = i + 1 + c[i + 1..].iter().position(|&x| x == '\\').unwrap();
+            flush(&mut text, &mut out, UsingPiece::Str((close - i + 1) as u8));
+            i = close + 1;
+        } else if starts_num {
+            let (mut w, mut d, mut f) = (0u8, 0u8, 0u8);
+            if ch == '+' {
+                f |= 2;
+                w += 1;
+                i += 1;
+            }
+            while at(i) == '#' || (at(i) == ',' && w > 0) {
+                if at(i) == ',' {
+                    f |= 1;
+                }
+                w += 1;
+                i += 1;
+            }
+            if at(i) == '.' {
+                f |= 8;
+                i += 1;
+                while at(i) == '#' {
+                    d += 1;
+                    i += 1;
+                }
+            }
+            if at(i) == '^' {
+                return Err("PRINT USING: '^^^^' (exponent) fields are not supported".into());
+            }
+            if at(i) == '-' {
+                f |= 4;
+                i += 1;
+            }
+            if d > 9 {
+                return Err("PRINT USING: at most 9 decimals".into());
+            }
+            if w as usize + d as usize > 30 {
+                return Err("PRINT USING: a numeric field is at most 30 characters".into());
+            }
+            flush(&mut text, &mut out, UsingPiece::Num(w, d, f));
+        } else {
+            text.push(ch);
+            i += 1;
+        }
+    }
+    if !text.is_empty() {
+        out.push(UsingPiece::Text(text));
+    }
+    Ok(out)
+}
+
 /// Integer constant (array bounds, `const`): folded with the integer rules,
 /// whatever the result.
 fn fold_int_const(e: Expr) -> Expr {
@@ -74,6 +161,27 @@ fn fold_int_const(e: Expr) -> Expr {
         Some(n) => Expr::Number(n),
         None => e,
     }
+}
+
+/// One field of a struct type, flattened (`pos.x` for a nested type) with its
+/// kind and its default bytes (`image.len() == kind.width()`).
+#[derive(Debug, Clone)]
+struct StructField {
+    name: String,
+    kind: super::ast::FieldKind,
+    image: Vec<u8>,
+}
+
+/// Settings a program gives with `option …` lines (and the CLI).
+#[derive(Debug, Clone)]
+pub struct SourceOptions {
+    /// C64 BASIC PRINT spacing (`option basic print`, `--basic-print`).
+    pub basic_print: bool,
+    /// Characters of a computed string variable (`option strings n`, 1-255; 80).
+    pub str_cap: u8,
+    /// String-array slot size in bytes: a power of two, 32 (31 characters) by
+    /// default; `option strings n, m` gives m characters, rounded up.
+    pub str_slot: u16,
 }
 
 pub struct Parser {
@@ -99,6 +207,12 @@ pub struct Parser {
     /// `explicit` directive is active — every var / sub-param / fn-param must
     /// declare its type. Set by a pre-scan that looks for the `explicit` token.
     explicit_types: bool,
+    /// C64 BASIC PRINT spacing (`--basic-print` / `option basic print`): a `,`
+    /// between print items becomes `Expr::PrintZone`.
+    basic_print: bool,
+    /// `option strings n, m` (codegen limits, see `SourceOptions`).
+    str_cap: u8,
+    str_slot: u16,
     /// Names of every `sub` / `fn` (pre-scanned), for QBasic-style bare calls
     /// (`koszont "zsolt"`) and for telling `;` print separators from statements.
     sub_names: std::collections::HashSet<String>,
@@ -117,6 +231,19 @@ pub struct Parser {
     in_condition: bool,
     /// Nesting depth of QBasic `select case` (names its hidden selector var).
     select_depth: usize,
+    /// Names declared `as single|double` (variables, arrays, parameters,
+    /// function results): a statement that mentions one is a floating-point
+    /// statement, where 32768-65535 literals keep their unsigned value.
+    real_names: std::collections::HashSet<String>,
+    /// Parsing the body of a routine closed by `end sub` / `end function`: a
+    /// bare `end` alone on its line there ends the program (QBasic).
+    qb_routine: bool,
+    /// Struct types as byte layouts (fields in order, nested types flattened).
+    struct_layouts: std::collections::HashMap<String, Vec<StructField>>,
+    /// Struct-typed parameters of the routine being parsed: name → type.
+    struct_vars: std::collections::HashMap<String, String>,
+    /// Struct parameters found by `parse_param_list`, taken by the body.
+    pending_struct_params: Vec<(String, String)>,
 }
 
 impl Parser {
@@ -135,6 +262,9 @@ impl Parser {
             skip_var_check: false,
             statement_lines: vec![],
             explicit_types: false,
+            basic_print: false,
+            str_cap: 80,
+            str_slot: 32,
             sub_names: std::collections::HashSet::new(),
             fn_names: std::collections::HashSet::new(),
             fn_result: None,
@@ -143,6 +273,11 @@ impl Parser {
             call_graph: std::collections::HashMap::new(),
             in_condition: false,
             select_depth: 0,
+            real_names: std::collections::HashSet::new(),
+            qb_routine: false,
+            struct_layouts: std::collections::HashMap::new(),
+            struct_vars: std::collections::HashMap::new(),
+            pending_struct_params: vec![],
         }
     }
 
@@ -161,6 +296,9 @@ impl Parser {
             skip_var_check: false,
             statement_lines: vec![],
             explicit_types: false,
+            basic_print: false,
+            str_cap: 80,
+            str_slot: 32,
             sub_names: std::collections::HashSet::new(),
             fn_names: std::collections::HashSet::new(),
             fn_result: None,
@@ -169,6 +307,11 @@ impl Parser {
             call_graph: std::collections::HashMap::new(),
             in_condition: false,
             select_depth: 0,
+            real_names: std::collections::HashSet::new(),
+            qb_routine: false,
+            struct_layouts: std::collections::HashMap::new(),
+            struct_vars: std::collections::HashMap::new(),
+            pending_struct_params: vec![],
         }
     }
 
@@ -190,6 +333,9 @@ impl Parser {
             skip_var_check: false,
             statement_lines: vec![],
             explicit_types: false,
+            basic_print: false,
+            str_cap: 80,
+            str_slot: 32,
             sub_names: std::collections::HashSet::new(),
             fn_names: std::collections::HashSet::new(),
             fn_result: None,
@@ -198,6 +344,11 @@ impl Parser {
             call_graph: std::collections::HashMap::new(),
             in_condition: false,
             select_depth: 0,
+            real_names: std::collections::HashSet::new(),
+            qb_routine: false,
+            struct_layouts: std::collections::HashMap::new(),
+            struct_vars: std::collections::HashMap::new(),
+            pending_struct_params: vec![],
         }
     }
 
@@ -220,6 +371,9 @@ impl Parser {
             skip_var_check: false,
             statement_lines: vec![],
             explicit_types: false,
+            basic_print: false,
+            str_cap: 80,
+            str_slot: 32,
             sub_names: std::collections::HashSet::new(),
             fn_names: std::collections::HashSet::new(),
             fn_result: None,
@@ -228,6 +382,11 @@ impl Parser {
             call_graph: std::collections::HashMap::new(),
             in_condition: false,
             select_depth: 0,
+            real_names: std::collections::HashSet::new(),
+            qb_routine: false,
+            struct_layouts: std::collections::HashMap::new(),
+            struct_vars: std::collections::HashMap::new(),
+            pending_struct_params: vec![],
         }
     }
 
@@ -240,6 +399,73 @@ impl Parser {
     /// `--explicit`, not by any source-level keyword.
     pub fn set_explicit(&mut self, on: bool) {
         self.explicit_types = on;
+    }
+
+    pub fn set_basic_print(&mut self, on: bool) {
+        self.basic_print = on;
+    }
+
+    /// C64 BASIC PRINT spacing on (option, or `option basic print` in the source).
+    pub fn basic_print(&self) -> bool {
+        self.basic_print
+    }
+
+    /// Everything the `option …` lines set (for the code generator).
+    pub fn source_options(&self) -> SourceOptions {
+        SourceOptions { basic_print: self.basic_print, str_cap: self.str_cap, str_slot: self.str_slot }
+    }
+
+    /// `option basic print` at the start of a statement: switch the mode on and
+    /// drop the three tokens (the line stays, empty).
+    fn take_option_directives(&mut self) {
+        let mut i = 0;
+        while i + 2 < self.tokens.len() {
+            let at_start = i == 0 || matches!(self.tokens[i - 1], Token::Newline | Token::Colon);
+            if at_start
+                && matches!(&self.tokens[i], Token::Ident(o) if o == "option")
+                && matches!(&self.tokens[i + 1], Token::Ident(b) if b == "basic")
+                && self.tokens[i + 2] == Token::Print
+            {
+                self.basic_print = true;
+                self.tokens.drain(i..i + 3);
+                if i > 0 && self.tokens.get(i) == Some(&Token::Colon) {
+                    self.tokens.remove(i);
+                }
+                continue;
+            }
+            // `option strings n [, m]`: string variable / array element length
+            if at_start
+                && matches!(&self.tokens[i], Token::Ident(o) if o == "option")
+                && matches!(&self.tokens[i + 1], Token::Ident(s) if s == "strings")
+            {
+                let num = |t: Option<&Token>| match t {
+                    Some(Token::Number(n)) => Some(*n as i32),
+                    _ => None,
+                };
+                let mut end = i + 2;
+                let n = num(self.tokens.get(end));
+                end += 1;
+                let mut m = None;
+                if self.tokens.get(end) == Some(&Token::Comma) {
+                    m = num(self.tokens.get(end + 1));
+                    end += 2;
+                }
+                match (n, m) {
+                    (Some(n @ 1..=255), m) if m.is_none_or(|m| (1..=255).contains(&m)) => {
+                        self.str_cap = n as u8;
+                        if let Some(m) = m {
+                            self.str_slot = ((m + 1) as u16).next_power_of_two().max(32);
+                        }
+                    }
+                    _ => self.errors.push(
+                        "option strings: lengths must be 1-255 (option strings 200 or option strings 200, 63)".into(),
+                    ),
+                }
+                self.tokens.drain(i..end.min(self.tokens.len()));
+                continue;
+            }
+            i += 1;
+        }
     }
 
     /// Parse a SID file at compile time and build a LoadSid statement.
@@ -774,15 +1000,32 @@ impl Parser {
     }
 
     fn peek(&self) -> &Token {
-        self.tokens.get(self.pos).unwrap_or(&Token::Eof)
+        self.token_at(self.pos)
     }
 
     fn peek2(&self) -> &Token {
-        self.tokens.get(self.pos + 1).unwrap_or(&Token::Eof)
+        self.token_at(self.pos + 1)
+    }
+
+    /// The token at `i` as the grammar sees it: the closers `end sub|function`,
+    /// `end if|select` and `wend` are `End`; in a QBasic routine a bare `end`
+    /// alone on its line is `EndProgramMark`.
+    fn token_at(&self, i: usize) -> &Token {
+        match self.tokens.get(i) {
+            Some(Token::EndRoutine | Token::EndBlock) => &Token::End,
+            Some(Token::End)
+                if self.qb_routine
+                    && (i == 0 || self.tokens[i - 1] == Token::Newline)
+                    && matches!(self.tokens.get(i + 1), None | Some(Token::Newline | Token::Eof)) =>
+            {
+                &Token::EndProgramMark
+            }
+            t => t.unwrap_or(&Token::Eof),
+        }
     }
 
     fn advance(&mut self) -> Token {
-        let t = self.tokens.get(self.pos).cloned().unwrap_or(Token::Eof);
+        let t = self.token_at(self.pos).clone();
         self.pos += 1;
         if matches!(t, Token::Newline) {
             self.line += 1;
@@ -821,6 +1064,25 @@ impl Parser {
             while !matches!(self.peek(), Token::RParen | Token::Eof) {
                 if let Token::Ident(p) = self.peek().clone() {
                     self.advance();
+                    // `p: TName` / `p AS TName`: a struct parameter — a word with
+                    // the address of the element passed (`hit(enemies[i])`)
+                    let struct_type = match (self.peek(), self.peek2()) {
+                        (Token::Colon, Token::Ident(t)) if self.struct_layouts.contains_key(t) => Some(t.clone()),
+                        (Token::Ident(a), Token::Ident(t)) if a == "as" && self.struct_layouts.contains_key(t) => {
+                            Some(t.clone())
+                        }
+                        _ => None,
+                    };
+                    if let Some(t) = struct_type {
+                        self.advance();
+                        self.advance();
+                        self.pending_struct_params.push((p.clone(), t));
+                        params.push((p, Some(VarType::Word)));
+                        if self.peek() == &Token::Comma {
+                            self.advance();
+                        }
+                        continue;
+                    }
                     let ptype = if self.peek() == &Token::Colon {
                         self.advance();
                         match self.peek() {
@@ -914,6 +1176,92 @@ impl Parser {
         };
         self.advance();
         Ok(vt)
+    }
+
+    /// `print using "fmt"; a, b; …` — the format is split at compile time and
+    /// lowered to plain prints (text, string fields) and `PrintUsingNum`.
+    /// Values cycle through the fields; after the last one the text up to the
+    /// next field is printed. A trailing `;` / `,` keeps the cursor on the line.
+    fn parse_print_using(&mut self) -> Option<Stmt> {
+        self.advance(); // 'using'
+        let fmt = match self.advance() {
+            Token::StringLit(s) => s,
+            _ => {
+                self.errors.push(format!("line {}: PRINT USING needs a literal format string", self.line));
+                return None;
+            }
+        };
+        let pieces = match parse_using_format(&fmt) {
+            Ok(p) => p,
+            Err(e) => {
+                self.errors.push(format!("line {}: {e}", self.line));
+                return None;
+            }
+        };
+        if matches!(self.peek(), Token::Semicolon | Token::Comma) {
+            self.advance();
+        }
+        let end = |t: &Token| matches!(t, Token::Newline | Token::Eof | Token::Colon);
+        let mut values = vec![];
+        let mut no_newline = false;
+        while !end(self.peek()) {
+            values.push(self.parse_expr());
+            let sep = self.peek() == &Token::Comma
+                || (self.peek() == &Token::Semicolon && self.semicolon_continues_print());
+            if sep || self.peek() == &Token::Semicolon {
+                self.advance();
+                if sep && !end(self.peek()) {
+                    continue;
+                }
+                no_newline = true;
+            }
+            break;
+        }
+        self.expect_newline();
+        let n = pieces.len();
+        if !values.is_empty() && pieces.iter().all(|p| matches!(p, UsingPiece::Text(_))) {
+            self.errors.push(format!("line {}: PRINT USING: the format has no field", self.line));
+            return None;
+        }
+        let text = |t: &str| Stmt::Print { args: vec![Expr::StringLit(t.to_string())], no_newline: true };
+        let mut stmts = vec![];
+        let mut k = 0;
+        for v in values {
+            while let UsingPiece::Text(t) = &pieces[k % n] {
+                stmts.push(text(t));
+                k += 1;
+            }
+            stmts.push(match pieces[k % n] {
+                UsingPiece::Num(width, decimals, flags) => Stmt::PrintUsingNum { expr: v, width, decimals, flags },
+                UsingPiece::Str(0) => Stmt::Print { args: vec![v], no_newline: true },
+                UsingPiece::Str(w) => {
+                    // left$(v + "<w spaces>", w): cut or padded to the field
+                    let padded = Expr::BinOp(Box::new(v), BinOp::Add, Box::new(Expr::StringLit(" ".repeat(w as usize))));
+                    Stmt::Print {
+                        args: vec![Expr::FnCall("left$".into(), vec![padded, Expr::Number(w as i16)])],
+                        no_newline: true,
+                    }
+                }
+                UsingPiece::Text(_) => unreachable!(),
+            });
+            k += 1;
+        }
+        if k == 0 || k % n != 0 {
+            let mut j = k % n;
+            while j < n {
+                let UsingPiece::Text(t) = &pieces[j] else { break };
+                stmts.push(text(t));
+                j += 1;
+            }
+        }
+        if !no_newline || stmts.is_empty() {
+            stmts.push(Stmt::Print { args: vec![], no_newline });
+        }
+        // one line-map entry per statement (parse_stmt pushed one)
+        for _ in 1..stmts.len() {
+            self.statement_lines.push(self.line);
+        }
+        Some(Stmt::Block(stmts))
     }
 
     /// Inside `print`: does the `;` at the current position separate two print
@@ -1552,7 +1900,67 @@ impl Parser {
 
     /// Pre-scan tokens to collect all `var name` declarations.
     /// Handles `include` recursively by spawning sub-parsers for included files.
+    /// `name as single|double`, `name(…) as double` (arrays, function
+    /// results) and `dim a, b as double`: collect the names into `real_names`.
+    fn pre_scan_real_names(&mut self) {
+        let t = &self.tokens;
+        let is_real_type = |tok: &Token| matches!(tok, Token::Ident(n) if n == "single" || n == "double");
+        for i in 1..t.len().saturating_sub(1) {
+            if !(matches!(&t[i], Token::Ident(a) if a == "as") && is_real_type(&t[i + 1])) {
+                continue;
+            }
+            let mut j = i - 1;
+            if t[j] == Token::RParen {
+                let mut depth = 0;
+                loop {
+                    match t[j] {
+                        Token::RParen => depth += 1,
+                        Token::LParen => depth -= 1,
+                        _ => {}
+                    }
+                    if depth == 0 || j == 0 {
+                        break;
+                    }
+                    j -= 1;
+                }
+                if j == 0 {
+                    continue;
+                }
+                j -= 1;
+            }
+            // the name, and the names before it in a `dim a, b as …` list
+            while let Token::Ident(n) = &t[j] {
+                self.real_names.insert(n.clone());
+                if j < 2 || t[j - 1] != Token::Comma {
+                    break;
+                }
+                j -= 2;
+            }
+        }
+    }
+
+    /// Does the statement around the current token compute in floating
+    /// point? It mentions a SINGLE / DOUBLE name, `^`, a literal only floating
+    /// point can hold, or a floating-point builtin.
+    fn stmt_is_real(&self) -> bool {
+        if self.real_names.is_empty() && !self.tokens.iter().any(|t| matches!(t, Token::Caret | Token::FixedLit(_, _, true))) {
+            return false;
+        }
+        let end_of_stmt = |t: &Token| matches!(t, Token::Newline | Token::Colon | Token::Eof);
+        let start = self.tokens[..self.pos].iter().rposition(end_of_stmt).map_or(0, |i| i + 1);
+        let end = self.tokens[self.pos..].iter().position(end_of_stmt).map_or(self.tokens.len(), |i| self.pos + i);
+        self.tokens[start..end].iter().any(|t| match t {
+            Token::Ident(n) => {
+                self.real_names.contains(n)
+                    || matches!(n.as_str(), "sqr" | "exp" | "log" | "atn" | "tan" | "fix" | "cint" | "csng" | "cdbl")
+            }
+            Token::Caret | Token::FixedLit(_, _, true) => true,
+            _ => false,
+        })
+    }
+
     fn pre_scan_var_decls(&mut self) {
+        self.pre_scan_real_names();
         let saved_pos = self.pos;
         let saved_line = self.line;
         self.pos = 0;
@@ -1583,6 +1991,7 @@ impl Parser {
                         self.fn_names.extend(sub.fn_names);
                         self.array_names.extend(sub.array_names);
                         self.array_elem_types.extend(sub.array_elem_types);
+                        self.real_names.extend(sub.real_names);
                     }
                 }
             } else if matches!(self.peek(), Token::Sub | Token::Fn) {
@@ -1659,35 +2068,113 @@ impl Parser {
         self.declared_vars.contains(name) || self.consts.contains_key(name)
     }
 
-    /// For `arr[i].field` — resolve field to (offset_in_bytes, field_kind, elem_size).
-    /// Returns None if `arr` is not a struct-typed array or `field` isn't known.
-    /// int → 1 byte, word/float → 2 bytes. elem_size = sum of field widths.
+    /// For `arr[i].field` / `param.field` — resolve the (possibly dotted,
+    /// nested) field to (offset in bytes, kind, element size). `arr` is a
+    /// struct array or a struct-typed parameter.
     fn resolve_struct_field(
         &self,
         arr: &str,
         field: &str,
     ) -> Option<(u16, super::ast::FieldKind, u16)> {
-        use super::ast::FieldKind;
-        let tname = self.array_types.get(arr)?;
-        let fields = self.types.get(tname)?;
+        let tname = self.array_types.get(arr).or_else(|| self.struct_vars.get(arr))?;
+        let fields = self.struct_layouts.get(tname)?;
         let mut offset: u16 = 0;
-        let mut elem_size: u16 = 0;
-        let mut found: Option<(u16, FieldKind)> = None;
-        for (fname, ftype) in fields {
-            let kind = match ftype {
-                VarType::Word => FieldKind::Word,
-                VarType::Float => FieldKind::Float,
-                _ => FieldKind::Int,
-            };
-            let w = kind.width() as u16;
-            if fname == field && found.is_none() {
-                found = Some((offset, kind));
+        let mut found = None;
+        for f in fields {
+            if f.name == field && found.is_none() {
+                found = Some((offset, f.kind));
             }
-            offset = offset.wrapping_add(w);
-            elem_size = elem_size.wrapping_add(w);
+            offset += f.kind.width() as u16;
         }
         let (off, kind) = found?;
-        Some((off, kind, elem_size))
+        Some((off, kind, offset))
+    }
+
+    /// Bytes of one element of struct type `tname`.
+    fn struct_elem_size(&self, tname: &str) -> u16 {
+        self.struct_layouts
+            .get(tname)
+            .map(|fs| fs.iter().map(|f| f.kind.width() as u16).sum())
+            .unwrap_or(1)
+    }
+
+    /// `.a.b` after a first field name: the dotted name of a nested field.
+    fn read_field_chain(&mut self, first: String) -> String {
+        let mut name = first;
+        while self.peek() == &Token::Dot {
+            let Token::Ident(next) = self.peek2().clone() else { break };
+            self.advance();
+            self.advance();
+            name = format!("{name}.{next}");
+        }
+        name
+    }
+
+    /// Field type after `:` / `as` in a `type` block, its optional `* n`
+    /// (string length) and `= default`: the flattened fields it adds.
+    fn parse_struct_field(&mut self, tname: &str, fname: &str) -> Result<Vec<StructField>, String> {
+        use super::ast::FieldKind;
+        let kind = match self.peek().clone() {
+            Token::Int => FieldKind::Int,
+            Token::Word => FieldKind::Word,
+            Token::Float => FieldKind::Float,
+            Token::Str => FieldKind::Str(15),
+            Token::Ident(t) => match t.as_str() {
+                "byte" | "int" => FieldKind::Int,
+                "word" | "integer" => FieldKind::Word,
+                "string" => FieldKind::Str(15),
+                _ => {
+                    // a nested struct type: its fields, prefixed
+                    let Some(inner) = self.struct_layouts.get(&t).cloned() else {
+                        return Err(format!(
+                            "type '{tname}': field '{fname}' has unknown type '{t}' — use int, word, float, string or a struct type"
+                        ));
+                    };
+                    self.advance();
+                    if self.peek() == &Token::Assign {
+                        return Err(format!(
+                            "type '{tname}': field '{fname}' is a struct; its defaults come from type '{t}'"
+                        ));
+                    }
+                    return Ok(inner
+                        .into_iter()
+                        .map(|f| StructField { name: format!("{fname}.{}", f.name), ..f })
+                        .collect());
+                }
+            },
+            other => {
+                return Err(format!(
+                    "type '{tname}': field '{fname}' has unsupported type {other:?} — use int, word, float, string or a struct type"
+                ))
+            }
+        };
+        self.advance();
+        let mut kind = kind;
+        if matches!(kind, FieldKind::Str(_)) && self.peek() == &Token::Star {
+            self.advance();
+            match self.advance() {
+                Token::Number(n) if (1..=254).contains(&n) => kind = FieldKind::Str(n as u8),
+                _ => return Err(format!("type '{tname}': 'string * n' needs a length 1-254 (field '{fname}')")),
+            }
+        }
+        let mut image = vec![0u8; kind.width() as usize];
+        if self.peek() == &Token::Assign {
+            self.advance();
+            let bad = || format!("type '{tname}': the default of field '{fname}' must be a constant");
+            match (kind, fold_int_const(self.parse_expr())) {
+                (FieldKind::Int, Expr::Number(n)) => image[0] = n as u8,
+                (FieldKind::Word, Expr::Number(n)) => image.copy_from_slice(&(n as u16).to_le_bytes()),
+                (FieldKind::Float, Expr::Number(n)) => image.copy_from_slice(&((n as u16) << 8).to_le_bytes()),
+                (FieldKind::Float, Expr::FixedLit(q, _, false)) => image.copy_from_slice(&q.to_le_bytes()),
+                (FieldKind::Str(n), Expr::StringLit(text)) => {
+                    for (k, c) in text.chars().take(n as usize).enumerate() {
+                        image[k] = super::codegen::ascii_to_petscii(c, false);
+                    }
+                }
+                _ => return Err(bad()),
+            }
+        }
+        Ok(vec![StructField { name: fname.to_string(), kind, image }])
     }
 
     /// Parse the dimension list of an `array(...)` / `array_word(...)` initializer.
@@ -1794,6 +2281,7 @@ impl Parser {
     }
 
     pub fn parse(&mut self) -> Vec<Stmt> {
+        self.take_option_directives();
         // Pre-scan: collect all var declarations (including from included files)
         self.pre_scan_var_decls();
 
@@ -1826,6 +2314,7 @@ impl Parser {
                             sub.fn_names = self.fn_names.clone();
                             sub.array_names = self.array_names.clone();
                             sub.array_elem_types = self.array_elem_types.clone();
+                            sub.real_names = self.real_names.clone();
                             let sub_stmts = sub.parse();
                             self.statement_lines.extend(sub.take_statement_lines());
                             self.consts.extend(sub.consts.into_iter());
@@ -1938,6 +2427,32 @@ impl Parser {
             }
         }
         bytes
+    }
+
+    /// Statements of a sub / function body, up to (not including) its `end`.
+    /// A routine closed by `end sub` / `end function` (QBasic style) knows its
+    /// end: a bare `end` at its top level ends the program there.
+    fn parse_routine_body(&mut self) -> Vec<Stmt> {
+        let qbasic = self.tokens[self.pos..]
+            .iter()
+            .find(|t| matches!(t, Token::EndRoutine | Token::Sub | Token::Fn | Token::Eof))
+            == Some(&Token::EndRoutine);
+        let outer = std::mem::replace(&mut self.qb_routine, qbasic);
+        let structs = std::mem::take(&mut self.pending_struct_params).into_iter().collect();
+        let outer_structs = std::mem::replace(&mut self.struct_vars, structs);
+        let mut body = vec![];
+        loop {
+            self.skip_newlines();
+            if matches!(self.peek(), Token::End | Token::Eof) {
+                break;
+            }
+            if let Some(s) = self.parse_stmt() {
+                body.push(s);
+            }
+        }
+        self.qb_routine = outer;
+        self.struct_vars = outer_structs;
+        body
     }
 
     fn parse_body(&mut self) -> Vec<Stmt> {
@@ -2117,19 +2632,14 @@ impl Parser {
                     if matches!(self.peek(), Token::Array) {
                         self.advance();
                         let (count_expr, _dims) = self.parse_array_dims();
-                        // Element size is the sum of field widths (int=1, word/float=2).
-                        let elem_size: u16 = self
-                            .types
+                        // Element size is the sum of field widths.
+                        let elem_size: u16 = self.struct_elem_size(tn);
+                        let image: Vec<u8> = self
+                            .struct_layouts
                             .get(tn)
-                            .map(|fs| {
-                                fs.iter()
-                                    .map(|(_, t)| match t {
-                                        VarType::Word | VarType::Float => 2u16,
-                                        _ => 1u16,
-                                    })
-                                    .sum()
-                            })
-                            .unwrap_or(1);
+                            .map(|fs| fs.iter().flat_map(|f| f.image.clone()).collect())
+                            .unwrap_or_default();
+                        let count = count_expr.clone();
                         // Total bytes = count * elem_size.
                         let total_size = match count_expr {
                             Expr::Number(n) => {
@@ -2143,11 +2653,27 @@ impl Parser {
                         };
                         self.array_types.insert(name.clone(), tn.clone());
                         self.expect_newline();
-                        return Some(Stmt::VarDecl {
-                            name,
+                        let decl = Stmt::VarDecl {
+                            name: name.clone(),
                             vtype: Some(VarType::Array),
                             expr: total_size,
-                        });
+                        };
+                        // field defaults: the array's initial contents (`data name:`)
+                        if image.iter().any(|&b| b != 0) {
+                            let Expr::Number(n) = count else {
+                                self.errors.push(format!(
+                                    "line {}: '{}': field defaults need a constant element count",
+                                    self.line, name
+                                ));
+                                return Some(decl);
+                            };
+                            let values = (0..n.max(0))
+                                .flat_map(|_| image.iter().map(|&b| Expr::Number(b as i16)))
+                                .collect();
+                            self.statement_lines.push(self.line);
+                            return Some(Stmt::Block(vec![decl, Stmt::ArrayData(name, values)]));
+                        }
+                        return Some(decl);
                     } else {
                         self.errors.push(format!(
                             "line {}: struct-typed var '{}' must be initialized with 'array(N)'",
@@ -2240,6 +2766,34 @@ impl Parser {
                         self.line, name, name
                     ));
                 }
+                // `param.field = val` with a struct parameter
+                if self.peek() == &Token::Dot && self.struct_vars.contains_key(&name) {
+                    self.advance(); // .
+                    let Token::Ident(first) = self.advance() else {
+                        return self.reject_stmt("expected field name after '.'");
+                    };
+                    let field_name = self.read_field_chain(first);
+                    let Some((off, kind, elem_size)) = self.resolve_struct_field(&name, &field_name) else {
+                        self.errors.push(format!(
+                            "line {}: unknown field '{}' on struct parameter '{}'",
+                            self.line, field_name, name
+                        ));
+                        return None;
+                    };
+                    if self.peek() == &Token::Assign {
+                        self.advance();
+                    }
+                    let val = self.parse_expr();
+                    self.expect_newline();
+                    return Some(Stmt::StructSet {
+                        arr: name.clone(),
+                        idx: Expr::Var(name),
+                        field_offset: off,
+                        field_kind: kind,
+                        elem_size,
+                        expr: val,
+                    });
+                }
                 if self.peek() == &LBracket {
                     // arr[idx] = val   (or arr[i, j, ...] = val   or   arr[idx].field = val)
                     self.advance(); // [
@@ -2248,7 +2802,7 @@ impl Parser {
                     if self.peek() == &Token::Dot && self.array_types.contains_key(&name) {
                         self.advance(); // .
                         let field_name = if let Token::Ident(fn_) = self.advance() {
-                            fn_
+                            self.read_field_chain(fn_)
                         } else {
                             return self.reject_stmt("expected field name after '.'");
                         };
@@ -2390,6 +2944,9 @@ impl Parser {
             }
             Token::Print => {
                 self.advance();
+                if matches!(self.peek(), Token::Ident(u) if u == "using") {
+                    return self.parse_print_using();
+                }
                 // `print at col, row, expr...` — position cursor then print
                 if self.peek() == &Token::At {
                     self.advance(); // consume 'at'
@@ -2428,7 +2985,10 @@ impl Parser {
                     while self.peek() == &Token::Comma
                         || (self.peek() == &Token::Semicolon && self.semicolon_continues_print())
                     {
-                        self.advance();
+                        let comma = self.advance() == Token::Comma;
+                        if comma && self.basic_print {
+                            args.push(Expr::PrintZone);
+                        }
                         if !matches!(
                             self.peek(),
                             Token::Newline | Token::Eof | Token::Colon | Token::Semicolon
@@ -2437,12 +2997,13 @@ impl Parser {
                         }
                     }
                 }
-                // Consume optional trailing ';' (C64 BASIC print-modifier: suppress newline)
+                // Consume optional trailing ';' (C64 BASIC print-modifier: suppress newline);
+                // with BASIC spacing a trailing `,` does the same
                 let no_newline = if self.peek() == &Token::Semicolon {
                     self.advance();
                     true
                 } else {
-                    false
+                    matches!(args.last(), Some(Expr::PrintZone))
                 };
                 self.expect_newline();
                 Some(Stmt::Print { args, no_newline })
@@ -2569,8 +3130,9 @@ impl Parser {
                 self.advance();
                 self.parse_do_loop()
             }
-            // An `end` no block is waiting for: QBasic program end.
-            Token::End => {
+            // An `end` no block is waiting for, or a bare `end` in a QBasic
+            // routine: QBasic program end.
+            Token::End | Token::EndProgramMark => {
                 self.advance();
                 self.expect_newline();
                 Some(Stmt::EndProgram)
@@ -2809,16 +3371,7 @@ impl Parser {
                 }
                 self.expect_newline();
                 let body_start = self.pos;
-                let mut body = vec![];
-                loop {
-                    self.skip_newlines();
-                    if matches!(self.peek(), Token::End | Token::Eof) {
-                        break;
-                    }
-                    if let Some(s) = self.parse_stmt() {
-                        body.push(s);
-                    }
-                }
+                let body = self.parse_routine_body();
                 self.record_calls(&name, body_start, self.pos);
                 if self.peek() == &Token::End {
                     self.advance();
@@ -2882,16 +3435,7 @@ impl Parser {
                 self.declared_vars.insert(hidden.clone());
                 let outer_fn = self.fn_result.replace((name.clone(), hidden.clone(), false));
                 let body_start = self.pos;
-                let mut body = vec![];
-                loop {
-                    self.skip_newlines();
-                    if matches!(self.peek(), Token::End | Token::Eof) {
-                        break;
-                    }
-                    if let Some(s) = self.parse_stmt() {
-                        body.push(s);
-                    }
-                }
+                let mut body = self.parse_routine_body();
                 self.record_calls(&name, body_start, self.pos);
                 let (_, _, used) = std::mem::replace(&mut self.fn_result, outer_fn).unwrap();
                 if used {
@@ -2955,11 +3499,13 @@ impl Parser {
                 Some(Stmt::Const(name, val))
             }
             Token::TypeKw => {
-                // Type TName
-                //   var field1: int
-                //   var field2: word
-                //   ...
-                // endType
+                // type TName                       (QBasic: TYPE TName … END TYPE)
+                //   var x: int                     1 byte
+                //   var hp: word = 100             2 bytes, default value
+                //   var name: string * 12          13 bytes (fixed-length string)
+                //   var pos: TPoint                a nested struct: pos.x, pos.y …
+                //   speed AS INTEGER               QBasic field form
+                // endtype | end type
                 self.advance();
                 let type_name = if let Token::Ident(n) = self.advance() {
                     n
@@ -2967,61 +3513,39 @@ impl Parser {
                     return self.reject_stmt("expected type name after 'type'");
                 };
                 self.expect_newline();
-                let mut fields: Vec<(String, VarType)> = vec![];
+                let mut layout: Vec<StructField> = vec![];
                 loop {
                     self.skip_newlines();
-                    match self.peek() {
+                    match self.peek().clone() {
                         Token::EndType | Token::Eof => break,
-                        Token::Var => {
-                            self.advance();
-                            let fname = if let Token::Ident(n) = self.advance() {
-                                n
-                            } else {
+                        Token::Var | Token::Ident(_) => {
+                            if self.peek() == &Token::Var {
+                                self.advance();
+                            }
+                            let Token::Ident(fname) = self.advance() else {
                                 self.errors.push(format!(
-                                    "line {}: type '{}': expected field name after 'var'",
+                                    "line {}: type '{}': expected a field name",
                                     self.line, type_name
                                 ));
                                 continue;
                             };
-                            // Required : type
-                            if self.peek() != &Token::Colon {
+                            if self.peek() == &Token::Colon || self.peek_is_as() {
+                                self.advance();
+                            } else {
                                 self.errors.push(format!(
-                                    "line {}: type '{}': field '{}' must have ':int' or ':word' annotation",
+                                    "line {}: type '{}': field '{}' needs a type (': int' or 'AS INTEGER')",
                                     self.line, type_name, fname
                                 ));
                                 self.expect_newline();
                                 continue;
                             }
-                            self.advance(); // ':'
-                            let ftype = match self.peek() {
-                                Token::Int => {
-                                    self.advance();
-                                    VarType::Int
-                                }
-                                Token::Word => {
-                                    self.advance();
-                                    VarType::Word
-                                }
-                                Token::Float => {
-                                    self.advance();
-                                    VarType::Float
-                                }
-                                other => {
-                                    self.errors.push(format!(
-                                        "line {}: type '{}': field '{}' has unsupported type {:?} — supported: int, word, float",
-                                        self.line, type_name, fname, other
-                                    ));
-                                    self.expect_newline();
-                                    continue;
-                                }
-                            };
-                            // Optional default value — parsed but ignored for MVP.
-                            if self.peek() == &Token::Assign {
-                                self.advance();
-                                let _ = self.parse_expr();
+                            match self.parse_struct_field(&type_name, &fname) {
+                                Ok(fs) => layout.extend(fs),
+                                Err(e) => self.errors.push(format!("line {}: {e}", self.line)),
                             }
-                            self.expect_newline();
-                            fields.push((fname, ftype));
+                            while !matches!(self.peek(), Token::Newline | Token::Eof | Token::EndType) {
+                                self.advance();
+                            }
                         }
                         _ => {
                             // Skip stray tokens inside the block.
@@ -3033,7 +3557,28 @@ impl Parser {
                     self.advance();
                     self.expect_newline();
                 }
+                let fields: Vec<(String, VarType)> = layout
+                    .iter()
+                    .map(|f| {
+                        let t = match f.kind {
+                            super::ast::FieldKind::Int => VarType::Int,
+                            super::ast::FieldKind::Word => VarType::Word,
+                            super::ast::FieldKind::Float => VarType::Float,
+                            super::ast::FieldKind::Str(_) => VarType::Str,
+                        };
+                        (f.name.clone(), t)
+                    })
+                    .collect();
+                // fields are reached with an 8-bit Y offset from the element start
+                let size: u32 = layout.iter().map(|f| f.kind.width() as u32).sum();
+                if size > 256 {
+                    self.errors.push(format!(
+                        "line {}: type '{}' is {} bytes; an element can be at most 256 bytes (shorten its string fields)",
+                        self.line, type_name, size
+                    ));
+                }
                 self.types.insert(type_name.clone(), fields.clone());
+                self.struct_layouts.insert(type_name.clone(), layout);
                 Some(Stmt::TypeDef {
                     name: type_name,
                     fields,
@@ -4604,7 +5149,15 @@ impl Parser {
                 inner => Expr::BinOp(Box::new(Expr::Number(0)), BinOp::Sub, Box::new(inner)),
             },
             Token::Number(n) => Expr::Number(n),
-            Token::Addr(a) => Expr::Number(a as i16),
+            // 32768-65535: a 16-bit pattern for integer code, the unsigned
+            // value in a floating-point statement (`d = 40000`)
+            Token::Addr(a) => {
+                if self.stmt_is_real() {
+                    Expr::FixedLit(a & 0xFF00, a as f64, true)
+                } else {
+                    Expr::Number(a as i16)
+                }
+            }
             Token::FixedLit(q, v, r) => Expr::FixedLit(q, v, r),
             Token::StringLit(s) => Expr::StringLit(s),
             Token::Int => {
@@ -4624,6 +5177,30 @@ impl Parser {
                 self.paren_index_to_brackets(&n);
                 if let Some(&v) = self.consts.get(&n) {
                     Expr::Number(v)
+                } else if self.peek() == &Token::Dot && self.struct_vars.contains_key(&n) {
+                    // `param.field` with a struct parameter
+                    self.advance(); // .
+                    let Token::Ident(first) = self.advance() else {
+                        self.errors.push(format!("line {}: expected field name after '.'", self.line));
+                        return Expr::Number(0);
+                    };
+                    let field_name = self.read_field_chain(first);
+                    match self.resolve_struct_field(&n, &field_name) {
+                        Some((off, kind, elem_size)) => Expr::StructGet {
+                            arr: n.clone(),
+                            idx: Box::new(Expr::Var(n)),
+                            field_offset: off,
+                            field_kind: kind,
+                            elem_size,
+                        },
+                        None => {
+                            self.errors.push(format!(
+                                "line {}: unknown field '{}' on struct parameter '{}'",
+                                self.line, field_name, n
+                            ));
+                            Expr::Number(0)
+                        }
+                    }
                 } else if self.peek() == &LBracket {
                     // arr[idx] expression
                     if !self.skip_var_check && !self.is_declared(&n) {
@@ -4638,7 +5215,7 @@ impl Parser {
                     if self.peek() == &Token::Dot && self.array_types.contains_key(&n) {
                         self.advance(); // .
                         let field_name = if let Token::Ident(fname) = self.advance() {
-                            fname
+                            self.read_field_chain(fname)
                         } else {
                             self.errors
                                 .push(format!("line {}: expected field name after '.'", self.line));
@@ -4663,6 +5240,12 @@ impl Parser {
                             field_kind: kind,
                             elem_size,
                         };
+                    }
+                    // a whole struct element: its address (for a struct parameter)
+                    if let Some(t) = self.array_types.get(&n).cloned() {
+                        let idx = indices.into_iter().next().unwrap_or(Expr::Number(0));
+                        let elem_size = self.struct_elem_size(&t);
+                        return Expr::StructAddr { arr: n, idx: Box::new(idx), elem_size };
                     }
                     let idx = self.fold_flat_index(&n, indices);
                     Expr::ArrayGet(n, Box::new(idx))
@@ -4923,11 +5506,19 @@ impl Parser {
                 Expr::Peek16(Box::new(arg))
             }
             Token::Rnd => {
+                // in a floating-point statement `rnd` / `rnd()` is 0 <= x < 1
+                let float_rnd = |p: &Self| {
+                    if p.stmt_is_real() {
+                        Expr::FnCall("rnd".into(), vec![])
+                    } else {
+                        Expr::Rnd
+                    }
+                };
                 if self.peek() == &Token::LParen {
                     self.advance(); // consume '('
                     if self.peek() == &Token::RParen {
                         self.advance(); // consume ')' — empty rnd()
-                        Expr::Rnd
+                        float_rnd(self)
                     } else {
                         let n = self.parse_expr();
                         if self.peek() == &Token::RParen {
@@ -4936,7 +5527,7 @@ impl Parser {
                         Expr::RndN(Box::new(n))
                     }
                 } else {
-                    Expr::Rnd
+                    float_rnd(self)
                 }
             }
             Token::Abs => {

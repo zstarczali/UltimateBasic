@@ -128,7 +128,7 @@ while x < 1
   x = x + 0.125
   k = k + 1
 wend
-dim t as byte
+dim t as byte, i as byte
 t = (x > 0.9)
 ",
     );
@@ -449,4 +449,184 @@ fn float_demo_runs() {
     ] {
         assert!(out.contains(want), "{want:?} missing in {out:?}");
     }
+}
+
+#[test]
+fn unsigned_16_bit_literals_in_float_statements() {
+    let r = run_src(
+        "dim a as double = 40000
+dim b as double, c as double, d as double, e as double
+dim w as word
+dim k as byte
+b = a + 50000
+c = -40000
+d = $FFFF * 2
+function big(x as double) as double
+    big = x + 32768
+end function
+e = big(1)
+if a > 39999 then k = 1
+w = 40000
+poke 53280, 7
+",
+    );
+    assert_eq!(real(&r, "a"), 40000.0);
+    assert_eq!(real(&r, "b"), 90000.0);
+    assert_eq!(real(&r, "c"), -40000.0);
+    assert_eq!(real(&r, "d"), 131070.0);
+    assert_eq!(real(&r, "e"), 32769.0);
+    assert_eq!(r.byte("k"), 1);
+    // integer statements keep the 16-bit value
+    assert_eq!(r.word("w"), 40000);
+    assert_eq!(r.mem(0xD020), 7);
+}
+
+const IRQ_SRC: &str = "dim s as double, h as double
+dim n as word
+dim t as byte, i as byte
+sub tick()
+    poke $D019, $FF
+    h = h * 0.5 + sqr(n + 2)
+    n = n + 1
+    irq_exit
+end sub
+sub plain()
+    t = t + 1
+    irq_exit
+end sub
+irq tick, 100
+for i = 1 to 60
+    s = s + sqr(i) / 3 - sin(i) * 2.5
+next
+print s
+";
+
+/// Run `src`, firing an IRQ every `every` main-program instructions once
+/// $0314 is set.
+fn run_with_irqs(src: &str, every: u64) -> Run {
+    let res = compile_src(src);
+    let mut cpu = Cpu::new(&res.prg);
+    let vector = (cpu.mem[0x0314], cpu.mem[0x0315]);
+    let mut main_steps = 0u64;
+    while cpu.step() {
+        assert!(cpu.steps < 50_000_000, "step budget");
+        if cpu.i {
+            continue;
+        }
+        main_steps += 1;
+        if every > 0 && main_steps % every == 0 && (cpu.mem[0x0314], cpu.mem[0x0315]) != vector {
+            cpu.irq();
+        }
+    }
+    Run { res, cpu }
+}
+
+#[test]
+fn float_irq_handler_does_not_disturb_the_program() {
+    let quiet = run_with_irqs(IRQ_SRC, 0);
+    for every in [1009, 2003, 4001] {
+        let r = run_with_irqs(IRQ_SRC, every);
+        assert!(r.word("n") > 20, "handler ran {} times", r.word("n"));
+        let a = r.var_addr("s") as usize;
+        assert_eq!(r.cpu.mem[a..a + 5], quiet.cpu.mem[a..a + 5], "every {every}");
+        assert_eq!(r.output(), quiet.output(), "every {every}");
+    }
+    // save at entry, restore before irq_exit; the plain handler gets BIT $0000
+    let code = &quiet.res.prg;
+    assert_eq!(code.windows(3).filter(|w| *w == [0x2C, 0, 0]).count(), 0);
+    let both = IRQ_SRC.replace("irq tick, 100", "irq tick, 100\nnmi plain");
+    let r = run_src(&both);
+    assert_eq!(r.res.prg.windows(3).filter(|w| *w == [0x2C, 0, 0]).count(), 2);
+}
+
+
+#[test]
+fn mod_on_floats() {
+    let cases: [(f64, f64); 8] =
+        [(7.5, 2.0), (-7.5, 2.0), (10.0, 2.5), (5.25, -2.0), (100.0, 7.0), (1e6, 3.5), (0.75, 0.5), (3.0, 0.0)];
+    let mut src = String::from("dim a as double, b as double\n");
+    for (i, _) in cases.iter().enumerate() {
+        src += &format!("dim r{i} as double\n");
+    }
+    for (i, (a, b)) in cases.iter().enumerate() {
+        src += &format!("a = {a:?}\nb = {b:?}\nr{i} = a mod b\n");
+    }
+    src += "dim k as double\nk = 17 mod 5.5 + 1\n";
+    let r = run_src(&src);
+    for (i, (a, b)) in cases.iter().enumerate() {
+        let want = if *b == 0.0 { *a } else { a - b * (a / b).trunc() };
+        let got = real(&r, &format!("r{i}"));
+        assert!(near(got, want), "{a} mod {b}: {got} vs {want}");
+    }
+    assert!(near(real(&r, "k"), 1.5), "{}", real(&r, "k"));
+}
+
+#[test]
+fn rnd_in_float_statements() {
+    let r = run_src(
+        "dim v(199) as double
+dim i as byte, lo as byte, hi as byte, d as byte
+dim s as double, x as double
+for i = 0 to 199
+    v(i) = rnd
+next
+x = rnd() * 6
+for i = 0 to 199
+    s = s + v(i)
+    if v(i) < 0.5 then lo = lo + 1 else hi = hi + 1
+next
+d = rnd(6)
+",
+    );
+    let base = r.res.map.arrays.iter().find(|a| a.name == "v").unwrap().base_addr as usize;
+    let vals: Vec<f64> = (0..200).map(|k| from_mflpt(r.cpu.mem[base + 5 * k..base + 5 * k + 5].try_into().unwrap())).collect();
+    assert!(vals.iter().all(|&v| (0.0..1.0).contains(&v)), "{vals:?}");
+    let mut sorted = vals.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    sorted.dedup();
+    assert_eq!(sorted.len(), 200, "values repeat");
+    let mean = real(&r, "s") / 200.0;
+    assert!((0.4..0.6).contains(&mean), "mean {mean}");
+    assert!(r.byte("lo") > 70 && r.byte("hi") > 70, "{} / {}", r.byte("lo"), r.byte("hi"));
+    assert!((0.0..6.0).contains(&real(&r, "x")));
+    assert!(r.byte("d") < 6);
+}
+
+#[test]
+fn print_using() {
+    let r = run_src(
+        r######"dim x as double = 3.14159
+dim n as integer = -42
+dim big as double = 1234567.891
+dim s as string = "ALMA"
+print using "###.##"; x
+print using "Total: ##.## EUR"; 12.5
+print using "##.##"; -1.5; 0.255
+print using "#.##"; -0.5
+print using "+###"; 7
+print using "##.##-"; -2.25
+print using "#,###,###.#"; big
+print using "##"; 123
+print using "#####"; n
+print using "[&] [!] [\ \] [\  \]"; s; s; s; s
+print using "## "; 1, 2, 3
+print using "#.#"; 9.96;
+print "!"
+"######,
+    );
+    let want = [
+        "  3.14",
+        "Total: 12.50 EUR",
+        "-1.50 0.26",
+        "-.50",
+        "  +7",
+        " 2.25-",
+        "1,234,567.9",
+        "%123",
+        "  -42",
+        "[ALMA] [A] [ALM] [ALMA]",
+        " 1  2  3 ",
+        "%10.0!",
+    ];
+    assert_eq!(r.output(), want.join("\r") + "\r");
 }

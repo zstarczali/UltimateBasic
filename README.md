@@ -2,7 +2,7 @@
 
 <img src="assets/logo.png" alt="Ultimate Basic C64 banner" width="30%">
 
-Current version: **1.6.5**
+Current version: **1.6.6**
 
 A modern BASIC-like language that compiles directly to 6502 machine code for the
 **Commodore 64** and **Commodore 64 Ultimate**. It produces `.prg` files that run in
@@ -67,6 +67,12 @@ ub build demo.ub --d64 disk.d64 --add music.prg   # embed extra files in the .d6
 | `--d64 [file]` | Also produce a `.d64` (default: `<output>.d64`) |
 | `--add <file>` | Add an extra file to the `.d64` (repeatable) |
 | `--explicit` | Require a `:type` annotation on every `var`, `sub`-param, and `fn`-param |
+| `--basic-print` | C64 BASIC PRINT spacing: spaces around numbers, `,` = 10-column zones, C64 `STR$` text |
+
+In the program itself, `option basic print` does the same as `--basic-print`, and
+`option strings n[, m]` sets the length of computed strings (default 80) and of string-array
+elements (default 31). Warnings (for example a byte variable that gets a value it cannot hold)
+are printed during the build but never stop it.
 
 With `--debug`, the compiler writes three files beside the program: an importable
 KickAssembler `.sym`, a C64Debugger/RetroDebugger `.dbg`, and a VICE monitor `.vs`.
@@ -81,6 +87,34 @@ bytes. Compiler-generated helper routines are included in the same listing.
 The output uses KickAssembler syntax and can be assembled again. Known data regions—such
 as `data`, maps, sprite/character definitions, lookup tables, SID/Koala payloads, and
 `incbin` content—are emitted as `.byte` blocks instead of being mistaken for instructions.
+
+## What's new since 1.6.6 (unreleased)
+
+- **Division** by a WORD / INTEGER or negative divisor is a real 16-bit division
+  (`-700 / -7` = 100, it gave 0).
+- **Warnings** for byte variables that get a value they cannot hold (`b = a + 1000`).
+- **`END` inside a QBasic SUB / FUNCTION** ends the program; `END` / `bye` in any routine no
+  longer just return to the caller.
+- **`STR$`** gives the C64 text (`" 7"`) with `--basic-print`.
+- **`option strings 255`** (and `option strings n, m` for string arrays): longer strings.
+- **Struct types:** default values, nested types (`e[i].pos.x`), fixed-length string fields
+  (`name AS STRING * 20`), struct parameters (`sub heal(p AS TEntity)` … `heal(e[i])`) and
+  QBasic `TYPE … END TYPE`.
+
+## What's new in 1.6.6
+
+- **`PRINT USING`** (QBasic subset): `PRINT USING "#,###.## Ft"; ar` — `#` digits, `.`,
+  thousands `,`, leading `+`, trailing `-`, `%` when a number does not fit, string fields `&`,
+  `!`, `\  \`.
+- **String ordering:** `<` `>` `<=` `>=` between strings, in PETSCII order (`"AB" < "ABC"`).
+- **Floating point:** `RND` is 0 ≤ x < 1 in SINGLE / DOUBLE statements; `MOD` works on
+  floating-point values (`7.5 mod 2` = 1.5); IRQ / NMI handlers may use floating point;
+  `d = 40000` keeps its value (it became -25536); programs carry only the floating-point
+  routines they use (a small program went from 4.6 KB to 2.3 KB).
+- **Integer `mod` / `shr`:** `mod` on WORD / INTEGER values is a real 16-bit remainder with the
+  sign of the dividend (`-7 mod 3` = -1), `shr` of an INTEGER is arithmetic (`-8 shr 1` = -4).
+- **`--basic-print`** (or `option basic print`): C64 BASIC PRINT spacing — ` 5 ` for numbers,
+  `,` to the next 10-column zone. The default output is unchanged.
 
 ## What's new in 1.6.5
 

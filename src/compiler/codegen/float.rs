@@ -16,13 +16,14 @@
 use super::opt::Pred;
 use super::Codegen;
 use crate::compiler::ast::{BinOp, Expr, Stmt, VarType};
+use std::collections::HashMap;
 
 /// Built-in functions that compute in floating point (a user function with
 /// the same name wins).
 pub(super) fn is_real_builtin(name: &str) -> bool {
     matches!(
         name,
-        "fix" | "cint" | "csng" | "cdbl" | "sqr" | "exp" | "log" | "atn" | "tan"
+        "fix" | "cint" | "csng" | "cdbl" | "sqr" | "exp" | "log" | "atn" | "tan" | "rnd"
     )
 }
 
@@ -49,6 +50,9 @@ impl Codegen {
         let pos = self.code.len();
         self.emit16(0);
         self.flt_patches.push((pos, routine));
+        if let Some(r) = &self.cur_routine {
+            self.flt_routines.insert(r.clone());
+        }
         self.a_cache = None;
     }
 
@@ -91,11 +95,15 @@ impl Codegen {
     /// Append the runtime and its constants (end of compile).
     pub(super) fn emit_float_runtime(&mut self) {
         if self.flt_patches.is_empty() {
+            self.disable_flt_hooks(|_| true);
             return;
         }
         let base = self.current_addr();
         let zp = self.flt_zp.expect("float pointer");
-        let (code, labels) = super::float_lib::float_runtime(base, zp);
+        let mut entries: Vec<&str> = self.flt_patches.iter().map(|&(_, n)| n).collect();
+        entries.sort_unstable();
+        entries.dedup();
+        let (code, labels) = super::float_lib::float_runtime_for(base, zp, &entries);
         self.listing_symbol("ub_float_runtime");
         let start = self.code.len();
         self.code.extend_from_slice(&code);
@@ -118,7 +126,154 @@ impl Codegen {
             self.code[lo] = a as u8;
             self.code[hi] = (a >> 8) as u8;
         }
+        self.emit_flt_handler_state(&labels, base + code.len() as u16);
     }
+
+    // ── floating point in IRQ / NMI handlers ─────────────────────────────────
+
+    /// Handler subs, and the call graph used to see which of them reach the
+    /// runtime (directly or through the subs they call).
+    pub(super) fn scan_float_handlers(&mut self, stmts: &[Stmt]) {
+        let mut handlers = vec![];
+        let mut graph: HashMap<String, Vec<String>> = HashMap::new();
+        each_stmt(stmts, &mut |st| match st {
+            Stmt::Irq { handler: Expr::Var(n), .. }
+            | Stmt::Nmi { handler: Expr::Var(n) }
+            | Stmt::CiaTimer { handler: Expr::Var(n), .. } => handlers.push(n.clone()),
+            Stmt::SubDef(name, _, body) | Stmt::FnDef(name, _, _, body) => {
+                // `Call("x", …)` statements and `FnCall("x", …)` expressions
+                let text = format!("{body:?}");
+                let callees = text
+                    .split("Call(\"")
+                    .skip(1)
+                    .filter_map(|rest| rest.split('"').next())
+                    .map(str::to_string)
+                    .collect();
+                graph.insert(name.clone(), callees);
+            }
+            _ => {}
+        });
+        self.flt_handlers = handlers.into_iter().filter(|h| graph.contains_key(h)).collect();
+        self.flt_call_graph = graph;
+    }
+
+    /// In a handler sub of a floating-point program: `JSR save` at its start
+    /// (`save`) or `JSR restore` before `irq_exit` / `nmi_exit`. Patched to
+    /// the handler's routine, or to a harmless `BIT $0000` when the handler
+    /// does not use floating point.
+    pub(super) fn flt_handler_hook(&mut self, save: bool) {
+        let Some(h) = self.cur_routine.clone() else { return };
+        if !self.flt_handlers.contains(&h) {
+            return;
+        }
+        let pos = self.code.len();
+        self.emit(0x20);
+        self.emit16(0);
+        self.flt_hooks.push((pos, h, save));
+    }
+
+    fn disable_flt_hooks(&mut self, f: impl Fn(&str) -> bool) {
+        let hooks = std::mem::take(&mut self.flt_hooks);
+        for (pos, h, save) in hooks {
+            if f(&h) {
+                self.code[pos] = 0x2C; // BIT $0000
+            } else {
+                self.flt_hooks.push((pos, h, save));
+            }
+        }
+    }
+
+    /// Does `routine` (or a sub it calls) use the runtime?
+    fn reaches_float(&self, routine: &str) -> bool {
+        let mut seen = std::collections::HashSet::new();
+        let mut work = vec![routine.to_string()];
+        while let Some(r) = work.pop() {
+            if self.flt_routines.contains(&r) {
+                return true;
+            }
+            if seen.insert(r.clone()) {
+                if let Some(cs) = self.flt_call_graph.get(&r) {
+                    work.extend(cs.iter().cloned());
+                }
+            }
+        }
+        false
+    }
+
+    /// Save / restore routines for each handler that uses floating point:
+    /// the runtime's RAM state (everything but the float stack, which a
+    /// handler only uses above the interrupted program's entries and one
+    /// spare slot), its
+    /// zero-page pointer and the scratch zero page $50-$7F, copied to a
+    /// buffer of that handler (an NMI may interrupt an IRQ handler).
+    fn emit_flt_handler_state(&mut self, labels: &HashMap<String, u16>, rt_end: u16) {
+        let unused: Vec<String> = self
+            .flt_hooks
+            .iter()
+            .map(|(_, h, _)| h.clone())
+            .filter(|h| !self.reaches_float(h))
+            .collect();
+        self.disable_flt_hooks(|h| unused.iter().any(|u| u == h));
+        if self.flt_hooks.is_empty() {
+            return;
+        }
+        let (start, end) = super::float_lib::state_range(labels, rt_end);
+        let ptr = self.flt_zp.expect("float pointer") as u16;
+        let z = end - start; // offset of the zero-page part in the buffer
+        let mut names: Vec<String> = self.flt_hooks.iter().map(|(_, h, _)| h.clone()).collect();
+        names.sort();
+        names.dedup();
+        for h in names {
+            let mut src = String::new();
+            for (dir, saving) in [("save", true), ("restore", false)] {
+                // (state, buffer) pairs, copied state -> buffer or back
+                let mv = |state: String, buf: String| if saving { (state, buf) } else { (buf, state) };
+                src += &format!("{dir}:\n");
+                let (mut a, mut off) = (start, 0u16);
+                while a < end {
+                    let n = (end - a).min(256);
+                    let (f, t) = mv(format!("${a:04X}"), format!("buf+{off}"));
+                    src += &format!(
+                        "        LDX #0\n{dir}{off}: LDA {f},X\n        STA {t},X\n        INX\n        CPX #{}\n        BNE {dir}{off}\n",
+                        n & 0xFF
+                    );
+                    a += n;
+                    off += n;
+                }
+                let (f, t) = mv("$50".to_string(), format!("buf+{z}"));
+                src += &format!("        LDX #$2F\n{dir}z: LDA {f},X\n        STA {t},X\n        DEX\n        BPL {dir}z\n");
+                for i in 0..2u16 {
+                    let (f, t) = mv(format!("${:02X}", ptr + i), format!("buf+{}", z + 48 + i));
+                    src += &format!("        LDA {f}\n        STA {t}\n");
+                }
+                if let (true, Some(fsp)) = (saving, labels.get("fsp")) {
+                    // skip a slot: the program may be between writing a stack
+                    // entry and moving `fsp` (f_push / f_poparg)
+                    src += &format!("        LDA ${fsp:04X}\n        CLC\n        ADC #5\n        STA ${fsp:04X}\n");
+                }
+                src += "        RTS\n";
+            }
+            src += &format!("buf: .res {}\n", z + 50);
+            let at = self.current_addr();
+            let a = super::rtasm::assemble(&src, at, &HashMap::new())
+                .unwrap_or_else(|e| panic!("handler float state does not assemble: {e}"));
+            let label = format!("ub_float_state_{h}");
+            self.listing_symbol(&label);
+            let cstart = self.code.len();
+            self.code.extend_from_slice(&a.code);
+            self.listing_data(cstart, &label);
+            let (sv, rs) = (a.labels["save"], a.labels["restore"]);
+            for (pos, hh, save) in &self.flt_hooks {
+                if *hh == h {
+                    let t = if *save { sv } else { rs };
+                    self.code[pos + 1] = t as u8;
+                    self.code[pos + 2] = (t >> 8) as u8;
+                }
+            }
+        }
+        self.flt_hooks.clear();
+    }
+
 
     // ── typing ───────────────────────────────────────────────────────────────
 
@@ -137,7 +292,7 @@ impl Codegen {
                 self.real_fns.contains_key(n) || (is_real_builtin(n) && !self.is_user_routine(n))
             }
             Expr::BinOp(_, BinOp::Pow, _) => true,
-            Expr::BinOp(l, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div, r) => {
+            Expr::BinOp(l, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod, r) => {
                 !self.is_string_expr(e) && (self.is_real_expr(l) || self.is_real_expr(r))
             }
             Expr::Abs(x) | Expr::Sgn(x) | Expr::FixedToInt(x) | Expr::Sin(x) | Expr::Cos(x) => {
@@ -178,12 +333,13 @@ impl Codegen {
                 self.eval_real(&r);
                 self.flt_call("f_neg");
             }
-            Expr::BinOp(l, op @ (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div), r) => {
+            Expr::BinOp(l, op @ (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod), r) => {
                 let (l, r) = ((**l).clone(), (**r).clone());
                 let (mem, pop) = match op {
                     BinOp::Add => ("f_add", "f_addp"),
                     BinOp::Sub => ("f_sub", "f_subp"),
                     BinOp::Mul => ("f_mul", "f_mulp"),
+                    BinOp::Mod => ("f_mod", "f_modp"),
                     _ => ("f_div", "f_divp"),
                 };
                 let commutative = matches!(op, BinOp::Add | BinOp::Mul);
@@ -226,6 +382,8 @@ impl Codegen {
                 self.emit_ay(ROp::Addr(slot));
                 self.flt_call("f_load");
             }
+            // `rnd` in a floating-point statement (the parser makes it a call)
+            Expr::FnCall(name, args) if name == "rnd" && args.is_empty() => self.flt_call("f_rnd"),
             Expr::FnCall(name, args) if is_real_builtin(name) && !self.is_user_routine(name) => {
                 let name = name.clone();
                 let arg = args.first().cloned().unwrap_or(Expr::Number(0));
@@ -600,7 +758,11 @@ impl Codegen {
 /// runtime's 2-byte zero-page pointer.
 pub(super) fn program_uses_reals(stmts: &[Stmt]) -> bool {
     let text = format!("{stmts:?}");
-    if text.contains("Some(Real)") || text.contains("Some(RealArray)") || text.contains(", Pow, ") {
+    if text.contains("Some(Real)")
+        || text.contains("Some(RealArray)")
+        || text.contains(", Pow, ")
+        || text.contains("PrintUsingNum")
+    {
         return true;
     }
     if text.contains(", true)") && text.contains("FixedLit(") {
@@ -621,7 +783,7 @@ pub(super) fn program_uses_reals(stmts: &[Stmt]) -> bool {
 }
 
 /// Visit every statement, nested bodies included.
-fn each_stmt(stmts: &[Stmt], f: &mut dyn FnMut(&Stmt)) {
+pub(super) fn each_stmt(stmts: &[Stmt], f: &mut dyn FnMut(&Stmt)) {
     for st in stmts {
         f(st);
         match st {
@@ -843,6 +1005,31 @@ impl Codegen {
         self.emit(t + 1);
         self.print_str_via_ptr(t);
         true
+    }
+
+    /// A `print using` numeric field: the value in floating point, formatted
+    /// by `f_using` (A = positions, X = decimals, Y = flags), then printed.
+    pub(super) fn gen_print_using_num(&mut self, e: &Expr, width: u8, decimals: u8, flags: u8) {
+        if self.is_string_expr(e) {
+            let e = e.clone();
+            self.gen_stmt(&Stmt::Print { args: vec![e], no_newline: true });
+            return;
+        }
+        self.eval_real(e);
+        self.emit(0xA9);
+        self.emit(width); // LDA #width
+        self.emit(0xA2);
+        self.emit(decimals); // LDX #decimals
+        self.emit(0xA0);
+        self.emit(flags); // LDY #flags
+        self.flt_call("f_using");
+        let t = self.tmp_zp;
+        self.tmp_zp += 2;
+        self.emit(0x85);
+        self.emit(t);
+        self.emit(0x84);
+        self.emit(t + 1);
+        self.print_str_via_ptr(t);
     }
 
     /// A string-engine number part: SRC (`src_zp`) ← text of `e`.

@@ -77,9 +77,153 @@ fn bytes(name: &str, b: &[u8]) -> String {
     format!("{name}: .byte {}\n", list.join(", "))
 }
 
-/// Assemble the runtime at `base`, with the 2-byte zero-page pointer `ptr`.
-/// Returns the code and every label (entry points `f_*`, data).
+/// Assemble the whole runtime at `base`, with the 2-byte zero-page pointer
+/// `ptr`. Returns the code and every label (entry points `f_*`, data).
 pub fn float_runtime(base: u16, ptr: u8) -> (Vec<u8>, HashMap<String, u16>) {
+    assemble_runtime(&runtime_source(), base, ptr)
+}
+
+/// Assemble only the parts of the runtime that `entries` reach (by calls,
+/// jumps, data references and fall-through), so a program that only adds and
+/// prints does not carry SIN / LOG / EXP / text input.
+pub fn float_runtime_for(base: u16, ptr: u8, entries: &[&str]) -> (Vec<u8>, HashMap<String, u16>) {
+    assemble_runtime(&prune(&runtime_source(), entries), base, ptr)
+}
+
+fn assemble_runtime(src: &str, base: u16, ptr: u8) -> (Vec<u8>, HashMap<String, u16>) {
+    let mut known = HashMap::new();
+    known.insert("PTR".to_string(), ptr as u16);
+    let a = super::rtasm::assemble(src, base, &known)
+        .unwrap_or_else(|e| panic!("float runtime does not assemble: {e}"));
+    (a.code, a.labels)
+}
+
+/// Symbols used on an (already comment-stripped) line: identifiers outside
+/// character literals and numbers. The caller filters for defined names.
+fn idents(line: &str) -> Vec<&str> {
+    let b = line.as_bytes();
+    let mut out = vec![];
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        if c == b'\'' {
+            i += 1;
+            while i < b.len() && b[i] != b'\'' {
+                i += 1;
+            }
+            i += 1;
+        } else if c == b'$' || c == b'%' || c.is_ascii_digit() {
+            i += 1;
+            while i < b.len() && b[i].is_ascii_alphanumeric() {
+                i += 1;
+            }
+        } else if c.is_ascii_alphabetic() || c == b'_' {
+            let st = i;
+            while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+                i += 1;
+            }
+            out.push(&line[st..i]);
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Keep the chunks of `src` (a chunk starts at a label in column 0) that
+/// `roots` reach. A chunk whose last instruction is not RTS / JMP / RTI falls
+/// through into the next one, which is then needed too. Constant lines
+/// (`NAME = expr`) are transparent: using NAME uses what its expression uses,
+/// and the line is kept when all of those are kept.
+fn prune(src: &str, roots: &[&str]) -> String {
+    struct Chunk<'a> {
+        lines: Vec<&'a str>,
+        refs: Vec<&'a str>,
+        falls: bool,
+    }
+    let mut equs: Vec<(&str, &str, Vec<&str>)> = vec![]; // (line, name, uses)
+    let mut chunks: Vec<Chunk> = vec![];
+    let mut owner: HashMap<&str, usize> = HashMap::new();
+    for raw in src.lines() {
+        let line = super::rtasm::strip(raw);
+        if line.is_empty() {
+            continue;
+        }
+        if let Some((name, expr)) = line.split_once('=') {
+            equs.push((line, name.trim(), idents(expr)));
+            continue;
+        }
+        let mut body = line;
+        if !raw.starts_with([' ', '\t']) {
+            if let Some((label, rest)) = line.split_once(':') {
+                chunks.push(Chunk { lines: vec![], refs: vec![], falls: true });
+                owner.insert(label.trim(), chunks.len() - 1);
+                body = rest.trim();
+            }
+        }
+        let c = chunks.last_mut().expect("runtime code before the first label");
+        c.lines.push(raw);
+        if body.is_empty() {
+            continue;
+        }
+        let mnem = body.split_whitespace().next().unwrap_or("");
+        c.falls = !matches!(mnem, "RTS" | "JMP" | "RTI" | ".byte" | ".word" | ".res");
+        let ops = body[mnem.len()..].trim();
+        c.refs.extend(idents(ops));
+    }
+    let equ_uses: HashMap<&str, &Vec<&str>> = equs.iter().map(|(_, n, u)| (*n, u)).collect();
+    let mut keep = vec![false; chunks.len()];
+    let mut work: Vec<&str> = roots.to_vec();
+    let mut seen_equ: Vec<&str> = vec![];
+    while let Some(sym) = work.pop() {
+        if let Some(uses) = equ_uses.get(sym) {
+            if !seen_equ.contains(&sym) {
+                seen_equ.push(sym);
+                work.extend(uses.iter());
+            }
+            continue;
+        }
+        let Some(&start) = owner.get(sym) else { continue };
+        let mut i = start;
+        loop {
+            if keep[i] {
+                break;
+            }
+            keep[i] = true;
+            work.extend(chunks[i].refs.iter());
+            if !chunks[i].falls || i + 1 == chunks.len() {
+                break;
+            }
+            i += 1;
+        }
+    }
+    let kept = |n: &str| owner.get(n).is_none_or(|&i| keep[i]) || equ_uses.contains_key(n);
+    let mut out = String::new();
+    for (line, _, uses) in &equs {
+        if uses.iter().all(|u| kept(u)) {
+            out += line;
+            out.push('\n');
+        }
+    }
+    for (c, _) in chunks.iter().zip(&keep).filter(|(_, k)| **k) {
+        for l in &c.lines {
+            out += l;
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// RAM state of an assembled runtime that an interrupt handler must save:
+/// from its first data label up to the float stack (or `end`).
+pub fn state_range(labels: &HashMap<String, u16>, end: u16) -> (u16, u16) {
+    let data = DATA.lines().filter_map(|l| l.split_once(':').map(|(n, _)| n.trim()));
+    let start = data.filter_map(|n| labels.get(n).copied()).min().unwrap_or(end);
+    let stop = labels.get("fstk").copied().unwrap_or(end);
+    (start, stop.max(start))
+}
+
+fn runtime_source() -> String {
     let mut src = String::from(LIB);
     // constants
     src += &bytes("c_one", &to_mflpt(1.0));
@@ -92,6 +236,8 @@ pub fn float_runtime(base: u16, ptr: u8) -> (Vec<u8>, HashMap<String, u16>) {
         p10.extend_from_slice(&(10u32.pow(k)).to_be_bytes());
     }
     src += &bytes("p10", &p10);
+    let u10: Vec<u8> = (0..10).rev().flat_map(|k| 10u32.pow(k).to_be_bytes()).collect();
+    src += &bytes("u10", &u10);
     let mut pw = vec![];
     for k in 0..=17 {
         pw.extend_from_slice(&to_mflpt(10f64.powi(k)));
@@ -125,11 +271,7 @@ pub fn float_runtime(base: u16, ptr: u8) -> (Vec<u8>, HashMap<String, u16>) {
         (0..8).rev().map(|k| if k % 2 == 0 { 1.0 } else { -1.0 } / (2 * k + 1) as f64),
     );
     src += DATA;
-    let mut known = HashMap::new();
-    known.insert("PTR".to_string(), ptr as u16);
-    let a = super::rtasm::assemble(&src, base, &known)
-        .unwrap_or_else(|e| panic!("float runtime does not assemble: {e}"));
-    (a.code, a.labels)
+    src
 }
 
 /// `name: .byte degree, c_n, …, c_0` (packed coefficients, highest power first).
@@ -144,6 +286,25 @@ fn poly(name: &str, coeffs: impl Iterator<Item = f64>) -> String {
 
 const DATA: &str = "
 pp:     .res 2
+mda:    .res 5
+mdb:    .res 5
+rt:     .res 4
+uw:     .res 1
+ud:     .res 1
+uf:     .res 1
+usg:    .res 1
+uk:     .res 1
+ue:     .res 1
+ufst:   .res 1
+ulen:   .res 1
+ugl:    .res 1
+usc:    .res 1
+uneed:  .res 1
+uidx:   .res 1
+ucnt:   .res 1
+ux:     .res 5
+udg:    .res 10
+ubuf:   .res 48
 pn:     .res 1
 px2:    .res 5
 pk:     .res 1
@@ -1071,6 +1232,338 @@ f_cmpp: JSR f_poparg
 f_cmpr: JSR f_ldarg         ; raw compare with mem(A/Y), FAC not rounded
         JMP f_cmpraw
 
+; ---------------------------------------------------------------- mod
+f_mod:  JSR f_ldarg         ; FAC = FAC mod mem(A/Y)
+        JMP f_modarg
+f_modp: JSR f_poparg        ; FAC = FAC mod pop
+f_modarg:                   ; FAC = FAC - ARG * fix(FAC / ARG) (sign of FAC); ARG = 0: FAC
+        LDA ARGE
+        BEQ md_ret
+        LDA #<mda
+        LDY #>mda
+        JSR f_store
+        JSR f_swap
+        LDA #<mdb
+        LDY #>mdb
+        JSR f_store
+        LDA #<mda
+        LDY #>mda
+        JSR f_load
+        LDA #<mdb
+        LDY #>mdb
+        JSR f_div
+        JSR f_fix
+        LDA #<mdb
+        LDY #>mdb
+        JSR f_mul
+        JSR f_neg
+        LDA #<mda
+        LDY #>mda
+        JMP f_add
+md_ret: RTS
+
+; ---------------------------------------------------------------- rnd
+f_rnd:              ; FAC = random number, 0 <= x < 1 (xorshift32 13/17/5)
+        LDA rnd_f
+        BNE rd_go
+        INC rnd_f           ; first call: mix in the raster line
+        LDA $D012
+        EOR rnd_s
+        STA rnd_s
+rd_go:  LDA #0              ; x ^= x << 13  (t = x << 8, then << 5)
+        STA rt
+        LDA rnd_s
+        STA rt+1
+        LDA rnd_s+1
+        STA rt+2
+        LDA rnd_s+2
+        STA rt+3
+        LDX #5
+        JSR rd_shl
+        JSR rd_xor
+        LDA rnd_s+2         ; x ^= x >> 17  (t = x >> 16, then >> 1)
+        STA rt
+        LDA rnd_s+3
+        STA rt+1
+        LDA #0
+        STA rt+2
+        STA rt+3
+        LSR rt+1
+        ROR rt
+        JSR rd_xor
+        LDX #3              ; x ^= x << 5
+rd_cp:  LDA rnd_s,X
+        STA rt,X
+        DEX
+        BPL rd_cp
+        LDX #5
+        JSR rd_shl
+        JSR rd_xor
+        LDA rnd_s+3         ; FAC = x / 2^32
+        STA FAC1
+        LDA rnd_s+2
+        STA FAC2
+        LDA rnd_s+1
+        STA FAC3
+        LDA rnd_s
+        STA FAC4
+        LDA #$80
+        STA FACE
+        LDA #0
+        STA FACS
+        STA FACR
+        JMP f_norm
+rd_shl: ASL rt              ; t <<= X
+        ROL rt+1
+        ROL rt+2
+        ROL rt+3
+        DEX
+        BNE rd_shl
+        RTS
+rd_xor: LDX #3              ; x ^= t
+rd_xl:  LDA rnd_s,X
+        EOR rt,X
+        STA rnd_s,X
+        DEX
+        BPL rd_xl
+        RTS
+rnd_s:  .byte $5D, $E3, $27, $9A    ; state (little-endian); outside the saved IRQ state
+rnd_f:  .byte 0
+
+; ---------------------------------------------------------------- print using
+f_using:            ; A/Y = PRINT USING field text of FAC (in ubuf); FAC destroyed.
+                    ; A = positions before the point (sign / commas included),
+                    ; X = decimals (0-9), Y = flags: 1 commas, 2 '+', 4 trailing '-', 8 point
+        STA uw
+        STX ud
+        STY uf
+        LDA #<ux
+        LDY #>ux
+        JSR f_store         ; (rounds FAC) the value, for an overflow
+        LDA FACE
+        BEQ us_pz
+        LDA FACS
+us_pz:  STA usg             ; $80 = negative
+        LDA #0
+        STA FACS
+        LDA ud              ; n = round(|x| * 10^decimals)
+        JSR fo_pw
+        JSR f_mul
+        LDA #<c_half
+        LDY #>c_half
+        JSR f_add
+        JSR f_fix
+        LDA FACE
+        BEQ us_i0
+        CMP #161
+        BCC us_sh
+        JMP us_big          ; 2^32 or more
+us_sh:  CMP #160            ; mantissa -> 32-bit integer
+        BEQ us_dg
+        LSR FAC1
+        ROR FAC2
+        ROR FAC3
+        ROR FAC4
+        INC FACE
+        LDA FACE
+        JMP us_sh
+us_i0:  STA FAC1            ; n = 0: no sign
+        STA FAC2
+        STA FAC3
+        STA FAC4
+        STA usg
+us_dg:  LDX #0              ; ten digits into udg, 10^9 first
+        STX uk
+us_dl:  LDA #'0'
+        STA udg,X
+        LDY uk
+us_ds:  SEC
+        LDA FAC4
+        SBC u10+3,Y
+        STA tq+3
+        LDA FAC3
+        SBC u10+2,Y
+        STA tq+2
+        LDA FAC2
+        SBC u10+1,Y
+        STA tq+1
+        LDA FAC1
+        SBC u10,Y
+        BCC us_dn
+        STA FAC1
+        LDA tq+1
+        STA FAC2
+        LDA tq+2
+        STA FAC3
+        LDA tq+3
+        STA FAC4
+        INC udg,X
+        JMP us_ds
+us_dn:  LDA uk
+        CLC
+        ADC #4
+        STA uk
+        INX
+        CPX #10
+        BNE us_dl
+        LDA #10             ; integer digits: udg[ufst .. ue)
+        SEC
+        SBC ud
+        STA ue
+        LDX #0
+us_fz:  CPX ue
+        BEQ us_f0
+        LDA udg,X
+        CMP #'0'
+        BNE us_f1
+        INX
+        JMP us_fz
+us_f0:  DEX                 ; integer part 0: a single '0'
+us_f1:  STX ufst
+        LDA ue
+        SEC
+        SBC ufst
+        STA ulen
+        LDA uf              ; commas: (ulen - 1) / 3
+        AND #1
+        BEQ us_g1
+        LDX ulen
+        DEX
+        TXA
+        LDX #0
+us_g0:  CMP #3
+        BCC us_g2
+        SBC #3
+        INX
+        JMP us_g0
+us_g2:  TXA
+us_g1:  CLC
+        ADC ulen
+        STA ugl             ; integer part with commas
+        LDA #0              ; sign character
+        STA usc
+        LDA uf
+        AND #2
+        BEQ us_s1
+        LDA #'+'
+        STA usc
+us_s1:  LDA usg
+        BPL us_s2
+        LDA uf
+        AND #4
+        BNE us_s2
+        LDA #'-'
+        STA usc
+us_s2:  LDA usc
+        BEQ us_n0
+        LDA #1
+us_n0:  CLC
+        ADC ugl
+        STA uneed
+        LDA uw
+        CMP uneed
+        BCS us_fit
+        LDA ulen            ; no room: drop a lone leading 0 ("-.50")
+        CMP #1
+        BNE us_ovf
+        LDX ufst
+        LDA udg,X
+        CMP #'0'
+        BNE us_ovf
+        LDA #0
+        STA ulen
+        STA ugl
+        DEC uneed
+        LDA uw
+        CMP uneed
+        BCS us_fit
+us_ovf: LDA #'%'            ; does not fit: '%' and the whole number
+        STA ubuf
+        LDA #1
+        STA uidx
+        JMP us_body
+us_fit: LDA #0
+        STA uidx
+        LDA uw
+        SEC
+        SBC uneed
+        TAX
+        BEQ us_body
+us_pad: LDA #' '
+        JSR us_put
+        DEX
+        BNE us_pad
+us_body:
+        LDA usc
+        BEQ us_b1
+        JSR us_put
+us_b1:  LDA ulen
+        BEQ us_pt
+        STA ucnt            ; integer digits left
+        LDX ufst
+us_il:  LDA udg,X
+        JSR us_put
+        INX
+        DEC ucnt
+        BEQ us_pt
+        LDA uf
+        AND #1
+        BEQ us_il
+        LDA ucnt            ; a comma when a multiple of 3 is left
+us_m3:  CMP #3
+        BCC us_m3e
+        SBC #3
+        JMP us_m3
+us_m3e: CMP #0
+        BNE us_il
+        LDA #','
+        JSR us_put
+        JMP us_il
+us_pt:  LDA uf
+        AND #8
+        BEQ us_tm
+        LDA #'.'
+        JSR us_put
+        LDX ue
+us_fl:  CPX #10
+        BEQ us_tm
+        LDA udg,X
+        JSR us_put
+        INX
+        JMP us_fl
+us_tm:  LDA uf
+        AND #4
+        BEQ us_end
+        LDA #' '
+        LDX usg
+        BPL us_tp
+        LDA #'-'
+us_tp:  JSR us_put
+us_end: LDA #0
+        JSR us_put
+        LDA #<ubuf
+        LDY #>ubuf
+        RTS
+us_put: LDY uidx            ; append A to ubuf, keeps X
+        STA ubuf,Y
+        INC uidx
+        RTS
+us_big: LDA #<ux            ; too many digits: '%' and the plain number
+        LDY #>ux
+        JSR f_load
+        JSR f_out
+        LDA #'%'
+        STA ubuf
+        LDX #0
+us_bc:  LDA obuf,X
+        STA ubuf+1,X
+        BEQ us_be
+        INX
+        BNE us_bc
+us_be:  LDA #<ubuf
+        LDY #>ubuf
+        RTS
+
 ; ---------------------------------------------------------------- number -> text
 f_out:              ; A/Y = text of FAC (null-terminated, in obuf); FAC destroyed
         JSR f_round
@@ -1947,5 +2440,31 @@ mod tests {
         for l in ["f_load", "f_store", "f_add", "f_mul", "f_div", "f_cmp", "f_out", "f_in", "fac"] {
             assert!(labels.contains_key(l), "{l}");
         }
+    }
+
+    #[test]
+    fn pruned_runtime_keeps_only_reached_parts() {
+        let (full, _) = float_runtime(0x4000, 0x60);
+        let (code, labels) = float_runtime_for(0x4000, 0x60, &["f_load", "f_store", "f_mul", "f_out"]);
+        assert!(code.len() + 1500 < full.len(), "{} vs {}", code.len(), full.len());
+        // fall-through and JSR targets come along
+        for l in ["f_mularg", "f_round", "f_norm", "obuf", "pw", "fac", "arg"] {
+            assert!(labels.contains_key(l), "{l}");
+        }
+        for l in ["f_sin", "f_log", "f_exp", "f_in", "ibuf", "t_sin", "fstk"] {
+            assert!(!labels.contains_key(l), "{l}");
+        }
+    }
+
+    #[test]
+    fn every_entry_assembles_alone() {
+        let (_, all) = float_runtime(0x4000, 0x60);
+        let mut n = 0;
+        for name in all.keys().filter(|k| k.starts_with("f_")) {
+            let (_, labels) = float_runtime_for(0x4000, 0x60, &[name.as_str()]);
+            assert!(labels.contains_key(name), "{name}");
+            n += 1;
+        }
+        assert!(n > 40);
     }
 }

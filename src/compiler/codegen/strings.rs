@@ -30,6 +30,7 @@ use super::Codegen;
 use crate::compiler::ast::{BinOp, Expr, VarType};
 
 /// Characters a runtime-built string may hold (C64 screen line × 2).
+/// Default limit of a computed string variable (`option strings N`).
 pub(super) const STR_CAP: u8 = 80;
 
 const SRC: u8 = 0;
@@ -54,6 +55,7 @@ pub(super) enum Helper {
     Itoa,
     Atoi,
     Cmp,
+    Order,
 }
 
 impl Codegen {
@@ -86,14 +88,14 @@ impl Codegen {
         if let Some(&a) = self.str_var_bufs.get(name) {
             return a;
         }
-        let a = self.emit_inline_zeros(STR_CAP as usize + 1);
+        let a = self.emit_inline_zeros(self.str_cap as usize + 1);
         self.str_var_bufs.insert(name.to_string(), a);
         a
     }
 
     fn str_tmp_buf(&mut self, depth: usize) -> u16 {
         while self.str_tmp_bufs.len() <= depth {
-            let a = self.emit_inline_zeros(STR_CAP as usize + 1);
+            let a = self.emit_inline_zeros(self.str_cap as usize + 1);
             self.str_tmp_bufs.push(a);
         }
         self.str_tmp_bufs[depth]
@@ -152,13 +154,13 @@ impl Codegen {
         self.emit16(addr);
     }
     /// Branch with a forward target patched later; returns the offset position.
-    fn bxx_fwd(&mut self, op: u8) -> usize {
+    pub(super) fn bxx_fwd(&mut self, op: u8) -> usize {
         self.emit(op);
         let p = self.code.len();
         self.emit(0);
         p
     }
-    fn bxx_back(&mut self, op: u8, target_addr: u16) {
+    pub(super) fn bxx_back(&mut self, op: u8, target_addr: u16) {
         self.emit(op);
         let p = self.code.len();
         self.emit(0);
@@ -467,6 +469,37 @@ impl Codegen {
                 self.lda_imm(0);
                 self.emit(0x60);
             }
+            Helper::Order => {
+                // A = $FF / 0 / 1 for (DST) < = > (SRC) — `l` is in DST —
+                // in PETSCII byte order; a string sorts before every longer
+                // string it starts
+                self.emit(0xA0);
+                self.emit(0x00); // LDY #0
+                let l = self.current_addr();
+                self.emit(0xB1);
+                self.emit(z + SRC); // LDA (SRC),Y
+                self.emit(0xD1);
+                self.emit(z + DST); // CMP (DST),Y
+                let ne = self.bxx_fwd(0xD0); // BNE differ
+                self.emit(0xC9);
+                self.emit(0x00); // CMP #0
+                let eq = self.bxx_fwd(0xF0); // BEQ equal
+                self.emit(0xC8); // INY
+                self.bxx_back(0xD0, l); // BNE loop
+                let e = self.current_addr();
+                self.patch_bxx(eq, e);
+                self.lda_imm(0);
+                self.emit(0x60);
+                let d = self.current_addr();
+                self.patch_bxx(ne, d);
+                let lt = self.bxx_fwd(0xB0); // BCS: (SRC) > (DST), so l < r
+                self.lda_imm(1);
+                self.emit(0x60);
+                let at = self.current_addr();
+                self.patch_bxx(lt, at);
+                self.lda_imm(0xFF);
+                self.emit(0x60);
+            }
         }
         let past = self.current_addr();
         self.patch_abs(jmp, past);
@@ -523,6 +556,14 @@ impl Codegen {
                 let e = e.clone();
                 self.gen_word_assign(z + SRC, &e);
             }
+            Expr::StructGet { arr, idx, field_offset, field_kind: crate::compiler::ast::FieldKind::Str(_), elem_size } => {
+                let (arr, idx) = (arr.clone(), (**idx).clone());
+                self.emit_struct_field_addr(&arr, &idx, *field_offset, *elem_size, z + SRC);
+            }
+            Expr::StrN(inner) if self.basic_print => {
+                let inner = (**inner).clone();
+                self.emit_basic_strn(&inner, depth);
+            }
             Expr::StrN(inner) if !self.is_wide_number(inner) => {
                 let e2 = e.clone();
                 self.eval_expr(&e2); // strn helper → strn_zp
@@ -561,6 +602,89 @@ impl Codegen {
     }
 
     /// Numeric expression → decimal text in num_buf; SRC ← num_buf.
+    /// `dst` (ZP pair) ← address of a struct field: element base (array
+    /// element or struct parameter) + `off`.
+    pub(super) fn emit_struct_field_addr(&mut self, arr: &str, idx: &Expr, off: u16, elem_size: u16, dst: u8) {
+        let p = self.tmp_zp;
+        self.tmp_zp += 2;
+        self.emit_struct_ptr(arr, idx, 0, elem_size, p); // p = element base
+        self.emit(0x18); // CLC
+        self.lda_zp(p);
+        self.emit(0x69);
+        self.emit(off as u8);
+        self.sta_zp(dst);
+        self.lda_zp(p + 1);
+        self.emit(0x69);
+        self.emit((off >> 8) as u8);
+        self.sta_zp(dst + 1);
+    }
+
+    /// `arr[i].name = <string>` / `p.name = …`: copy the text (at most `len`
+    /// characters) into the fixed-length field inside the element.
+    pub(super) fn emit_struct_str_store(&mut self, arr: &str, idx: &Expr, off: u16, elem_size: u16, len: u8, val: &Expr) {
+        let z = self.str_zp();
+        let tmp = self.str_tmp_buf(0);
+        self.emit_str_build(val, tmp, 1);
+        self.emit_struct_field_addr(arr, idx, off, elem_size, z + DST);
+        self.lda_imm(len);
+        self.sta_zp(z + ROOM);
+        self.set_ptr(z + SRC, tmp);
+        self.lda_imm(0xFF);
+        self.sta_zp(z + LIMIT);
+        let app = self.str_helper(Helper::Append);
+        self.jsr(app);
+        self.a_cache = None;
+    }
+
+    /// SRC ← C64 BASIC `STR$` text of `e` (BASIC spacing): the number with a
+    /// leading space, or its `-` (`" 7"`, `"-42"`, `" 3.5"`), for every number
+    /// type (without BASIC spacing a byte keeps the 3-digit `"007"`).
+    fn emit_basic_strn(&mut self, e: &Expr, depth: usize) {
+        let z = self.str_zp();
+        self.emit_number_text(e);
+        while self.basic_strn_bufs.len() <= depth {
+            let b = self.emit_inline_zeros(24);
+            self.basic_strn_bufs.push(b);
+        }
+        let buf = self.basic_strn_bufs[depth];
+        // copy the text to buf+1
+        self.emit(0xA0);
+        self.emit(0x00); // LDY #0
+        let l = self.current_addr();
+        self.emit(0xB1);
+        self.emit(z + SRC); // LDA (SRC),Y
+        self.emit(0x99);
+        self.emit16(buf + 1); // STA buf+1,Y
+        let done = self.bxx_fwd(0xF0); // BEQ copied
+        self.emit(0xC8); // INY
+        self.bxx_back(0xD0, l); // BNE loop
+        let at = self.current_addr();
+        self.patch_bxx(done, at);
+        self.emit(0xAD);
+        self.emit16(buf + 1); // LDA buf+1
+        self.emit(0xC9);
+        self.emit(b'-'); // CMP #'-'
+        let neg = self.bxx_fwd(0xF0); // BEQ negative: no space
+        self.lda_imm(b' ');
+        self.emit(0x8D);
+        self.emit16(buf); // STA buf
+        self.set_ptr(z + SRC, buf);
+        self.emit(0x4C);
+        let jmp = self.code.len();
+        self.emit16(0); // JMP done
+        let at = self.current_addr();
+        self.patch_bxx(neg, at);
+        self.set_ptr(z + SRC, buf + 1);
+        let past = self.current_addr();
+        self.patch_abs(jmp, past);
+    }
+
+    /// ZP pair pointing at the text of number `e` (`print` with BASIC spacing).
+    pub(super) fn str_number_text_ptr(&mut self, e: &Expr) -> u8 {
+        self.emit_number_text(e);
+        self.str_zp() + SRC
+    }
+
     fn emit_number_text(&mut self, e: &Expr) {
         let z = self.str_zp();
         if self.real_number_text(e, z + SRC) {
@@ -668,7 +792,7 @@ impl Codegen {
     pub(super) fn emit_str_build(&mut self, e: &Expr, buf: u16, depth: usize) {
         let z = self.str_zp();
         self.set_ptr(z + DST, buf);
-        self.lda_imm(STR_CAP);
+        self.lda_imm(self.str_cap);
         self.sta_zp(z + ROOM);
         self.lda_imm(0);
         self.emit(0x8D);
@@ -768,7 +892,7 @@ impl Codegen {
             self.emit_str_build(e, tmp, 1);
             let z = self.str_zp();
             self.set_ptr(z + DST, own);
-            self.lda_imm(STR_CAP);
+            self.lda_imm(self.str_cap);
             self.sta_zp(z + ROOM);
             self.set_ptr(z + SRC, tmp);
             self.lda_imm(0xFF);
@@ -787,7 +911,7 @@ impl Codegen {
         let buf = match self.str_param_bufs.get(key) {
             Some(&b) => b,
             None => {
-                let b = self.emit_inline_zeros(STR_CAP as usize + 1);
+                let b = self.emit_inline_zeros(self.str_cap as usize + 1);
                 self.str_param_bufs.insert(key.to_string(), b);
                 b
             }
@@ -805,9 +929,32 @@ impl Codegen {
         self.print_str_via_ptr(z + SRC);
     }
 
-    /// A ← 1 if the two string expressions are equal (0 otherwise);
-    /// `negate` gives `<>`.
-    pub(super) fn emit_str_compare(&mut self, l: &Expr, r: &Expr, negate: bool) {
+    /// A ← 1 / 0 for `l op r` with `<`, `>`, `<=`, `>=` between strings.
+    pub(super) fn emit_str_order(&mut self, l: &Expr, r: &Expr, op: &BinOp) {
+        self.emit_str_pair(l, r);
+        let ord = self.str_helper(Helper::Order);
+        self.jsr(ord);
+        // true when the order result is `v` (Lt / Gt), or when it is not (GtEq / LtEq)
+        let (v, when_eq) = match op {
+            BinOp::Lt => (0xFF, true),
+            BinOp::GtEq => (0xFF, false),
+            BinOp::Gt => (1, true),
+            _ => (1, false),
+        };
+        self.emit(0xC9);
+        self.emit(v); // CMP #v
+        let is_v = self.bxx_fwd(0xF0); // BEQ is_v
+        self.lda_imm(!when_eq as u8);
+        let done = self.bxx_fwd(if when_eq { 0xF0 } else { 0xD0 }); // BEQ / BNE done (always)
+        let at = self.current_addr();
+        self.patch_bxx(is_v, at);
+        self.lda_imm(when_eq as u8);
+        let at = self.current_addr();
+        self.patch_bxx(done, at);
+    }
+
+    /// DST ← text of `l`, SRC ← text of `r` (the compare helpers' operands).
+    fn emit_str_pair(&mut self, l: &Expr, r: &Expr) {
         let z = self.str_zp();
         self.emit_str_src(l, 1);
         // keep l's pointer on the stack while r is evaluated
@@ -820,6 +967,12 @@ impl Codegen {
         self.sta_zp(z + DST + 1);
         self.emit(0x68);
         self.sta_zp(z + DST);
+    }
+
+    /// A ← 1 if the two string expressions are equal (0 otherwise);
+    /// `negate` gives `<>`.
+    pub(super) fn emit_str_compare(&mut self, l: &Expr, r: &Expr, negate: bool) {
+        self.emit_str_pair(l, r);
         let cmp = self.str_helper(Helper::Cmp);
         self.jsr(cmp);
         if negate {
@@ -836,16 +989,17 @@ impl Codegen {
     }
 
     /// `names(i) = <string expression>`: copy the value into element `i`'s own
-    /// 32-byte slot (31 characters) and point the element at it, so elements
-    /// do not share a buffer (`input names(i)` in a loop, `names(i) = s`).
+    /// slot (32 bytes = 31 characters by default, `option strings n, m`) and
+    /// point the element at it, so elements do not share a buffer
+    /// (`input names(i)` in a loop, `names(i) = s`).
     pub(super) fn emit_str_array_store(&mut self, arr: &str, idx: &Expr, val: &Expr) {
-        const SLOT: u16 = 32;
+        let slot: u16 = self.str_slot;
         let z = self.str_zp();
         let n_elems = self.array_sizes.get(arr).copied().unwrap_or(0) / 2;
         let slots = match self.str_array_slots.get(arr) {
             Some(&a) => a,
             None => {
-                let a = self.emit_inline_zeros((n_elems * SLOT) as usize);
+                let a = self.emit_inline_zeros((n_elems * slot) as usize);
                 self.str_array_slots.insert(arr.to_string(), a);
                 a
             }
@@ -863,12 +1017,12 @@ impl Codegen {
         // value → scratch buffer 0
         let tmp = self.str_tmp_buf(0);
         self.emit_str_build(val, tmp, 1);
-        // P = slots + idx * 32
+        // P = slots + idx * slot (a power of two)
         let pvar = "strslot__ptr";
         let pzp = self.alloc_var(pvar);
         self.var_types.insert(pvar.to_string(), VarType::Word);
         self.copy_ptr(izp, pzp);
-        for _ in 0..5 {
+        for _ in 0..slot.trailing_zeros() {
             self.emit(0x06);
             self.emit(pzp); // ASL lo
             self.emit(0x26);
@@ -883,9 +1037,9 @@ impl Codegen {
         self.emit(0x69);
         self.emit((slots >> 8) as u8);
         self.sta_zp(pzp + 1);
-        // copy scratch → slot (31 chars max)
+        // copy scratch → slot (slot - 1 characters max)
         self.copy_ptr(pzp, z + DST);
-        self.lda_imm((SLOT - 1) as u8);
+        self.lda_imm((slot - 1) as u8);
         self.sta_zp(z + ROOM);
         self.set_ptr(z + SRC, tmp);
         self.lda_imm(0xFF);

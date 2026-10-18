@@ -1,6 +1,6 @@
 # NUltimate Basic
 
-Current version: **1.6.5** (1.6.5 = 16-bit address expressions: `eval_addr16` / `split_const_plus_byte` in codegen.rs used by peek/poke/peek16/poke16/fill/memcopy/drawmem/save/reu, `const + byte` → `LDA/STA base,Y`; 1.6.4 = SINGLE/DOUBLE real 5-byte floating point (`codegen/float.rs` codegen, `codegen/float_lib.rs` runtime assembled by `codegen/rtasm.rs`), variables spilled to RAM when zero page runs out (`compiler/spill.rs`), 12 KB arrays at `$A000-$CFFF` with BASIC banked out, `%` binary literals, unary-minus precedence fix; 1.6.3 = QBasic-style syntax: `dim … as …` scalars and arrays of every type, `function`/`sub` with `as` types, return-by-name, `end sub`/`end if`, bare sub calls, `print a; b`, ELSEIF / DO-LOOP / WHILE-WEND / SELECT CASE, runtime strings (`codegen/strings.rs`), signed INTEGER, 16-bit for loops, recursion check; deferred work in `ROADMAP.md`; 1.6.2 = `tune` instrument modulation: `imod` / `ifilt` / `igate` / `itab`, frame-based player in `compiler/tune.rs`; 1.6.1 = `map view` smooth scrolling, `compiler/map_view.rs`, `map load` of Level Editor projects and to an address; 1.6.0 = optimised 6502 codegen, `codegen/opt.rs`; release notes in `whatnews.txt`, user docs in `README.md` / `MANUAL.md`).
+Current version: **1.6.6** (1.6.6 = `PRINT USING` (`parse_using_format`, `f_using`), string `<` `>` (`Helper::Order`), float `RND` / `MOD`, floats in IRQ/NMI handlers (`emit_flt_handler_state`), on-demand float runtime (`float_lib::prune`), unsigned 32768-65535 literals in float statements (`stmt_is_real`), 16-bit / signed `mod` (`emit_word_mod`), arithmetic `shr`, opt-in `--basic-print`; 1.6.5 = 16-bit address expressions: `eval_addr16` / `split_const_plus_byte` in codegen.rs used by peek/poke/peek16/poke16/fill/memcopy/drawmem/save/reu, `const + byte` → `LDA/STA base,Y`; 1.6.4 = SINGLE/DOUBLE real 5-byte floating point (`codegen/float.rs` codegen, `codegen/float_lib.rs` runtime assembled by `codegen/rtasm.rs`), variables spilled to RAM when zero page runs out (`compiler/spill.rs`), 12 KB arrays at `$A000-$CFFF` with BASIC banked out, `%` binary literals, unary-minus precedence fix; 1.6.3 = QBasic-style syntax: `dim … as …` scalars and arrays of every type, `function`/`sub` with `as` types, return-by-name, `end sub`/`end if`, bare sub calls, `print a; b`, ELSEIF / DO-LOOP / WHILE-WEND / SELECT CASE, runtime strings (`codegen/strings.rs`), signed INTEGER, 16-bit for loops, recursion check; deferred work in `ROADMAP.md`; 1.6.2 = `tune` instrument modulation: `imod` / `ifilt` / `igate` / `itab`, frame-based player in `compiler/tune.rs`; 1.6.1 = `map view` smooth scrolling, `compiler/map_view.rs`, `map load` of Level Editor projects and to an address; 1.6.0 = optimised 6502 codegen, `codegen/opt.rs`; release notes in `whatnews.txt`, user docs in `README.md` / `MANUAL.md`).
 
 A custom BASIC-like language compiler targeting the Commodore 64 and Commodore 64 Ultimate. Produces `.prg` files runnable in VICE or on real hardware.
 
@@ -141,10 +141,20 @@ at the top of `gen_stmt_inner`, `real_eval_byte` / `real_eval_word` at the top o
 (strings), `real_param_store`, real compare arms in `gen_cond_jump`. `is_real_expr`: real
 var/array/fn, `^`, real builtins, decimal literals once floats are on. `eval_real` leaves the
 value in FAC (simple right operands straight from memory, else `f_push` / `f_*p`). Runtime calls
-are `JSR` patched in `emit_float_runtime` (appended before `patch_forward_refs`); constants are
+are `JSR` patched in `emit_float_runtime` (appended before `patch_forward_refs`; only the
+chunks reached from the called entries are assembled — `float_runtime_for` / `prune`); constants are
 pooled 5-byte MFLPT after it. Parser: `Token::FixedLit(q88, exact, real_only)`, `Token::Caret`,
 `parse_power`; constant folding only folds exact results within i16 (`7/2`, `300*300` stay
-BinOps; `ast::fold_int` gives integer contexts the old wrapped value).
+BinOps; `ast::fold_int` gives integer contexts the old wrapped value). A 32768-65535 literal (`Token::Addr`) in a
+statement that `Parser::stmt_is_real` (SINGLE/DOUBLE name from `pre_scan_real_names`, `^`, real-only
+literal, float builtin) becomes `FixedLit(_, v, true)`; elsewhere it stays `Number(v as i16)`.
+IRQ/NMI handler subs that reach floating point save/restore the runtime state (`flt_handler_hook`,
+`emit_flt_handler_state`); the test CPU simulates IRQs with `Cpu::irq()` (`JMP $EA81` returns).
+`rnd`/`rnd()` in a float statement → `FnCall("rnd")` → `f_rnd` (0 <= x < 1); `mod` with a real operand →
+`f_mod`/`f_modp` (fmod: `a - b*fix(a/b)`, `x mod 0 = x`).
+`print using "fmt"; …`: `Parser::parse_print_using` / `parse_using_format` lower it to `Stmt::Print` text and
+string fields (`left$(v + spaces, w)`) plus `Stmt::PrintUsingNum` → `f_using` (A positions, X decimals, Y flags
+1 comma / 2 plus / 4 trailing minus / 8 point; text in `ubuf`).
 ---
 
 ## Language Reference
@@ -154,6 +164,26 @@ BinOps; `ast::fold_int` gives integer contexts the old wrapped value).
 ```bash
 ub build foo.ub --explicit    # require :type on every var / sub-param / fn-param
 ```
+
+`--basic-print` (or a line `option basic print` in the source) switches PRINT to C64 BASIC
+spacing: a number prints with a leading space (or its `-`) and a trailing space (`print 5` →
+` 5 `), a `,` between items moves to the next 10-column zone (KERNAL PLOT read, then spaces),
+and a trailing `,` keeps the line. Strings, `spc`/`tab`/`hex`/`bin`/`dec`/`chr$`/`str$` print as
+before; without the flag nothing changes. Implementation: `Parser::take_option_directives`,
+`Expr::PrintZone` (parser, for `,`), `Codegen::print_basic_item` (number text via the string
+engine's `emit_number_text`; constants at compile time); `CompileOptions::basic_print`.
+
+`STR$` with BASIC spacing is the C64 text (`" 7"`, `"-42"`, `emit_basic_strn`); without it a byte
+keeps `"007"`. `option strings n[, m]` sets the string variable / array element length
+(`SourceOptions` → `Codegen::set_source_options`: `str_cap`, `str_slot`).
+
+Warnings: `CompileResult::warnings` (CLI prints them, never fatal) — `check_byte_overflow` in
+`gen_stmt`: a byte variable given a constant outside -128..255 or an expression with one.
+
+`END` in a QBasic routine: lexer `Token::EndRoutine` (`end sub|function`) / `Token::EndBlock`
+(`end if|select`, `wend`) are `End` for the grammar (`Parser::token_at`); in a routine closed by
+`EndRoutine` (`qb_routine`) a bare `end` alone on its line is `EndProgramMark` → `EndProgram`.
+`END` / `bye` inside any routine restore the entry SP first (`exit_sp_zp`, saved with `TSX`).
 
 `--explicit` is a CLI flag (not a source-level keyword). When passed to `ub build`,
 the parser refuses `var name = expr` and `sub foo(a, b)` / `fn foo(a, b)` without
@@ -284,7 +314,10 @@ n = x shr 2              # shift right 2 bits (unrolled LSR loop)
 `not x` is **logical NOT** (0 → 1, non-zero → 0) — for bitwise complement use `x xor 255`.
 `*` by a constant is shifts / shift-add (`x * 8` → 3× `ASL`), otherwise a ≤8-round shift-add loop.
 `/` and `mod` by a power of two are `LSR` / `AND #(n-1)`, otherwise an 8-round shift-subtract
-loop (no longer proportional to the quotient). Division by zero is defined: `x / 0 = 255`,
+loop (no longer proportional to the quotient). With a word / INTEGER operand (or a negative
+constant) `mod` is a 16-bit remainder with the sign of the dividend (`-7 mod 3` = -1,
+`emit_word_divmod`; `/` with a 16-bit / signed / negative divisor uses the same 16÷16 routine,
+`div_needs_16`; sign = xor of the operand signs), and `shr` of an INTEGER is arithmetic (`-8 shr 1` = -4, `emit_shr_hi`). Division by zero is defined: `x / 0 = 255`,
 `x mod 0 = x` (it hung before 1.6.0).
 
 ### Increment / Decrement
@@ -624,8 +657,9 @@ IF s = "ABC" OR t <> "" THEN PRINT "compare with = / <>"
 - **`STR$` / `VAL`:** `STR$` of a 16-bit or signed value has no leading zeros (`"-42"`). For
   compatibility, `STR$` of a byte keeps the 3-digit form (`"007"`). `VAL` reads 16-bit
   signed numbers (`VAL("1234") + 1` = 1235).
-- **Comparison:** only `=` / `<>` (and `==` / `!=`); there is no `<` / `>` ordering of
-  strings.
+- **Comparison:** `=` / `<>` (and `==` / `!=`), and `<` `>` `<=` `>=` in PETSCII
+  byte order (a prefix sorts first: `"AB" < "ABC"`), like C64 BASIC (`Helper::Order`,
+  `emit_str_order`).
 
 #### Signed INTEGER, INPUT, DOUBLE (1.6.3)
 
@@ -746,9 +780,18 @@ Float fields store Q8.8 fixed-point values (hi byte = integer part, lo byte =
 fraction × 256). Reading a float field into a `float` variable works via
 `gen_word_assign`; printing a float field uses `print_fixed`.
 
-Not yet supported: struct-typed sub/fn parameters, default field values
-(`var fire: int = 2` inside the type — parsed but ignored), nested struct
-fields, multi-dimensional struct arrays, string fields.
+After 1.6.6: the parser keeps `struct_layouts` (`StructField`: flattened name, `FieldKind`,
+default bytes); `parse_struct_field` reads `int|byte|word|integer|float|string [* n]` or a
+nested struct type (fields `pos.x`, …) and `= default`; QBasic field lines `name AS type` and
+`END TYPE` (lexer `End TypeKw` → `EndType`) work. Defaults become a `Stmt::ArrayData` image after
+the struct array's `VarDecl` (constant count). `FieldKind::Str(n)`: fixed-length text inside the
+element — `emit_struct_field_addr` (string source), `emit_struct_str_store` (build + `Append`
+with ROOM = n). Struct parameters (`p: TName` / `p AS TName`, `pending_struct_params` →
+`struct_vars`) are word params holding the element address; `p.f` is `StructGet/StructSet`
+with `arr = p`, and `emit_struct_ptr` loads the pointer from the variable when `arr` is not an
+array. `arr[i]` of a struct array alone is `Expr::StructAddr`. `emit_struct_ptr` computes
+`idx * elem_size` in 16 bits (it wrapped at 256). Word/float fields are 16-bit values
+(`can_be_word_result`, `eval_expr_word`). Not supported: multi-dimensional struct arrays.
 
 See `examples/type_demo.ub`.
 
@@ -1797,6 +1840,7 @@ ub build <input.ub> [OPTIONS]
   --add <file>          Add an extra file to the .d64 disk image;
                           may be repeated for multiple files
   --explicit            Require :type on every var / sub-param / fn-param
+  --basic-print         C64 BASIC PRINT spacing (spaces around numbers, ',' zones)
   -h, --help            Show help
 ```
 
@@ -1855,10 +1899,12 @@ labels. The `.dbg` format does not yet include instruction-to-source-line mappin
 
 | Feature | Limitation |
 |---|---|
-| Integer arithmetic | `var`/`byte` 8-bit unsigned, wraps silently (`var c = a + b` stays a byte by design — see `can_be_word_result`); `integer` signed 16-bit (`signed_vars`), `word` unsigned 16-bit |
+| Integer arithmetic | `var`/`byte` 8-bit unsigned, wraps (`var c = a + b` stays a byte by design — see `can_be_word_result`); a constant that cannot fit warns (`check_byte_overflow`); `integer` signed 16-bit (`signed_vars`), `word` unsigned 16-bit |
 | Zero page budget | Permanent ZP is `$02–$4F` (78 bytes): every variable and sub/fn parameter takes 2 bytes, every running `for` loop 2 more (freed when the loop ends, if its body declared no variables). Since 1.6.4 `compile()` retries with variables spilled to RAM (`spill.rs`, `spill_enter`/`spill_exit` proxy slots); "out of zero page" only when even that fails |
 | Subroutines | No recursion — ZP parameter slots are statically allocated |
-| String vars | Computed values: 80-char buffer per variable (cut at 80); string-array element values: 31-char slots; no `<`/`>` ordering of strings |
+| `END` in QBasic routines | In a routine closed by `END SUB` / `END FUNCTION` a bare `end` alone on its line is program end (`qb_routine`), so its blocks must close QBasic-style |
+| Struct types | One subscript per struct array; element ≤ 256 bytes (fields use an 8-bit Y offset; checked in the `type` parser); `word`/`integer` fields unsigned; string fields fixed-length (≤ 254); struct params by reference |
+| String vars | Computed values: 80-char buffer per variable (cut at 80), string-array element values: 31-char slots — `option strings n, m` (`str_cap` / `str_slot`); no heap; ordering is PETSCII byte order (no locale) |
 | `rnd()` | Simple LCG, not cryptographic; period = 256 |
 | `abs()` / `sgn()` / `min()` / `max()` | 8-bit values only; `abs`/`sgn` treat values as signed (bit 7 = negative → `abs` two's-complements, `sgn` returns `$FF`); `min`/`max` are unsigned (0–255) |
 | `plot` | Out-of-range pixels are silently clipped (CheckPlot: Y ≥ 200 or X ≥ 320 → skip) |

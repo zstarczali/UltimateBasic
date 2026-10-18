@@ -59,7 +59,7 @@ fn instrument_modulations_move_the_registers() {
 #[test]
 fn tune_rejects_bad_table_steps_and_line_shapes() {
     let bad = "tune\n  inst 0, $41, $09, $F0, $0800, $0000, $00, $0F\n  itab 0, 1, 255, \"zz +1\"\n  order 0\n  pat 0, 0, \"C-4 00\"\nend\n";
-    assert!(!compile(bad, &CompileOptions { basic_stub: false, explicit: false }).errors.is_empty());
+    assert!(!compile(bad, &CompileOptions { basic_stub: false, explicit: false, basic_print: false }).errors.is_empty());
     let bad = "tune\n  inst 0, $41, $09, $F0, $0800, $0000, $00, $0F\n  imod 0, 1, 2\n  order 0\n  pat 0, 0, \"C-4 00\"\nend\n";
-    assert!(!compile(bad, &CompileOptions { basic_stub: false, explicit: false }).errors.is_empty());
+    assert!(!compile(bad, &CompileOptions { basic_stub: false, explicit: false, basic_print: false }).errors.is_empty());
 }

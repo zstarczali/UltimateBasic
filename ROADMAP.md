@@ -28,34 +28,122 @@ The three big items of the 1.6.3 roadmap are implemented:
 
 ---
 
+## Done in 1.6.6
+
+- **Float runtime size:** only the parts of the runtime a program reaches are linked
+  (`float_lib::float_runtime_for` + `prune`: the source is split into chunks at every
+  column-0 label, kept by reachability from the called `f_*` entries through operand
+  references and fall-through). A program that only multiplies, adds and prints went from
+  4603 to 2293 bytes; `examples/float_demo.ub` from 6319 to 5660.
+- **Literals 32768-65535 in floating-point statements** keep their unsigned value
+  (`d = 40000`, `a + 50000`, `-40000`, `$FFFF * 2`). The parser decides per statement
+  (`Parser::stmt_is_real`): a statement that mentions a SINGLE / DOUBLE name
+  (`pre_scan_real_names`: variables, arrays, parameters, `AS DOUBLE` functions), `^`, a
+  literal only floating point can hold, or a floating-point builtin gets
+  `Expr::FixedLit(_, v, true)` for them; every other statement keeps the 16-bit
+  `Expr::Number`, so integer code is unchanged. Untyped `var x = 2.5` names are not in
+  the set (a statement using only those still reads `40000` as 16 bits).
+- **Floating point in IRQ / NMI handlers:** in a program with floating point, a sub named
+  by `irq`, `nmi` or `cia_timer` gets `JSR save` at its start and `JSR restore` before
+  each `irq_exit` / `nmi_exit` (`flt_handler_hook`). After the runtime is assembled,
+  handlers that reach floating point (`flt_routines` + the AST call graph) get their own
+  routines and buffer (`emit_flt_handler_state`): runtime RAM up to the float stack
+  (`float_lib::state_range`), scratch zero page `$50-$7F` and the runtime pointer; `fsp`
+  moves up one spare slot. Other handlers get `BIT $0000` instead (3 bytes, no effect).
+  Programs without floating point are unchanged. Cost: about 2 × (state + 50) bytes
+  copied per interrupt (~4-5k cycles). Not covered: a handler set by address or word
+  variable, and a handler that leaves through a plain `RTS` / `RTI`.
+- **`RND` as a float:** in a floating-point statement (`Parser::stmt_is_real`) `rnd` /
+  `rnd()` is `FnCall("rnd")`, 0 <= x < 1 from `f_rnd` (xorshift32 13/17/5, the raster
+  line mixed in on the first call; its state sits outside the IRQ-saved block).
+  `rnd(n)` keeps its integer meaning (0 … n-1), and `rnd` in integer statements is still
+  the byte generator — `INT(RND * 6)` into an INTEGER is not a floating-point statement,
+  use `rnd(6)` there.
+- **`MOD` on floats:** with a SINGLE / DOUBLE operand, `a mod b` = `a - b * FIX(a / b)`
+  (sign of `a`, like VB / C `fmod`; `7.5 mod 2` = 1.5), `x mod 0` = x
+  (`f_mod` / `f_modp` / `f_modarg`).
+- **`PRINT USING`** (QBasic subset): `print using "fmt"; a, b; …` with a literal format.
+  Numeric fields `#` / `.` / `,` (thousands) / leading `+` / trailing `-`, `%` prefix when
+  the number does not fit (`-.50` drops a lone 0 first); string fields `&`, `!`,
+  `\  \`; `_` escapes; values cycle through the fields, a trailing `;` / `,` keeps the
+  line. The parser splits the format (`parse_using_format`) and lowers the statement to
+  plain prints plus `Stmt::PrintUsingNum`, formatted by `f_using` (exact 32-bit → decimal
+  digits, so up to ~9-10 significant digits; beyond 2^32 it prints `%` + the normal
+  text). Not supported (compile errors): `**`, `$$`, `^^^^`, a non-literal format.
+  A program with PRINT USING links the float runtime.
+- **String ordering:** `<` `>` `<=` `>=` between strings, PETSCII byte order (a prefix
+  sorts first), like C64 BASIC: `Helper::Order` returns $FF / 0 / 1, `emit_str_order`
+  maps it to 1 / 0. Conditions take the value path (`is_byte_compare` excludes strings).
+- **PRINT spacing (opt-in):** `--basic-print` / `option basic print` — numbers with the
+  C64 leading (sign) and trailing space, `,` to the next 10-column zone, trailing `,`
+  keeps the line. Default output is unchanged (existing screen layouts rely on it).
+- **16-bit / signed `mod`, arithmetic `shr`:** a word or signed `mod` is a real 16-bit
+  remainder with the sign of the dividend, like QBasic (`-7 mod 3` = -1, `7 mod -3` = 1,
+  `(w + 5) mod 7` no longer drops to 8 bits; `x mod 0` = x) — `emit_word_mod`,
+  `mod_is_signed`. `shr` of an INTEGER is arithmetic (`-8 shr 1` = -4, `emit_shr_hi`);
+  WORD and byte `shr` stay logical. `gen_word_assign` sends these to `eval_expr_word`.
+
+---
+
+## Done after 1.6.6
+
+- **Division:** `/` with a 16-bit, signed or negative divisor is a 16÷16 division (sign =
+  xor of the operand signs, truncated: `-700 / 300` = -2) — `emit_word_divmod` (shared with
+  `mod`), `div_needs_16`. It used the divisor's low byte (`-700 / -7` gave 0).
+- **Byte overflow warning:** `CompileResult::warnings` (printed by the CLI, never fatal):
+  a byte variable given a constant outside -128…255, or an expression with such a constant
+  in its `+ - * shl` arithmetic (`b = a + 1000`) — `check_byte_overflow`. Masked results and
+  byte + byte are not reported.
+- **`END` in a QBasic routine:** in a SUB / FUNCTION closed by `END SUB` / `END FUNCTION`, an
+  `END` alone on its line ends the program (also inside an `IF` there). Lexer markers
+  `Token::EndRoutine` (`end sub|function`) and `Token::EndBlock` (`end if|select`, `wend`) look
+  like `End` to the grammar (`Parser::token_at`); `qb_routine` turns a bare `end` into
+  `EndProgramMark`. `END` / `bye` inside any routine now really leave the program: `$A659`
+  returns to the current return address, so the entry stack pointer is saved
+  (`exit_sp_zp`) and restored first.
+- **`STR$` with BASIC spacing:** with `--basic-print` / `option basic print`, `STR$` gives
+  the C64 text for every number type (`" 7"`, `"-42"`, `" 3.5"`) — `emit_basic_strn`. The
+  default keeps the byte form `"007"`.
+- **String length:** `option strings n[, m]` — n characters per computed string variable
+  (1-255, 80 by default), m per string-array element (slot rounded up to 32/64/128/256
+  bytes, 31 by default). `SourceOptions` carries all `option` settings to the code
+  generator. There is still no heap: every variable keeps its own fixed buffer.
+- **Struct types:** field defaults (`= value`, the array's initial contents), nested struct
+  fields (`e[i].pos.x`), fixed-length string fields (`name: string * 20`, QBasic
+  `name AS STRING * 20`), struct parameters (`sub heal(p AS TEntity)`, called with
+  `heal(e[i])`), QBasic `TYPE … END TYPE` field lines. Fixed on the way: a variable index into
+  a struct array was multiplied in 8 bits (wrong from offset 256), and word fields were cut
+  to 8 bits inside expressions; `word + x` / `word - x` with any 16-bit `x` (word-array
+  element, word function, word field) now adds all 16 bits.
+
+---
+
 ## Next candidates
 
-- **Float runtime size:** the whole ~4.4 KB library is appended as soon as a program uses
-  floating point. Splitting it into parts (core / text / transcendental functions) that are
-  included on demand would save 1-2 KB for simple programs.
-- **Integer literals 32768-65535 in floating-point context** are read as 16-bit patterns
-  (negative); the lexer/parser would need to keep "unsigned literal" information on
-  `Expr::Number` (write `40000.0` meanwhile).
-- **Floating point in IRQ handlers:** the runtime keeps its state in fixed RAM; it would
-  need a save/restore (or a second state block) around handlers.
-- **`RND` as a float** (0 ≤ x < 1, QBasic / C64 BASIC style) and `MOD` on floats.
-- **`PRINT USING`** / fixed decimals for floats.
+All items of the 1.6.4 list are done (above); see *Smaller open items*.
 
 ---
 
 ## Smaller open items
 
-- **String ordering:** `<` / `>` between strings (only `=` / `<>` exist).
-- **String size:** computed strings are capped at 80 characters per variable and 31 per
-  string-array element; there is no heap / garbage collection.
-- **PRINT spacing:** numbers are printed without the leading/trailing space QBasic and
-  C64 BASIC add, and `,` does not tab to print zones.
-- **`STR$` of a byte** keeps the old 3-digit form (`"007"`) for compatibility; 16-bit
-  and signed values print without padding.
-- **Byte arithmetic:** untyped `var` values are 8-bit and wrap silently
-  (`var c = a + b` with 200 + 100 gives 44) — by design; `DIM … AS INTEGER` avoids it.
-  A compile-time warning for likely overflow would help.
-- **`mod` and `shr` on 16-bit values:** `mod` is 8-bit only (`-7 mod 3` gives 0) and `shr`
-  is a logical shift; a 16-bit / signed `mod` and an arithmetic `shr` are missing.
-- **`END` inside a SUB/FUNCTION** closes the routine (block syntax); use `bye` there to
-  stop the program.
+- **String heap:** strings live in fixed per-variable buffers (`option strings` sets their
+  size); a shared heap with garbage collection would save memory for many string
+  variables, but is a redesign of `codegen/strings.rs`.
+- **Mixed `END` styles:** inside a routine closed by `END SUB`, a UB-style block closed by
+  a bare `end` on its own line (`if … ⏎ end`) now reads as program end — such routines
+  must close their blocks QBasic-style (`END IF`) or close with a plain `end`.
+- **`abs` / `sgn` / `min` / `max` on 16-bit values:** they work on bytes only (`abs` / `sgn`
+  read bit 7 as the sign); INTEGER / WORD arguments need 16-bit (signed) versions.
+- **`rnd()` / `rnd(n)`:** a simple LCG with period 256 (the floating-point `rnd` is already
+  a 32-bit xorshift); a longer-period integer generator would help games.
+- **Bounds checks:** `mplot`, `rect` and `plot4` do not check coordinates (`plot` and
+  `circle` clip); clipping like `plot` would avoid writes outside the bitmap.
+- **Struct arrays with several subscripts:** `var g: TCell = array(8, 8)` — struct arrays
+  take one index (use a computed flat index). Also open: signed `integer` fields (they are
+  unsigned words), elements over 256 bytes (fields use an 8-bit Y offset; now a compile
+  error), and `dim e(9) as TEntity` (struct arrays are declared with `var … = array(n)`).
+- **`PRINT USING`:** no `**` (asterisk fill), `$$` (currency) or `^^^^` (exponent) fields;
+  the format must be a string literal.
+- **Floating point in IRQ handlers set by address:** only a handler sub named in `irq` /
+  `nmi` / `cia_timer` saves the float state; one set by an address or a word variable does
+  not.

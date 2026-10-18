@@ -31,6 +31,8 @@ enum Op<'a> {
     /// JSR routine; STA R; STY R+1 (A/Y result)
     Ret(&'a str),
     Call(&'a str),
+    /// raw code bytes
+    Code(&'a [u8]),
 }
 
 impl Lib {
@@ -52,6 +54,7 @@ impl Lib {
                     code.extend_from_slice(&[0x8D, R as u8, (R >> 8) as u8, 0x8C, (R + 1) as u8, ((R + 1) >> 8) as u8]);
                 }
                 Op::Call(r) => jsr(r, &mut code),
+                Op::Code(b) => code.extend_from_slice(b),
             }
         }
         code.push(0x60);
@@ -485,4 +488,83 @@ fn powers_and_q88() {
     assert_eq!(l.to_int("f_toq88", 0.0), 0);
     let cpu = l.run(&[Op::Val("f_fromu16", 0x0380), Op::Call("f_q88dn"), Op::Mem("f_store", R)], &[]);
     assert_eq!(from_mflpt(cpu.mem[R as usize..R as usize + 5].try_into().unwrap()), 3.5);
+}
+
+/// PRINT USING field, as `f_using` should format it (values away from rounding ties).
+fn using_ref(x: f64, uw: usize, ud: usize, flags: u8) -> String {
+    let n = (x.abs() * 10f64.powi(ud as i32) + 0.5).floor() as u64;
+    let neg = x < 0.0 && n > 0;
+    let p = 10u64.pow(ud as u32);
+    let (int, frac) = (n / p, n % p);
+    let mut digits = int.to_string();
+    if flags & 1 != 0 {
+        let d: Vec<char> = digits.chars().collect();
+        digits = d
+            .iter()
+            .enumerate()
+            .flat_map(|(i, c)| {
+                let left = d.len() - i;
+                if i > 0 && left % 3 == 0 { vec![',', *c] } else { vec![*c] }
+            })
+            .collect();
+    }
+    let sign = if flags & 2 != 0 {
+        if neg { "-" } else { "+" }
+    } else if neg && flags & 4 == 0 {
+        "-"
+    } else {
+        ""
+    };
+    if sign.len() + digits.len() > uw && int == 0 {
+        digits.clear();
+    }
+    let body = format!("{sign}{digits}");
+    let mut out = if body.len() > uw { format!("%{body}") } else { format!("{body:>uw$}") };
+    if flags & 8 != 0 {
+        out += &format!(".{:0ud$}", frac, ud = ud).trim_end_matches(if ud == 0 { "0" } else { "" }).to_string();
+        if ud == 0 {
+            out = out.trim_end_matches('0').to_string();
+            if !out.ends_with('.') {
+                out.push('.');
+            }
+        }
+    }
+    if flags & 4 != 0 {
+        out.push(if neg { '-' } else { ' ' });
+    }
+    out
+}
+
+#[test]
+fn print_using_fields() {
+    let l = lib();
+    let specs: [(u8, u8, u8); 9] =
+        [(3, 2, 8), (2, 2, 8), (1, 2, 8), (6, 0, 0), (9, 2, 9), (4, 3, 10), (5, 1, 12), (8, 4, 9), (3, 0, 8)];
+    let mut seed = 12345u32;
+    let mut checked = 0;
+    for &(uw, ud, flags) in &specs {
+        for k in 0..40 {
+            seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+            let mag = 10f64.powi((seed >> 8) as i32 % 7 - 3);
+            let mut x = ((seed >> 4) % 100000) as f64 / 1000.0 * mag;
+            if k % 3 == 0 {
+                x = -x;
+            }
+            let t = x.abs() * 10f64.powi(ud as i32);
+            if (t - t.floor() - 0.5).abs() < 1e-4 || t >= 4e9 {
+                continue;
+            }
+            let pa = to_mflpt(x);
+            let cpu = l.run(
+                &[Op::Mem("f_load", A), Op::Code(&[0xA9, uw, 0xA2, ud, 0xA0, flags]), Op::Ret("f_using")],
+                &[(A, &pa)],
+            );
+            let at = u16::from_le_bytes([cpu.mem[R as usize], cpu.mem[R as usize + 1]]) as usize;
+            let end = cpu.mem[at..].iter().position(|&b| b == 0).unwrap();
+            let got: String = cpu.mem[at..at + end].iter().map(|&b| b as char).collect();
+            assert_eq!(got, using_ref(from_mflpt(pa), uw as usize, ud as usize, flags), "{x} uw={uw} ud={ud} f={flags}");
+            checked += 1;
+        }
+    }
+    assert!(checked > 250, "{checked}");
 }

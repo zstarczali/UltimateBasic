@@ -61,6 +61,16 @@ pub enum Expr {
     FixedLit(u16, f64, bool),
     FixedToInt(Box<Expr>), // int(f) — extract integer part (hi byte) of a float variable
     FnCall(String, Vec<Expr>), // fn_name(args) — call a function, result in A
+    /// A `,` between print items with C64 BASIC spacing: move to the next
+    /// 10-column zone.
+    PrintZone,
+    /// `arr[i]` of a struct array without a field: the element's address (a
+    /// 16-bit value), passed to a struct-typed parameter.
+    StructAddr {
+        arr: String,
+        idx: Box<Expr>,
+        elem_size: u16,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -134,6 +144,9 @@ pub enum FieldKind {
     Int,   // 1 byte, integer
     Word,  // 2 bytes, little-endian unsigned integer
     Float, // 2 bytes, Q8.8 fixed-point (hi = integer part, lo = frac × 256)
+    /// fixed-length string of up to n characters, stored in the element
+    /// (n + 1 bytes with the $00): `var name: string * 20`
+    Str(u8),
 }
 
 impl FieldKind {
@@ -141,6 +154,7 @@ impl FieldKind {
         match self {
             FieldKind::Int => 1,
             FieldKind::Word | FieldKind::Float => 2,
+            FieldKind::Str(n) => n + 1,
         }
     }
 }
@@ -222,6 +236,15 @@ pub enum Stmt {
     Print {
         args: Vec<Expr>,
         no_newline: bool,
+    },
+    /// One numeric field of `print using` (the parser lowers the rest to plain
+    /// prints): positions before the point, decimals, flags (1 commas, 2 '+',
+    /// 4 trailing '-', 8 point). Printed in floating point (`f_using`).
+    PrintUsingNum {
+        expr: Expr,
+        width: u8,
+        decimals: u8,
+        flags: u8,
     },
     /// `print at col, row, expr...` — cursor position then print (shorthand for cursor+print).
     PrintAt {

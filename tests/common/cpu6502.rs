@@ -32,6 +32,8 @@ pub struct Cpu {
     /// Keys returned by BASIN ($FFCF), in order; CR once empty.
     pub input: std::collections::VecDeque<u8>,
     call_depth: usize,
+    /// Simulated IRQs in progress (`irq()`), ended by `JMP $EA81`.
+    in_irq: usize,
 }
 
 impl Cpu {
@@ -62,6 +64,7 @@ impl Cpu {
             output: Vec::new(),
             input: std::collections::VecDeque::new(),
             call_depth: 0,
+            in_irq: 0,
         }
     }
 
@@ -72,6 +75,20 @@ impl Cpu {
                 panic!("CPU exceeded step budget at ${:04X}", self.pc);
             }
         }
+    }
+
+    /// Take an IRQ through the KERNAL: push PC and P, set I, push A/X/Y (as
+    /// the KERNAL entry does) and jump through $0314. `JMP $EA81` undoes it.
+    pub fn irq(&mut self) {
+        self.push((self.pc >> 8) as u8);
+        self.push(self.pc as u8);
+        self.push(self.status(false));
+        self.i = true;
+        self.push(self.a);
+        self.push(self.x);
+        self.push(self.y);
+        self.pc = u16::from_le_bytes([self.mem[0x0314], self.mem[0x0315]]);
+        self.in_irq += 1;
     }
 
     /// Alias of `run` used by the older integration tests.
@@ -96,6 +113,11 @@ impl Cpu {
             GETIN => {
                 self.a = 0;
                 self.set_zn(0);
+            }
+            // PLOT with C=1 (read): Y = column since the last CR
+            0xFFF0 if self.c => {
+                let col = self.output.iter().rev().take_while(|&&b| b != 0x0D).count();
+                self.y = (col % 40) as u8;
             }
             BASIN => {
                 let k = self.input.pop_front().unwrap_or(0x0D);
@@ -465,6 +487,19 @@ impl Cpu {
             // ── jumps ──
             0x4C => {
                 let t = self.fetch16();
+                if t == 0xEA81 && self.in_irq > 0 {
+                    // KERNAL end of IRQ: pull Y/X/A, RTI
+                    self.in_irq -= 1;
+                    self.y = self.pop();
+                    self.x = self.pop();
+                    self.a = self.pop();
+                    let p = self.pop();
+                    self.set_status(p);
+                    let lo = self.pop();
+                    let hi = self.pop();
+                    self.pc = u16::from_le_bytes([lo, hi]);
+                    return true;
+                }
                 if self.is_rom(t) {
                     // JMP into ROM behaves like a tail call: run the trap, then RTS.
                     self.rom_call(t);
@@ -511,7 +546,8 @@ impl Cpu {
 
     fn do_rts(&mut self) -> bool {
         self.cycles += 4;
-        if self.call_depth == 0 {
+        // an empty stack is the top level too (the program reset SP with TXS)
+        if self.call_depth == 0 || self.sp == 0xFF {
             assert!(
                 self.basic_visible(),
                 "program returned to BASIC with the BASIC ROM banked out ($01 = ${:02X})",
@@ -587,6 +623,7 @@ pub fn compile_src(src: &str) -> CompileResult {
         &CompileOptions {
             basic_stub: false,
             explicit: false,
+            basic_print: false,
         },
     );
     assert!(
