@@ -664,6 +664,11 @@ pub struct Codegen {
     exit_sp_zp: Option<u8>,
     /// `str$` text buffers with BASIC spacing, one per string-build depth.
     basic_strn_bufs: Vec<u16>,
+    /// Characters a computed string variable / scratch buffer holds, and the
+    /// string-array slot size (a power of two, one byte for the $00)
+    /// (`option strings n, m`; 80 and 32 by default).
+    str_cap: u8,
+    str_slot: u16,
     cur_fn: Option<String>,
     rnd_seeded: bool,
     plot_zp: Option<u8>,              // base of 5-byte ZP block for plot helper
@@ -831,6 +836,8 @@ impl Codegen {
             warnings: vec![],
             exit_sp_zp: None,
             basic_strn_bufs: vec![],
+            str_cap: strings::STR_CAP,
+            str_slot: 32,
             cur_fn: None,
             rnd_seeded: false,
             plot_zp: None,
@@ -11257,8 +11264,11 @@ impl Codegen {
     }
 
     /// Signed (`as integer`) variables / arrays / parameters and functions.
-    pub fn set_basic_print(&mut self, on: bool) {
-        self.basic_print = on;
+    /// Settings from the source (`option …` lines) and the CLI.
+    pub fn set_source_options(&mut self, o: &crate::compiler::parser::SourceOptions) {
+        self.basic_print = o.basic_print;
+        self.str_cap = o.str_cap;
+        self.str_slot = o.str_slot;
     }
 
     /// C64 BASIC PRINT spacing: `,` → next 10-column zone; a number → its text

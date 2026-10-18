@@ -1540,3 +1540,27 @@ if str$(b) = \" 7\" then print \"EQ\"
     // default: the byte form stays 3 digits
     assert_eq!(run_basic_print("var b = 7\nprint str$(b)\n", false), "007\r");
 }
+
+#[test]
+fn option_strings_sets_string_lengths() {
+    let body = "dim s as string, t as string
+dim a(2) as string
+dim k as byte, n as byte, m as byte
+for k = 1 to 15
+    s = s + \"0123456789\"
+next
+t = s + \"\"
+a(1) = s
+n = len(t)
+m = len(a(1))
+";
+    let r = run_src(body);
+    assert_eq!((r.byte("n"), r.byte("m")), (80, 31));
+    let r = run_src(&format!("option strings 200, 100\n{body}"));
+    assert_eq!((r.byte("n"), r.byte("m")), (150, 127));
+    let r = run_src(&format!("option strings 255\n{body}"));
+    assert_eq!((r.byte("n"), r.byte("m")), (150, 31));
+    let opts = ultimate_basic::compiler::CompileOptions { basic_stub: false, explicit: false, basic_print: false };
+    let bad = ultimate_basic::compiler::compile(&format!("option strings 300\n{body}"), &opts);
+    assert!(!bad.errors.is_empty());
+}

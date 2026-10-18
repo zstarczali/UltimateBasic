@@ -30,6 +30,7 @@ use super::Codegen;
 use crate::compiler::ast::{BinOp, Expr, VarType};
 
 /// Characters a runtime-built string may hold (C64 screen line × 2).
+/// Default limit of a computed string variable (`option strings N`).
 pub(super) const STR_CAP: u8 = 80;
 
 const SRC: u8 = 0;
@@ -87,14 +88,14 @@ impl Codegen {
         if let Some(&a) = self.str_var_bufs.get(name) {
             return a;
         }
-        let a = self.emit_inline_zeros(STR_CAP as usize + 1);
+        let a = self.emit_inline_zeros(self.str_cap as usize + 1);
         self.str_var_bufs.insert(name.to_string(), a);
         a
     }
 
     fn str_tmp_buf(&mut self, depth: usize) -> u16 {
         while self.str_tmp_bufs.len() <= depth {
-            let a = self.emit_inline_zeros(STR_CAP as usize + 1);
+            let a = self.emit_inline_zeros(self.str_cap as usize + 1);
             self.str_tmp_bufs.push(a);
         }
         self.str_tmp_bufs[depth]
@@ -753,7 +754,7 @@ impl Codegen {
     pub(super) fn emit_str_build(&mut self, e: &Expr, buf: u16, depth: usize) {
         let z = self.str_zp();
         self.set_ptr(z + DST, buf);
-        self.lda_imm(STR_CAP);
+        self.lda_imm(self.str_cap);
         self.sta_zp(z + ROOM);
         self.lda_imm(0);
         self.emit(0x8D);
@@ -853,7 +854,7 @@ impl Codegen {
             self.emit_str_build(e, tmp, 1);
             let z = self.str_zp();
             self.set_ptr(z + DST, own);
-            self.lda_imm(STR_CAP);
+            self.lda_imm(self.str_cap);
             self.sta_zp(z + ROOM);
             self.set_ptr(z + SRC, tmp);
             self.lda_imm(0xFF);
@@ -872,7 +873,7 @@ impl Codegen {
         let buf = match self.str_param_bufs.get(key) {
             Some(&b) => b,
             None => {
-                let b = self.emit_inline_zeros(STR_CAP as usize + 1);
+                let b = self.emit_inline_zeros(self.str_cap as usize + 1);
                 self.str_param_bufs.insert(key.to_string(), b);
                 b
             }
@@ -950,16 +951,17 @@ impl Codegen {
     }
 
     /// `names(i) = <string expression>`: copy the value into element `i`'s own
-    /// 32-byte slot (31 characters) and point the element at it, so elements
-    /// do not share a buffer (`input names(i)` in a loop, `names(i) = s`).
+    /// slot (32 bytes = 31 characters by default, `option strings n, m`) and
+    /// point the element at it, so elements do not share a buffer
+    /// (`input names(i)` in a loop, `names(i) = s`).
     pub(super) fn emit_str_array_store(&mut self, arr: &str, idx: &Expr, val: &Expr) {
-        const SLOT: u16 = 32;
+        let slot: u16 = self.str_slot;
         let z = self.str_zp();
         let n_elems = self.array_sizes.get(arr).copied().unwrap_or(0) / 2;
         let slots = match self.str_array_slots.get(arr) {
             Some(&a) => a,
             None => {
-                let a = self.emit_inline_zeros((n_elems * SLOT) as usize);
+                let a = self.emit_inline_zeros((n_elems * slot) as usize);
                 self.str_array_slots.insert(arr.to_string(), a);
                 a
             }
@@ -977,12 +979,12 @@ impl Codegen {
         // value → scratch buffer 0
         let tmp = self.str_tmp_buf(0);
         self.emit_str_build(val, tmp, 1);
-        // P = slots + idx * 32
+        // P = slots + idx * slot (a power of two)
         let pvar = "strslot__ptr";
         let pzp = self.alloc_var(pvar);
         self.var_types.insert(pvar.to_string(), VarType::Word);
         self.copy_ptr(izp, pzp);
-        for _ in 0..5 {
+        for _ in 0..slot.trailing_zeros() {
             self.emit(0x06);
             self.emit(pzp); // ASL lo
             self.emit(0x26);
@@ -997,9 +999,9 @@ impl Codegen {
         self.emit(0x69);
         self.emit((slots >> 8) as u8);
         self.sta_zp(pzp + 1);
-        // copy scratch → slot (31 chars max)
+        // copy scratch → slot (slot - 1 characters max)
         self.copy_ptr(pzp, z + DST);
-        self.lda_imm((SLOT - 1) as u8);
+        self.lda_imm((slot - 1) as u8);
         self.sta_zp(z + ROOM);
         self.set_ptr(z + SRC, tmp);
         self.lda_imm(0xFF);

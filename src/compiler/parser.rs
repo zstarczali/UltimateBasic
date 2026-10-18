@@ -163,6 +163,18 @@ fn fold_int_const(e: Expr) -> Expr {
     }
 }
 
+/// Settings a program gives with `option …` lines (and the CLI).
+#[derive(Debug, Clone)]
+pub struct SourceOptions {
+    /// C64 BASIC PRINT spacing (`option basic print`, `--basic-print`).
+    pub basic_print: bool,
+    /// Characters of a computed string variable (`option strings n`, 1-255; 80).
+    pub str_cap: u8,
+    /// String-array slot size in bytes: a power of two, 32 (31 characters) by
+    /// default; `option strings n, m` gives m characters, rounded up.
+    pub str_slot: u16,
+}
+
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
@@ -189,6 +201,9 @@ pub struct Parser {
     /// C64 BASIC PRINT spacing (`--basic-print` / `option basic print`): a `,`
     /// between print items becomes `Expr::PrintZone`.
     basic_print: bool,
+    /// `option strings n, m` (codegen limits, see `SourceOptions`).
+    str_cap: u8,
+    str_slot: u16,
     /// Names of every `sub` / `fn` (pre-scanned), for QBasic-style bare calls
     /// (`koszont "zsolt"`) and for telling `;` print separators from statements.
     sub_names: std::collections::HashSet<String>,
@@ -233,6 +248,8 @@ impl Parser {
             statement_lines: vec![],
             explicit_types: false,
             basic_print: false,
+            str_cap: 80,
+            str_slot: 32,
             sub_names: std::collections::HashSet::new(),
             fn_names: std::collections::HashSet::new(),
             fn_result: None,
@@ -262,6 +279,8 @@ impl Parser {
             statement_lines: vec![],
             explicit_types: false,
             basic_print: false,
+            str_cap: 80,
+            str_slot: 32,
             sub_names: std::collections::HashSet::new(),
             fn_names: std::collections::HashSet::new(),
             fn_result: None,
@@ -294,6 +313,8 @@ impl Parser {
             statement_lines: vec![],
             explicit_types: false,
             basic_print: false,
+            str_cap: 80,
+            str_slot: 32,
             sub_names: std::collections::HashSet::new(),
             fn_names: std::collections::HashSet::new(),
             fn_result: None,
@@ -327,6 +348,8 @@ impl Parser {
             statement_lines: vec![],
             explicit_types: false,
             basic_print: false,
+            str_cap: 80,
+            str_slot: 32,
             sub_names: std::collections::HashSet::new(),
             fn_names: std::collections::HashSet::new(),
             fn_result: None,
@@ -360,6 +383,11 @@ impl Parser {
         self.basic_print
     }
 
+    /// Everything the `option …` lines set (for the code generator).
+    pub fn source_options(&self) -> SourceOptions {
+        SourceOptions { basic_print: self.basic_print, str_cap: self.str_cap, str_slot: self.str_slot }
+    }
+
     /// `option basic print` at the start of a statement: switch the mode on and
     /// drop the three tokens (the line stays, empty).
     fn take_option_directives(&mut self) {
@@ -376,6 +404,37 @@ impl Parser {
                 if i > 0 && self.tokens.get(i) == Some(&Token::Colon) {
                     self.tokens.remove(i);
                 }
+                continue;
+            }
+            // `option strings n [, m]`: string variable / array element length
+            if at_start
+                && matches!(&self.tokens[i], Token::Ident(o) if o == "option")
+                && matches!(&self.tokens[i + 1], Token::Ident(s) if s == "strings")
+            {
+                let num = |t: Option<&Token>| match t {
+                    Some(Token::Number(n)) => Some(*n as i32),
+                    _ => None,
+                };
+                let mut end = i + 2;
+                let n = num(self.tokens.get(end));
+                end += 1;
+                let mut m = None;
+                if self.tokens.get(end) == Some(&Token::Comma) {
+                    m = num(self.tokens.get(end + 1));
+                    end += 2;
+                }
+                match (n, m) {
+                    (Some(n @ 1..=255), m) if m.is_none_or(|m| (1..=255).contains(&m)) => {
+                        self.str_cap = n as u8;
+                        if let Some(m) = m {
+                            self.str_slot = ((m + 1) as u16).next_power_of_two().max(32);
+                        }
+                    }
+                    _ => self.errors.push(
+                        "option strings: lengths must be 1-255 (option strings 200 or option strings 200, 63)".into(),
+                    ),
+                }
+                self.tokens.drain(i..end.min(self.tokens.len()));
                 continue;
             }
             i += 1;

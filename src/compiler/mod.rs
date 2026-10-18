@@ -181,13 +181,13 @@ pub fn compile_with_path(
     let mut signed = ast::SignedNames::default();
     ast::extract_signed(&mut ast, &mut signed);
     let source_lines = parser.take_statement_lines();
-    let basic_print = parser.basic_print();
+    let src_opts = parser.source_options();
     let mut errors = lex_errors;
     errors.extend(parser.errors().iter().cloned());
     let mut cg = Codegen::new(load_addr);
     cg.set_source_lines(source_lines.clone());
     cg.set_signed(signed.clone());
-    cg.set_basic_print(basic_print);
+    cg.set_source_options(&src_opts);
     let mut raw = cg.compile(&ast);
     // Out of zero page: compile again with the least used variables in RAM
     // (compiler/spill.rs). Programs that fit are never touched.
@@ -196,7 +196,7 @@ pub fn compile_with_path(
         let mut retry = Codegen::new(load_addr);
         retry.set_source_lines(source_lines.clone());
         retry.set_signed(signed.clone());
-        retry.set_basic_print(basic_print);
+        retry.set_source_options(&src_opts);
         retry.set_spill(analysis.plan(analysis.candidate_count()));
         raw = retry.compile(&ast);
         cg = retry;
@@ -209,7 +209,7 @@ pub fn compile_with_path(
                 let mut retry = Codegen::new(load_addr);
                 retry.set_source_lines(source_lines.clone());
                 retry.set_signed(signed.clone());
-                retry.set_basic_print(basic_print);
+                retry.set_source_options(&src_opts);
                 retry.set_spill(analysis.plan(k));
                 let retry_raw = retry.compile(&ast);
                 match retry.zp_overflow() {
