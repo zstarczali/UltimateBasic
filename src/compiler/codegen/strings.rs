@@ -555,6 +555,10 @@ impl Codegen {
                 let e = e.clone();
                 self.gen_word_assign(z + SRC, &e);
             }
+            Expr::StrN(inner) if self.basic_print => {
+                let inner = (**inner).clone();
+                self.emit_basic_strn(&inner, depth);
+            }
             Expr::StrN(inner) if !self.is_wide_number(inner) => {
                 let e2 = e.clone();
                 self.eval_expr(&e2); // strn helper → strn_zp
@@ -593,6 +597,49 @@ impl Codegen {
     }
 
     /// Numeric expression → decimal text in num_buf; SRC ← num_buf.
+    /// SRC ← C64 BASIC `STR$` text of `e` (BASIC spacing): the number with a
+    /// leading space, or its `-` (`" 7"`, `"-42"`, `" 3.5"`), for every number
+    /// type (without BASIC spacing a byte keeps the 3-digit `"007"`).
+    fn emit_basic_strn(&mut self, e: &Expr, depth: usize) {
+        let z = self.str_zp();
+        self.emit_number_text(e);
+        while self.basic_strn_bufs.len() <= depth {
+            let b = self.emit_inline_zeros(24);
+            self.basic_strn_bufs.push(b);
+        }
+        let buf = self.basic_strn_bufs[depth];
+        // copy the text to buf+1
+        self.emit(0xA0);
+        self.emit(0x00); // LDY #0
+        let l = self.current_addr();
+        self.emit(0xB1);
+        self.emit(z + SRC); // LDA (SRC),Y
+        self.emit(0x99);
+        self.emit16(buf + 1); // STA buf+1,Y
+        let done = self.bxx_fwd(0xF0); // BEQ copied
+        self.emit(0xC8); // INY
+        self.bxx_back(0xD0, l); // BNE loop
+        let at = self.current_addr();
+        self.patch_bxx(done, at);
+        self.emit(0xAD);
+        self.emit16(buf + 1); // LDA buf+1
+        self.emit(0xC9);
+        self.emit(b'-'); // CMP #'-'
+        let neg = self.bxx_fwd(0xF0); // BEQ negative: no space
+        self.lda_imm(b' ');
+        self.emit(0x8D);
+        self.emit16(buf); // STA buf
+        self.set_ptr(z + SRC, buf);
+        self.emit(0x4C);
+        let jmp = self.code.len();
+        self.emit16(0); // JMP done
+        let at = self.current_addr();
+        self.patch_bxx(neg, at);
+        self.set_ptr(z + SRC, buf + 1);
+        let past = self.current_addr();
+        self.patch_abs(jmp, past);
+    }
+
     /// ZP pair pointing at the text of number `e` (`print` with BASIC spacing).
     pub(super) fn str_number_text_ptr(&mut self, e: &Expr) -> u8 {
         self.emit_number_text(e);

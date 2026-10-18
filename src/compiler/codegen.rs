@@ -662,6 +662,8 @@ pub struct Codegen {
     /// occur inside a sub or function: they restore it first, so BASIC is
     /// returned to (not the routine's caller).
     exit_sp_zp: Option<u8>,
+    /// `str$` text buffers with BASIC spacing, one per string-build depth.
+    basic_strn_bufs: Vec<u16>,
     cur_fn: Option<String>,
     rnd_seeded: bool,
     plot_zp: Option<u8>,              // base of 5-byte ZP block for plot helper
@@ -828,6 +830,7 @@ impl Codegen {
             basic_print: false,
             warnings: vec![],
             exit_sp_zp: None,
+            basic_strn_bufs: vec![],
             cur_fn: None,
             rnd_seeded: false,
             plot_zp: None,
@@ -11288,9 +11291,14 @@ impl Codegen {
                 self.bxx_back(0xD0, s); // BNE
                 true
             }
+            // C64 STR$: " 7", "-42"
+            Expr::StrN(_) => {
+                let arg = arg.clone();
+                self.emit_str_print(&arg);
+                true
+            }
             Expr::StringLit(_)
             | Expr::ChrStr(_)
-            | Expr::StrN(_)
             | Expr::HexFmt(_)
             | Expr::BinFmt(_)
             | Expr::DecFmt(..)

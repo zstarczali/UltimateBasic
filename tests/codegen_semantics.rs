@@ -1523,3 +1523,20 @@ PRINT \"NEVER\"
     let r = run_src("sub quit()\n    print \"Q\"\n    bye\nend\nquit()\nprint \"AFTER\"\n");
     assert_eq!(r.output(), "Q\r");
 }
+
+#[test]
+fn str_in_basic_print_mode() {
+    let src = "var b = 7
+dim i as integer = -42
+dim d as double = 3.5
+dim s as string
+s = str$(b) + \":\" + str$(i) + \":\" + str$(d)
+print s
+print str$(b); str$(i)
+print \"[\" + str$(200) + \"]\"
+if str$(b) = \" 7\" then print \"EQ\"
+";
+    assert_eq!(run_basic_print(src, true), " 7:-42: 3.5\r 7-42\r[ 200]\rEQ\r");
+    // default: the byte form stays 3 digits
+    assert_eq!(run_basic_print("var b = 7\nprint str$(b)\n", false), "007\r");
+}
