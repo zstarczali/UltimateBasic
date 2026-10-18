@@ -658,6 +658,10 @@ pub struct Codegen {
     basic_print: bool,
     /// Compile-time warnings (`CompileResult::warnings`): likely byte overflow.
     warnings: Vec<String>,
+    /// ZP byte with the stack pointer at program entry, when `end` / `bye`
+    /// occur inside a sub or function: they restore it first, so BASIC is
+    /// returned to (not the routine's caller).
+    exit_sp_zp: Option<u8>,
     cur_fn: Option<String>,
     rnd_seeded: bool,
     plot_zp: Option<u8>,              // base of 5-byte ZP block for plot helper
@@ -823,6 +827,7 @@ impl Codegen {
             cur_routine: None,
             basic_print: false,
             warnings: vec![],
+            exit_sp_zp: None,
             cur_fn: None,
             rnd_seeded: false,
             plot_zp: None,
@@ -1784,6 +1789,19 @@ impl Codegen {
             self.perm_zp += 2;
         }
         let real_slots = if self.flt_zp.is_some() { self.scan_reals(stmts) } else { 0 };
+        // `end` / `bye` inside a routine: remember the entry stack pointer
+        let mut exit_in_routine = false;
+        for st in stmts {
+            if let Stmt::SubDef(_, _, body) | Stmt::FnDef(_, _, _, body) = st {
+                float::each_stmt(body, &mut |s| {
+                    exit_in_routine |= matches!(s, Stmt::EndProgram | Stmt::Bye);
+                });
+            }
+        }
+        if exit_in_routine {
+            self.exit_sp_zp = Some(self.perm_zp);
+            self.perm_zp += 1;
+        }
         if self.flt_zp.is_some() {
             self.scan_float_handlers(stmts);
         }
@@ -12639,6 +12657,7 @@ impl Codegen {
                 }
             }
             Stmt::EndProgram => {
+                self.emit_restore_exit_sp();
                 // QBasic END: same exit as `bye` (BASIC warm start resets the
                 // stack, so it works inside gosub/sub too) but keeps the screen.
                 self.emit(0xA9);
@@ -12656,6 +12675,7 @@ impl Codegen {
                 self.emit16(0xA659); // JMP $A659
             }
             Stmt::Bye => {
+                self.emit_restore_exit_sp();
                 self.emit(0x20);
                 self.emit16(0xE544); // JSR $E544 — KERNAL CLS
                 self.emit(0xA9);
@@ -15833,6 +15853,11 @@ impl Codegen {
         // arithmetic assumes binary ADC/SBC semantics, so normalize once at
         // program entry.
         self.emit(0xD8); // CLD
+        if let Some(z) = self.exit_sp_zp {
+            self.emit(0xBA); // TSX
+            self.emit(0x86);
+            self.emit(z); // STX exit_sp: the stack as BASIC called us
+        }
         self.emit_basic_rom(false); // arrays under the BASIC ROM: bank it out
 
         self.emit_zero_arrays();
@@ -16381,6 +16406,15 @@ impl Codegen {
         }
 
         self.code.clone()
+    }
+
+    /// `LDX exit_sp; TXS` before leaving the program from any depth.
+    fn emit_restore_exit_sp(&mut self) {
+        if let Some(z) = self.exit_sp_zp {
+            self.emit(0xA6);
+            self.emit(z); // LDX exit_sp
+            self.emit(0x9A); // TXS
+        }
     }
 
     /// Warnings found while generating code (they never stop a build).

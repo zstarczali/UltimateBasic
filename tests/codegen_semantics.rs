@@ -1490,3 +1490,36 @@ b = -1
     assert_eq!(lines, ["line 4", "line 5", "line 6"], "{:?}", res.warnings);
     assert!(res.warnings[0].contains("'b' is a byte") && res.warnings[0].contains("300"));
 }
+
+#[test]
+fn end_in_qbasic_routine_ends_the_program() {
+    let r = run_src(
+        "dim n as integer
+dim k as byte
+sub old_style(x)
+    if x == 9 then
+        k = k + 100
+    end
+end
+SUB Check (x AS INTEGER)
+    old_style x
+    IF x > 2 THEN
+        PRINT \"STOP\"
+        END
+    END IF
+    WHILE k < 0 : WEND
+    IF x = 1 THEN k = k + 1 END
+    PRINT \"OK\"; x
+END SUB
+FOR n = 1 TO 5
+    Check n
+NEXT
+PRINT \"NEVER\"
+",
+    );
+    assert_eq!(r.output(), "OK1\rOK2\rSTOP\r");
+    assert_eq!(r.byte("k"), 1);
+    // `bye` inside an (old-style) sub leaves the program too, not just the sub
+    let r = run_src("sub quit()\n    print \"Q\"\n    bye\nend\nquit()\nprint \"AFTER\"\n");
+    assert_eq!(r.output(), "Q\r");
+}

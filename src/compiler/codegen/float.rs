@@ -783,7 +783,7 @@ pub(super) fn program_uses_reals(stmts: &[Stmt]) -> bool {
 }
 
 /// Visit every statement, nested bodies included.
-fn each_stmt(stmts: &[Stmt], f: &mut dyn FnMut(&Stmt)) {
+pub(super) fn each_stmt(stmts: &[Stmt], f: &mut dyn FnMut(&Stmt)) {
     for st in stmts {
         f(st);
         match st {

@@ -546,7 +546,8 @@ impl Cpu {
 
     fn do_rts(&mut self) -> bool {
         self.cycles += 4;
-        if self.call_depth == 0 {
+        // an empty stack is the top level too (the program reset SP with TXS)
+        if self.call_depth == 0 || self.sp == 0xFF {
             assert!(
                 self.basic_visible(),
                 "program returned to BASIC with the BASIC ROM banked out ($01 = ${:02X})",

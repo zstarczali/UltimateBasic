@@ -211,6 +211,9 @@ pub struct Parser {
     /// function results): a statement that mentions one is a floating-point
     /// statement, where 32768-65535 literals keep their unsigned value.
     real_names: std::collections::HashSet<String>,
+    /// Parsing the body of a routine closed by `end sub` / `end function`: a
+    /// bare `end` alone on its line there ends the program (QBasic).
+    qb_routine: bool,
 }
 
 impl Parser {
@@ -239,6 +242,7 @@ impl Parser {
             in_condition: false,
             select_depth: 0,
             real_names: std::collections::HashSet::new(),
+            qb_routine: false,
         }
     }
 
@@ -267,6 +271,7 @@ impl Parser {
             in_condition: false,
             select_depth: 0,
             real_names: std::collections::HashSet::new(),
+            qb_routine: false,
         }
     }
 
@@ -298,6 +303,7 @@ impl Parser {
             in_condition: false,
             select_depth: 0,
             real_names: std::collections::HashSet::new(),
+            qb_routine: false,
         }
     }
 
@@ -330,6 +336,7 @@ impl Parser {
             in_condition: false,
             select_depth: 0,
             real_names: std::collections::HashSet::new(),
+            qb_routine: false,
         }
     }
 
@@ -907,15 +914,32 @@ impl Parser {
     }
 
     fn peek(&self) -> &Token {
-        self.tokens.get(self.pos).unwrap_or(&Token::Eof)
+        self.token_at(self.pos)
     }
 
     fn peek2(&self) -> &Token {
-        self.tokens.get(self.pos + 1).unwrap_or(&Token::Eof)
+        self.token_at(self.pos + 1)
+    }
+
+    /// The token at `i` as the grammar sees it: the closers `end sub|function`,
+    /// `end if|select` and `wend` are `End`; in a QBasic routine a bare `end`
+    /// alone on its line is `EndProgramMark`.
+    fn token_at(&self, i: usize) -> &Token {
+        match self.tokens.get(i) {
+            Some(Token::EndRoutine | Token::EndBlock) => &Token::End,
+            Some(Token::End)
+                if self.qb_routine
+                    && (i == 0 || self.tokens[i - 1] == Token::Newline)
+                    && matches!(self.tokens.get(i + 1), None | Some(Token::Newline | Token::Eof)) =>
+            {
+                &Token::EndProgramMark
+            }
+            t => t.unwrap_or(&Token::Eof),
+        }
     }
 
     fn advance(&mut self) -> Token {
-        let t = self.tokens.get(self.pos).cloned().unwrap_or(Token::Eof);
+        let t = self.token_at(self.pos).clone();
         self.pos += 1;
         if matches!(t, Token::Newline) {
             self.line += 1;
@@ -2222,6 +2246,29 @@ impl Parser {
         bytes
     }
 
+    /// Statements of a sub / function body, up to (not including) its `end`.
+    /// A routine closed by `end sub` / `end function` (QBasic style) knows its
+    /// end: a bare `end` at its top level ends the program there.
+    fn parse_routine_body(&mut self) -> Vec<Stmt> {
+        let qbasic = self.tokens[self.pos..]
+            .iter()
+            .find(|t| matches!(t, Token::EndRoutine | Token::Sub | Token::Fn | Token::Eof))
+            == Some(&Token::EndRoutine);
+        let outer = std::mem::replace(&mut self.qb_routine, qbasic);
+        let mut body = vec![];
+        loop {
+            self.skip_newlines();
+            if matches!(self.peek(), Token::End | Token::Eof) {
+                break;
+            }
+            if let Some(s) = self.parse_stmt() {
+                body.push(s);
+            }
+        }
+        self.qb_routine = outer;
+        body
+    }
+
     fn parse_body(&mut self) -> Vec<Stmt> {
         let mut body = vec![];
         loop {
@@ -2858,8 +2905,9 @@ impl Parser {
                 self.advance();
                 self.parse_do_loop()
             }
-            // An `end` no block is waiting for: QBasic program end.
-            Token::End => {
+            // An `end` no block is waiting for, or a bare `end` in a QBasic
+            // routine: QBasic program end.
+            Token::End | Token::EndProgramMark => {
                 self.advance();
                 self.expect_newline();
                 Some(Stmt::EndProgram)
@@ -3098,16 +3146,7 @@ impl Parser {
                 }
                 self.expect_newline();
                 let body_start = self.pos;
-                let mut body = vec![];
-                loop {
-                    self.skip_newlines();
-                    if matches!(self.peek(), Token::End | Token::Eof) {
-                        break;
-                    }
-                    if let Some(s) = self.parse_stmt() {
-                        body.push(s);
-                    }
-                }
+                let body = self.parse_routine_body();
                 self.record_calls(&name, body_start, self.pos);
                 if self.peek() == &Token::End {
                     self.advance();
@@ -3171,16 +3210,7 @@ impl Parser {
                 self.declared_vars.insert(hidden.clone());
                 let outer_fn = self.fn_result.replace((name.clone(), hidden.clone(), false));
                 let body_start = self.pos;
-                let mut body = vec![];
-                loop {
-                    self.skip_newlines();
-                    if matches!(self.peek(), Token::End | Token::Eof) {
-                        break;
-                    }
-                    if let Some(s) = self.parse_stmt() {
-                        body.push(s);
-                    }
-                }
+                let mut body = self.parse_routine_body();
                 self.record_calls(&name, body_start, self.pos);
                 let (_, _, used) = std::mem::replace(&mut self.fn_result, outer_fn).unwrap();
                 if used {

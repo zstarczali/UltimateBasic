@@ -14,6 +14,15 @@ pub enum Token {
     EndType,  // `endtype` — close a struct-type definition block
     Dot,      // `.` — struct field selector (arr[i].field)
     End,
+    /// `end sub` / `end function`: the parser sees it as `End`, except that the
+    /// body of such a routine knows its own end (a bare `end` there ends the
+    /// program, as in QBasic).
+    EndRoutine,
+    /// `end if` / `end select` / `wend`: an `End` that closes a block (the
+    /// parser sees `End`); a bare `end` is told apart from it in QBasic routines.
+    EndBlock,
+    /// Parser-only: a bare `end` alone on its line inside a QBasic routine.
+    EndProgramMark,
     If,
     Then,
     Else,
@@ -580,7 +589,7 @@ impl Lexer {
             "else" => Token::Else,
             "elseif" => Token::ElseIf,
             "do" => Token::Do,
-            "wend" => Token::End, // QBasic `while … wend` = `while … end`
+            "wend" => Token::EndBlock, // QBasic `while … wend` = `while … end`
             "loop" => Token::Loop,
             "while" => Token::While,
             "to" => Token::To,
@@ -789,7 +798,14 @@ fn normalize_basic_block_words(tokens: Vec<Token>) -> Vec<Token> {
     let mut out: Vec<Token> = Vec::with_capacity(tokens.len());
     for t in tokens {
         match (out.last(), &t) {
-            (Some(Token::End), Token::Sub | Token::Fn | Token::If | Token::Select) => continue,
+            (Some(Token::End), Token::Sub | Token::Fn) => {
+                *out.last_mut().unwrap() = Token::EndRoutine;
+                continue;
+            }
+            (Some(Token::End), Token::If | Token::Select) => {
+                *out.last_mut().unwrap() = Token::EndBlock;
+                continue;
+            }
             (Some(Token::Bye), Token::Sub | Token::Fn) => {
                 *out.last_mut().unwrap() = Token::Return;
                 continue;
@@ -906,16 +922,17 @@ mod tests {
         assert_eq!(tokenize("var")[0], Token::Var);
         assert_eq!(tokenize("DIM")[0], Token::Dim);
         assert_eq!(tokenize("FUNCTION")[0], Token::Fn);
-        assert_eq!(tokenize("end sub"), vec![Token::End, Token::Eof]);
-        assert_eq!(tokenize("END FUNCTION"), vec![Token::End, Token::Eof]);
-        assert_eq!(tokenize("end if"), vec![Token::End, Token::Eof]);
+        assert_eq!(tokenize("end sub"), vec![Token::EndRoutine, Token::Eof]);
+        assert_eq!(tokenize("END FUNCTION"), vec![Token::EndRoutine, Token::Eof]);
+        assert_eq!(tokenize("end if"), vec![Token::EndBlock, Token::Eof]);
+        assert_eq!(tokenize("wend"), vec![Token::EndBlock, Token::Eof]);
         assert_eq!(tokenize("exit sub"), vec![Token::Return, Token::Eof]);
         assert_eq!(tokenize("exit function"), vec![Token::Return, Token::Eof]);
         assert_eq!(tokenize("exit")[0], Token::Bye);
         assert_eq!(tokenize("exit do"), vec![Token::Break, Token::Eof]);
         assert_eq!(tokenize("exit for"), vec![Token::Break, Token::Eof]);
         assert_eq!(tokenize("a <> b")[1], Token::NotEq);
-        assert_eq!(tokenize("wend")[0], Token::End);
+        assert_eq!(tokenize("wend")[0], Token::EndBlock);
         assert_eq!(tokenize("elseif")[0], Token::ElseIf);
         assert_eq!(tokenize("x = 1 ' comment"), tokenize("x = 1"));
         // `as` and BASIC type names stay identifiers (context keywords)
