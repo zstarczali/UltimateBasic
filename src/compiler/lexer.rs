@@ -802,6 +802,10 @@ fn normalize_basic_block_words(tokens: Vec<Token>) -> Vec<Token> {
                 *out.last_mut().unwrap() = Token::EndRoutine;
                 continue;
             }
+            (Some(Token::End), Token::TypeKw) => {
+                *out.last_mut().unwrap() = Token::EndType;
+                continue;
+            }
             (Some(Token::End), Token::If | Token::Select) => {
                 *out.last_mut().unwrap() = Token::EndBlock;
                 continue;

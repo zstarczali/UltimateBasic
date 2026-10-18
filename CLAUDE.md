@@ -780,9 +780,18 @@ Float fields store Q8.8 fixed-point values (hi byte = integer part, lo byte =
 fraction × 256). Reading a float field into a `float` variable works via
 `gen_word_assign`; printing a float field uses `print_fixed`.
 
-Not yet supported: struct-typed sub/fn parameters, default field values
-(`var fire: int = 2` inside the type — parsed but ignored), nested struct
-fields, multi-dimensional struct arrays, string fields.
+After 1.6.6: the parser keeps `struct_layouts` (`StructField`: flattened name, `FieldKind`,
+default bytes); `parse_struct_field` reads `int|byte|word|integer|float|string [* n]` or a
+nested struct type (fields `pos.x`, …) and `= default`; QBasic field lines `name AS type` and
+`END TYPE` (lexer `End TypeKw` → `EndType`) work. Defaults become a `Stmt::ArrayData` image after
+the struct array's `VarDecl` (constant count). `FieldKind::Str(n)`: fixed-length text inside the
+element — `emit_struct_field_addr` (string source), `emit_struct_str_store` (build + `Append`
+with ROOM = n). Struct parameters (`p: TName` / `p AS TName`, `pending_struct_params` →
+`struct_vars`) are word params holding the element address; `p.f` is `StructGet/StructSet`
+with `arr = p`, and `emit_struct_ptr` loads the pointer from the variable when `arr` is not an
+array. `arr[i]` of a struct array alone is `Expr::StructAddr`. `emit_struct_ptr` computes
+`idx * elem_size` in 16 bits (it wrapped at 256). Word/float fields are 16-bit values
+(`can_be_word_result`, `eval_expr_word`). Not supported: multi-dimensional struct arrays.
 
 See `examples/type_demo.ub`.
 

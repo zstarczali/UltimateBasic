@@ -1564,3 +1564,73 @@ m = len(a(1))
     let bad = ultimate_basic::compiler::compile(&format!("option strings 300\n{body}"), &opts);
     assert!(!bad.errors.is_empty());
 }
+
+#[test]
+fn struct_defaults_nesting_strings_and_params() {
+    let r = run_src(
+        "type TPoint
+    var x: int = 3
+    var y: word = 1000
+endtype
+TYPE TEntity
+    pos AS TPoint
+    hp AS WORD = 100
+    name AS STRING * 6 = \"NOBODY\"
+    lives AS BYTE
+END TYPE
+var e: TEntity = array(100)
+dim i as byte, a as byte, b as word, c as word, d as byte
+dim s as string, t as string
+sub heal(p AS TEntity, amount AS WORD)
+    p.hp = p.hp + amount
+    p.pos.x = p.pos.x + 1
+    rename p
+end sub
+sub rename(q: TEntity)
+    q.name = \"HEALED-TOO-LONG\"
+end sub
+FUNCTION Dist (p AS TEntity) AS WORD
+    Dist = p.pos.x + p.pos.y
+END FUNCTION
+a = e[5].pos.x
+b = e[5].pos.y
+c = e[5].hp
+s = e[5].name
+i = 90
+e[i].hp = 4000
+e[i].pos.x = 7
+e[i].name = \"ZS\" + \"OLT\"
+heal(e[i], 25)
+d = e[i].pos.x
+t = e[i].name
+print e[i].hp; \" \"; Dist(e[i]); \" \"; e[i].name; \" \"; e[3].name + \"!\"
+if e[90].name = \"HEALED\" then print \"EQ\"
+",
+    );
+    assert_eq!((r.byte("a"), r.word("b"), r.word("c")), (3, 1000, 100));
+    assert_eq!(r.byte("d"), 8);
+    assert_eq!(r.output(), "4025 1008 HEALED NOBODY!\rEQ\r");
+    // element 90 lies 90 * 13 = 1170 bytes in (the index used to wrap at 256)
+    let base = r.res.map.arrays.iter().find(|a| a.name == "e").unwrap().base_addr as usize;
+    assert_eq!(u16::from_le_bytes([r.cpu.mem[base + 1170 + 3], r.cpu.mem[base + 1170 + 4]]), 4025);
+}
+
+#[test]
+fn word_plus_minus_16_bit_operands() {
+    let r = run_src(
+        "var wa = array_word(4)
+dim w as word = 1000
+dim v as word = 3000
+dim i as byte = 2
+dim a as word, b as word, c as word
+fn big() : word
+    return 700
+end
+wa[i] = 5000
+a = w + wa[i]
+b = v - wa[1] - big()
+c = w + (v + 1)
+",
+    );
+    assert_eq!((r.word("a"), r.word("b"), r.word("c")), (6000, 2300, 4001));
+}

@@ -108,6 +108,13 @@ The three big items of the 1.6.3 roadmap are implemented:
   (1-255, 80 by default), m per string-array element (slot rounded up to 32/64/128/256
   bytes, 31 by default). `SourceOptions` carries all `option` settings to the code
   generator. There is still no heap: every variable keeps its own fixed buffer.
+- **Struct types:** field defaults (`= value`, the array's initial contents), nested struct
+  fields (`e[i].pos.x`), fixed-length string fields (`name: string * 20`, QBasic
+  `name AS STRING * 20`), struct parameters (`sub heal(p AS TEntity)`, called with
+  `heal(e[i])`), QBasic `TYPE … END TYPE` field lines. Fixed on the way: a variable index into
+  a struct array was multiplied in 8 bits (wrong from offset 256), and word fields were cut
+  to 8 bits inside expressions; `word + x` / `word - x` with any 16-bit `x` (word-array
+  element, word function, word field) now adds all 16 bits.
 
 ---
 
@@ -125,3 +132,16 @@ All items of the 1.6.4 list are done (above); see *Smaller open items*.
 - **Mixed `END` styles:** inside a routine closed by `END SUB`, a UB-style block closed by
   a bare `end` on its own line (`if … ⏎ end`) now reads as program end — such routines
   must close their blocks QBasic-style (`END IF`) or close with a plain `end`.
+- **`abs` / `sgn` / `min` / `max` on 16-bit values:** they work on bytes only (`abs` / `sgn`
+  read bit 7 as the sign); INTEGER / WORD arguments need 16-bit (signed) versions.
+- **`rnd()` / `rnd(n)`:** a simple LCG with period 256 (the floating-point `rnd` is already
+  a 32-bit xorshift); a longer-period integer generator would help games.
+- **Bounds checks:** `mplot`, `rect` and `plot4` do not check coordinates (`plot` and
+  `circle` clip); clipping like `plot` would avoid writes outside the bitmap.
+- **Struct arrays with several subscripts:** `var g: TCell = array(8, 8)` — struct arrays
+  take one index (use a computed flat index).
+- **`PRINT USING`:** no `**` (asterisk fill), `$$` (currency) or `^^^^` (exponent) fields;
+  the format must be a string literal.
+- **Floating point in IRQ handlers set by address:** only a handler sub named in `irq` /
+  `nmi` / `cia_timer` saves the float state; one set by an address or a word variable does
+  not.

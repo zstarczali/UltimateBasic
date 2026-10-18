@@ -724,22 +724,55 @@ var f: float = balls[0].vel       # read float field into float variable
 print balls[0].vel                # prints "1.50"
 ```
 
+**Defaults, strings, nested types, parameters** (after 1.6.6):
+
+```basic
+TYPE TPoint                        ' QBasic form: TYPE … END TYPE, "name AS type"
+    x AS BYTE = 3                  ' default value
+    y AS WORD = 1000
+END TYPE
+
+type TEntity
+  var pos: TPoint                  # nested struct: fields pos.x, pos.y
+  var hp: word = 100
+  var name: string * 6 = "NOBODY"  # fixed-length string inside the element (7 bytes)
+endtype
+
+var e: TEntity = array(100)        # every element starts with the defaults
+e[5].pos.x = 7
+e[5].name = "ZS" + "OLT"           # computed text is copied in, cut to 6 characters
+print e[5].name; " "; e[5].hp
+
+sub heal(p AS TEntity, amount AS WORD)   # or  p: TEntity
+  p.hp = p.hp + amount             # the element passed is changed
+  p.pos.x = p.pos.x + 1
+end sub
+heal(e[5], 25)                     # pass an element
+```
+
 Rules and constraints:
 
-- Field types: `int` (1 byte), `word` (2 bytes LE), `float` (2 bytes Q8.8).
-  `string` and nested `type` fields are not yet supported.
+- Field types: `int` / `byte` (1 byte), `word` / `integer` (2 bytes LE, unsigned),
+  `float` (2 bytes Q8.8), `string * n` (a fixed-length string of up to n characters,
+  1–254, n + 1 bytes in the element; `string` alone is `string * 15`), and another
+  struct type (nested: `arr[i].pos.x`). Fields are written `var name: type` or, QBasic
+  style, `name AS type`; `END TYPE` closes the block like `endtype`.
+- **Defaults:** `= constant` after a field (a number, a decimal for `float`, a string
+  literal for `string`). They are the array's contents at program start (like
+  `data name: …`); a nested field takes the defaults of its type. The element count must
+  be a constant then.
+- **String fields** work like string values: assign literals or computed strings (cut to
+  the field length), print them, use them in `+`, `=` / `<>` / `<` and string functions.
+- **Struct parameters:** `sub f(p AS TName)` / `p: TName` receives the address of the
+  element passed (`f(enemies[i])`), so `p.field` reads and writes that element; a struct
+  parameter can be passed on to another routine (`g(p)`). A function may take them too.
+  `arr[i]` of a struct array without a field is that address.
 - Element size = sum of field widths (declaration order, no padding).
 - Storage lives at `$C000+` alongside regular arrays, and shows up in the memory
   map as an ordinary array of the total byte size.
 - Constant index → `LDA/STA absolute` at compile time.
-- Variable index → shift-and-add multiply for `idx * elem_size`, then indexed
-  `(ptr),Y` access. Element sizes that are powers of two (1, 2, 4, 8, 16) use
-  bare `ASL A` chains; other sizes emit a short shift-add sequence via two
-  scratch zero-page bytes.
-- Sub / fn parameters of a struct type are not yet supported — pass the array
-  and an index instead, e.g. `sub move(idx: int) ... enemies[idx].x = ...`.
-- Default field values (`var fire: int = 2` inside the type) are parsed for
-  compatibility with the proposal but not yet initialized at allocation time.
+- Variable index → 16-bit `idx * elem_size` (before, it was computed in 8 bits and
+  elements past offset 255 were wrong), then indexed `(ptr),Y` access.
 - Only one subscript is allowed on a struct-typed array; multi-dimensional
   struct arrays are not supported (use a computed flat index).
 

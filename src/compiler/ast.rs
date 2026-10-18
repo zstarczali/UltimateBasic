@@ -64,6 +64,13 @@ pub enum Expr {
     /// A `,` between print items with C64 BASIC spacing: move to the next
     /// 10-column zone.
     PrintZone,
+    /// `arr[i]` of a struct array without a field: the element's address (a
+    /// 16-bit value), passed to a struct-typed parameter.
+    StructAddr {
+        arr: String,
+        idx: Box<Expr>,
+        elem_size: u16,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -137,6 +144,9 @@ pub enum FieldKind {
     Int,   // 1 byte, integer
     Word,  // 2 bytes, little-endian unsigned integer
     Float, // 2 bytes, Q8.8 fixed-point (hi = integer part, lo = frac × 256)
+    /// fixed-length string of up to n characters, stored in the element
+    /// (n + 1 bytes with the $00): `var name: string * 20`
+    Str(u8),
 }
 
 impl FieldKind {
@@ -144,6 +154,7 @@ impl FieldKind {
         match self {
             FieldKind::Int => 1,
             FieldKind::Word | FieldKind::Float => 2,
+            FieldKind::Str(n) => n + 1,
         }
     }
 }

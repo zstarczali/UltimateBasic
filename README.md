@@ -91,6 +91,9 @@ as `data`, maps, sprite/character definitions, lookup tables, SID/Koala payloads
   longer just return to the caller.
 - **`STR$`** gives the C64 text (`" 7"`) with `--basic-print`.
 - **`option strings 255`** (and `option strings n, m` for string arrays): longer strings.
+- **Struct types:** default values, nested types (`e[i].pos.x`), fixed-length string fields
+  (`name AS STRING * 20`), struct parameters (`sub heal(p AS TEntity)` … `heal(e[i])`) and
+  QBasic `TYPE … END TYPE`.
 
 ## What's new in 1.6.6
 

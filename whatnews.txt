@@ -12,6 +12,11 @@ Ultimate Basic v1.6.6 – Release Notes
     Warnings never stop the build.
   - With --basic-print, STR$ gives the C64 BASIC text for every number
     (" 7", "-42", " 3.5"); without it a byte keeps "007".
+  - Struct types: field defaults (var hp: word = 100 - the array's
+    contents at program start), nested struct fields (e[i].pos.x),
+    fixed-length string fields (var name: string * 20), struct
+    parameters (sub heal(p AS TEntity) ... heal(e[i])), and the QBasic
+    form TYPE ... name AS type ... END TYPE.
   Changed
   - In a SUB / FUNCTION closed by END SUB / END FUNCTION, END alone on
     its line ends the program, as in QBasic (also inside IF ... END IF).
@@ -22,6 +27,11 @@ Ultimate Basic v1.6.6 – Release Notes
     a 16-bit division now, truncated toward zero.
   - END and BYE inside a sub or function returned to the caller
     instead of ending the program.
+  - A variable index into a struct array was multiplied in 8 bits, so
+    elements beyond byte offset 255 were read and written wrongly.
+  - Word struct fields were cut to 8 bits inside expressions, and
+    word + x / word - x dropped the high byte of a 16-bit x (a word
+    array element, a word function).
 
 2026-10-17 – Release 1.6.6: PRINT USING, string order, floats
 ------------------------------------------------------------------

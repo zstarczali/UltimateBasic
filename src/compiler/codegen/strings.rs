@@ -556,6 +556,10 @@ impl Codegen {
                 let e = e.clone();
                 self.gen_word_assign(z + SRC, &e);
             }
+            Expr::StructGet { arr, idx, field_offset, field_kind: crate::compiler::ast::FieldKind::Str(_), elem_size } => {
+                let (arr, idx) = (arr.clone(), (**idx).clone());
+                self.emit_struct_field_addr(&arr, &idx, *field_offset, *elem_size, z + SRC);
+            }
             Expr::StrN(inner) if self.basic_print => {
                 let inner = (**inner).clone();
                 self.emit_basic_strn(&inner, depth);
@@ -598,6 +602,40 @@ impl Codegen {
     }
 
     /// Numeric expression → decimal text in num_buf; SRC ← num_buf.
+    /// `dst` (ZP pair) ← address of a struct field: element base (array
+    /// element or struct parameter) + `off`.
+    pub(super) fn emit_struct_field_addr(&mut self, arr: &str, idx: &Expr, off: u16, elem_size: u16, dst: u8) {
+        let p = self.tmp_zp;
+        self.tmp_zp += 2;
+        self.emit_struct_ptr(arr, idx, 0, elem_size, p); // p = element base
+        self.emit(0x18); // CLC
+        self.lda_zp(p);
+        self.emit(0x69);
+        self.emit(off as u8);
+        self.sta_zp(dst);
+        self.lda_zp(p + 1);
+        self.emit(0x69);
+        self.emit((off >> 8) as u8);
+        self.sta_zp(dst + 1);
+    }
+
+    /// `arr[i].name = <string>` / `p.name = …`: copy the text (at most `len`
+    /// characters) into the fixed-length field inside the element.
+    pub(super) fn emit_struct_str_store(&mut self, arr: &str, idx: &Expr, off: u16, elem_size: u16, len: u8, val: &Expr) {
+        let z = self.str_zp();
+        let tmp = self.str_tmp_buf(0);
+        self.emit_str_build(val, tmp, 1);
+        self.emit_struct_field_addr(arr, idx, off, elem_size, z + DST);
+        self.lda_imm(len);
+        self.sta_zp(z + ROOM);
+        self.set_ptr(z + SRC, tmp);
+        self.lda_imm(0xFF);
+        self.sta_zp(z + LIMIT);
+        let app = self.str_helper(Helper::Append);
+        self.jsr(app);
+        self.a_cache = None;
+    }
+
     /// SRC ← C64 BASIC `STR$` text of `e` (BASIC spacing): the number with a
     /// leading space, or its `-` (`" 7"`, `"-42"`, `" 3.5"`), for every number
     /// type (without BASIC spacing a byte keeps the 3-digit `"007"`).

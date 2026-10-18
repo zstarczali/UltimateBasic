@@ -163,6 +163,15 @@ fn fold_int_const(e: Expr) -> Expr {
     }
 }
 
+/// One field of a struct type, flattened (`pos.x` for a nested type) with its
+/// kind and its default bytes (`image.len() == kind.width()`).
+#[derive(Debug, Clone)]
+struct StructField {
+    name: String,
+    kind: super::ast::FieldKind,
+    image: Vec<u8>,
+}
+
 /// Settings a program gives with `option …` lines (and the CLI).
 #[derive(Debug, Clone)]
 pub struct SourceOptions {
@@ -229,6 +238,12 @@ pub struct Parser {
     /// Parsing the body of a routine closed by `end sub` / `end function`: a
     /// bare `end` alone on its line there ends the program (QBasic).
     qb_routine: bool,
+    /// Struct types as byte layouts (fields in order, nested types flattened).
+    struct_layouts: std::collections::HashMap<String, Vec<StructField>>,
+    /// Struct-typed parameters of the routine being parsed: name → type.
+    struct_vars: std::collections::HashMap<String, String>,
+    /// Struct parameters found by `parse_param_list`, taken by the body.
+    pending_struct_params: Vec<(String, String)>,
 }
 
 impl Parser {
@@ -260,6 +275,9 @@ impl Parser {
             select_depth: 0,
             real_names: std::collections::HashSet::new(),
             qb_routine: false,
+            struct_layouts: std::collections::HashMap::new(),
+            struct_vars: std::collections::HashMap::new(),
+            pending_struct_params: vec![],
         }
     }
 
@@ -291,6 +309,9 @@ impl Parser {
             select_depth: 0,
             real_names: std::collections::HashSet::new(),
             qb_routine: false,
+            struct_layouts: std::collections::HashMap::new(),
+            struct_vars: std::collections::HashMap::new(),
+            pending_struct_params: vec![],
         }
     }
 
@@ -325,6 +346,9 @@ impl Parser {
             select_depth: 0,
             real_names: std::collections::HashSet::new(),
             qb_routine: false,
+            struct_layouts: std::collections::HashMap::new(),
+            struct_vars: std::collections::HashMap::new(),
+            pending_struct_params: vec![],
         }
     }
 
@@ -360,6 +384,9 @@ impl Parser {
             select_depth: 0,
             real_names: std::collections::HashSet::new(),
             qb_routine: false,
+            struct_layouts: std::collections::HashMap::new(),
+            struct_vars: std::collections::HashMap::new(),
+            pending_struct_params: vec![],
         }
     }
 
@@ -1037,6 +1064,25 @@ impl Parser {
             while !matches!(self.peek(), Token::RParen | Token::Eof) {
                 if let Token::Ident(p) = self.peek().clone() {
                     self.advance();
+                    // `p: TName` / `p AS TName`: a struct parameter — a word with
+                    // the address of the element passed (`hit(enemies[i])`)
+                    let struct_type = match (self.peek(), self.peek2()) {
+                        (Token::Colon, Token::Ident(t)) if self.struct_layouts.contains_key(t) => Some(t.clone()),
+                        (Token::Ident(a), Token::Ident(t)) if a == "as" && self.struct_layouts.contains_key(t) => {
+                            Some(t.clone())
+                        }
+                        _ => None,
+                    };
+                    if let Some(t) = struct_type {
+                        self.advance();
+                        self.advance();
+                        self.pending_struct_params.push((p.clone(), t));
+                        params.push((p, Some(VarType::Word)));
+                        if self.peek() == &Token::Comma {
+                            self.advance();
+                        }
+                        continue;
+                    }
                     let ptype = if self.peek() == &Token::Colon {
                         self.advance();
                         match self.peek() {
@@ -2022,35 +2068,113 @@ impl Parser {
         self.declared_vars.contains(name) || self.consts.contains_key(name)
     }
 
-    /// For `arr[i].field` — resolve field to (offset_in_bytes, field_kind, elem_size).
-    /// Returns None if `arr` is not a struct-typed array or `field` isn't known.
-    /// int → 1 byte, word/float → 2 bytes. elem_size = sum of field widths.
+    /// For `arr[i].field` / `param.field` — resolve the (possibly dotted,
+    /// nested) field to (offset in bytes, kind, element size). `arr` is a
+    /// struct array or a struct-typed parameter.
     fn resolve_struct_field(
         &self,
         arr: &str,
         field: &str,
     ) -> Option<(u16, super::ast::FieldKind, u16)> {
-        use super::ast::FieldKind;
-        let tname = self.array_types.get(arr)?;
-        let fields = self.types.get(tname)?;
+        let tname = self.array_types.get(arr).or_else(|| self.struct_vars.get(arr))?;
+        let fields = self.struct_layouts.get(tname)?;
         let mut offset: u16 = 0;
-        let mut elem_size: u16 = 0;
-        let mut found: Option<(u16, FieldKind)> = None;
-        for (fname, ftype) in fields {
-            let kind = match ftype {
-                VarType::Word => FieldKind::Word,
-                VarType::Float => FieldKind::Float,
-                _ => FieldKind::Int,
-            };
-            let w = kind.width() as u16;
-            if fname == field && found.is_none() {
-                found = Some((offset, kind));
+        let mut found = None;
+        for f in fields {
+            if f.name == field && found.is_none() {
+                found = Some((offset, f.kind));
             }
-            offset = offset.wrapping_add(w);
-            elem_size = elem_size.wrapping_add(w);
+            offset += f.kind.width() as u16;
         }
         let (off, kind) = found?;
-        Some((off, kind, elem_size))
+        Some((off, kind, offset))
+    }
+
+    /// Bytes of one element of struct type `tname`.
+    fn struct_elem_size(&self, tname: &str) -> u16 {
+        self.struct_layouts
+            .get(tname)
+            .map(|fs| fs.iter().map(|f| f.kind.width() as u16).sum())
+            .unwrap_or(1)
+    }
+
+    /// `.a.b` after a first field name: the dotted name of a nested field.
+    fn read_field_chain(&mut self, first: String) -> String {
+        let mut name = first;
+        while self.peek() == &Token::Dot {
+            let Token::Ident(next) = self.peek2().clone() else { break };
+            self.advance();
+            self.advance();
+            name = format!("{name}.{next}");
+        }
+        name
+    }
+
+    /// Field type after `:` / `as` in a `type` block, its optional `* n`
+    /// (string length) and `= default`: the flattened fields it adds.
+    fn parse_struct_field(&mut self, tname: &str, fname: &str) -> Result<Vec<StructField>, String> {
+        use super::ast::FieldKind;
+        let kind = match self.peek().clone() {
+            Token::Int => FieldKind::Int,
+            Token::Word => FieldKind::Word,
+            Token::Float => FieldKind::Float,
+            Token::Str => FieldKind::Str(15),
+            Token::Ident(t) => match t.as_str() {
+                "byte" | "int" => FieldKind::Int,
+                "word" | "integer" => FieldKind::Word,
+                "string" => FieldKind::Str(15),
+                _ => {
+                    // a nested struct type: its fields, prefixed
+                    let Some(inner) = self.struct_layouts.get(&t).cloned() else {
+                        return Err(format!(
+                            "type '{tname}': field '{fname}' has unknown type '{t}' — use int, word, float, string or a struct type"
+                        ));
+                    };
+                    self.advance();
+                    if self.peek() == &Token::Assign {
+                        return Err(format!(
+                            "type '{tname}': field '{fname}' is a struct; its defaults come from type '{t}'"
+                        ));
+                    }
+                    return Ok(inner
+                        .into_iter()
+                        .map(|f| StructField { name: format!("{fname}.{}", f.name), ..f })
+                        .collect());
+                }
+            },
+            other => {
+                return Err(format!(
+                    "type '{tname}': field '{fname}' has unsupported type {other:?} — use int, word, float, string or a struct type"
+                ))
+            }
+        };
+        self.advance();
+        let mut kind = kind;
+        if matches!(kind, FieldKind::Str(_)) && self.peek() == &Token::Star {
+            self.advance();
+            match self.advance() {
+                Token::Number(n) if (1..=254).contains(&n) => kind = FieldKind::Str(n as u8),
+                _ => return Err(format!("type '{tname}': 'string * n' needs a length 1-254 (field '{fname}')")),
+            }
+        }
+        let mut image = vec![0u8; kind.width() as usize];
+        if self.peek() == &Token::Assign {
+            self.advance();
+            let bad = || format!("type '{tname}': the default of field '{fname}' must be a constant");
+            match (kind, fold_int_const(self.parse_expr())) {
+                (FieldKind::Int, Expr::Number(n)) => image[0] = n as u8,
+                (FieldKind::Word, Expr::Number(n)) => image.copy_from_slice(&(n as u16).to_le_bytes()),
+                (FieldKind::Float, Expr::Number(n)) => image.copy_from_slice(&((n as u16) << 8).to_le_bytes()),
+                (FieldKind::Float, Expr::FixedLit(q, _, false)) => image.copy_from_slice(&q.to_le_bytes()),
+                (FieldKind::Str(n), Expr::StringLit(text)) => {
+                    for (k, c) in text.chars().take(n as usize).enumerate() {
+                        image[k] = super::codegen::ascii_to_petscii(c, false);
+                    }
+                }
+                _ => return Err(bad()),
+            }
+        }
+        Ok(vec![StructField { name: fname.to_string(), kind, image }])
     }
 
     /// Parse the dimension list of an `array(...)` / `array_word(...)` initializer.
@@ -2314,6 +2438,8 @@ impl Parser {
             .find(|t| matches!(t, Token::EndRoutine | Token::Sub | Token::Fn | Token::Eof))
             == Some(&Token::EndRoutine);
         let outer = std::mem::replace(&mut self.qb_routine, qbasic);
+        let structs = std::mem::take(&mut self.pending_struct_params).into_iter().collect();
+        let outer_structs = std::mem::replace(&mut self.struct_vars, structs);
         let mut body = vec![];
         loop {
             self.skip_newlines();
@@ -2325,6 +2451,7 @@ impl Parser {
             }
         }
         self.qb_routine = outer;
+        self.struct_vars = outer_structs;
         body
     }
 
@@ -2505,19 +2632,14 @@ impl Parser {
                     if matches!(self.peek(), Token::Array) {
                         self.advance();
                         let (count_expr, _dims) = self.parse_array_dims();
-                        // Element size is the sum of field widths (int=1, word/float=2).
-                        let elem_size: u16 = self
-                            .types
+                        // Element size is the sum of field widths.
+                        let elem_size: u16 = self.struct_elem_size(tn);
+                        let image: Vec<u8> = self
+                            .struct_layouts
                             .get(tn)
-                            .map(|fs| {
-                                fs.iter()
-                                    .map(|(_, t)| match t {
-                                        VarType::Word | VarType::Float => 2u16,
-                                        _ => 1u16,
-                                    })
-                                    .sum()
-                            })
-                            .unwrap_or(1);
+                            .map(|fs| fs.iter().flat_map(|f| f.image.clone()).collect())
+                            .unwrap_or_default();
+                        let count = count_expr.clone();
                         // Total bytes = count * elem_size.
                         let total_size = match count_expr {
                             Expr::Number(n) => {
@@ -2531,11 +2653,27 @@ impl Parser {
                         };
                         self.array_types.insert(name.clone(), tn.clone());
                         self.expect_newline();
-                        return Some(Stmt::VarDecl {
-                            name,
+                        let decl = Stmt::VarDecl {
+                            name: name.clone(),
                             vtype: Some(VarType::Array),
                             expr: total_size,
-                        });
+                        };
+                        // field defaults: the array's initial contents (`data name:`)
+                        if image.iter().any(|&b| b != 0) {
+                            let Expr::Number(n) = count else {
+                                self.errors.push(format!(
+                                    "line {}: '{}': field defaults need a constant element count",
+                                    self.line, name
+                                ));
+                                return Some(decl);
+                            };
+                            let values = (0..n.max(0))
+                                .flat_map(|_| image.iter().map(|&b| Expr::Number(b as i16)))
+                                .collect();
+                            self.statement_lines.push(self.line);
+                            return Some(Stmt::Block(vec![decl, Stmt::ArrayData(name, values)]));
+                        }
+                        return Some(decl);
                     } else {
                         self.errors.push(format!(
                             "line {}: struct-typed var '{}' must be initialized with 'array(N)'",
@@ -2628,6 +2766,34 @@ impl Parser {
                         self.line, name, name
                     ));
                 }
+                // `param.field = val` with a struct parameter
+                if self.peek() == &Token::Dot && self.struct_vars.contains_key(&name) {
+                    self.advance(); // .
+                    let Token::Ident(first) = self.advance() else {
+                        return self.reject_stmt("expected field name after '.'");
+                    };
+                    let field_name = self.read_field_chain(first);
+                    let Some((off, kind, elem_size)) = self.resolve_struct_field(&name, &field_name) else {
+                        self.errors.push(format!(
+                            "line {}: unknown field '{}' on struct parameter '{}'",
+                            self.line, field_name, name
+                        ));
+                        return None;
+                    };
+                    if self.peek() == &Token::Assign {
+                        self.advance();
+                    }
+                    let val = self.parse_expr();
+                    self.expect_newline();
+                    return Some(Stmt::StructSet {
+                        arr: name.clone(),
+                        idx: Expr::Var(name),
+                        field_offset: off,
+                        field_kind: kind,
+                        elem_size,
+                        expr: val,
+                    });
+                }
                 if self.peek() == &LBracket {
                     // arr[idx] = val   (or arr[i, j, ...] = val   or   arr[idx].field = val)
                     self.advance(); // [
@@ -2636,7 +2802,7 @@ impl Parser {
                     if self.peek() == &Token::Dot && self.array_types.contains_key(&name) {
                         self.advance(); // .
                         let field_name = if let Token::Ident(fn_) = self.advance() {
-                            fn_
+                            self.read_field_chain(fn_)
                         } else {
                             return self.reject_stmt("expected field name after '.'");
                         };
@@ -3333,11 +3499,13 @@ impl Parser {
                 Some(Stmt::Const(name, val))
             }
             Token::TypeKw => {
-                // Type TName
-                //   var field1: int
-                //   var field2: word
-                //   ...
-                // endType
+                // type TName                       (QBasic: TYPE TName … END TYPE)
+                //   var x: int                     1 byte
+                //   var hp: word = 100             2 bytes, default value
+                //   var name: string * 12          13 bytes (fixed-length string)
+                //   var pos: TPoint                a nested struct: pos.x, pos.y …
+                //   speed AS INTEGER               QBasic field form
+                // endtype | end type
                 self.advance();
                 let type_name = if let Token::Ident(n) = self.advance() {
                     n
@@ -3345,61 +3513,39 @@ impl Parser {
                     return self.reject_stmt("expected type name after 'type'");
                 };
                 self.expect_newline();
-                let mut fields: Vec<(String, VarType)> = vec![];
+                let mut layout: Vec<StructField> = vec![];
                 loop {
                     self.skip_newlines();
-                    match self.peek() {
+                    match self.peek().clone() {
                         Token::EndType | Token::Eof => break,
-                        Token::Var => {
-                            self.advance();
-                            let fname = if let Token::Ident(n) = self.advance() {
-                                n
-                            } else {
+                        Token::Var | Token::Ident(_) => {
+                            if self.peek() == &Token::Var {
+                                self.advance();
+                            }
+                            let Token::Ident(fname) = self.advance() else {
                                 self.errors.push(format!(
-                                    "line {}: type '{}': expected field name after 'var'",
+                                    "line {}: type '{}': expected a field name",
                                     self.line, type_name
                                 ));
                                 continue;
                             };
-                            // Required : type
-                            if self.peek() != &Token::Colon {
+                            if self.peek() == &Token::Colon || self.peek_is_as() {
+                                self.advance();
+                            } else {
                                 self.errors.push(format!(
-                                    "line {}: type '{}': field '{}' must have ':int' or ':word' annotation",
+                                    "line {}: type '{}': field '{}' needs a type (': int' or 'AS INTEGER')",
                                     self.line, type_name, fname
                                 ));
                                 self.expect_newline();
                                 continue;
                             }
-                            self.advance(); // ':'
-                            let ftype = match self.peek() {
-                                Token::Int => {
-                                    self.advance();
-                                    VarType::Int
-                                }
-                                Token::Word => {
-                                    self.advance();
-                                    VarType::Word
-                                }
-                                Token::Float => {
-                                    self.advance();
-                                    VarType::Float
-                                }
-                                other => {
-                                    self.errors.push(format!(
-                                        "line {}: type '{}': field '{}' has unsupported type {:?} — supported: int, word, float",
-                                        self.line, type_name, fname, other
-                                    ));
-                                    self.expect_newline();
-                                    continue;
-                                }
-                            };
-                            // Optional default value — parsed but ignored for MVP.
-                            if self.peek() == &Token::Assign {
-                                self.advance();
-                                let _ = self.parse_expr();
+                            match self.parse_struct_field(&type_name, &fname) {
+                                Ok(fs) => layout.extend(fs),
+                                Err(e) => self.errors.push(format!("line {}: {e}", self.line)),
                             }
-                            self.expect_newline();
-                            fields.push((fname, ftype));
+                            while !matches!(self.peek(), Token::Newline | Token::Eof | Token::EndType) {
+                                self.advance();
+                            }
                         }
                         _ => {
                             // Skip stray tokens inside the block.
@@ -3411,7 +3557,20 @@ impl Parser {
                     self.advance();
                     self.expect_newline();
                 }
+                let fields: Vec<(String, VarType)> = layout
+                    .iter()
+                    .map(|f| {
+                        let t = match f.kind {
+                            super::ast::FieldKind::Int => VarType::Int,
+                            super::ast::FieldKind::Word => VarType::Word,
+                            super::ast::FieldKind::Float => VarType::Float,
+                            super::ast::FieldKind::Str(_) => VarType::Str,
+                        };
+                        (f.name.clone(), t)
+                    })
+                    .collect();
                 self.types.insert(type_name.clone(), fields.clone());
+                self.struct_layouts.insert(type_name.clone(), layout);
                 Some(Stmt::TypeDef {
                     name: type_name,
                     fields,
@@ -5010,6 +5169,30 @@ impl Parser {
                 self.paren_index_to_brackets(&n);
                 if let Some(&v) = self.consts.get(&n) {
                     Expr::Number(v)
+                } else if self.peek() == &Token::Dot && self.struct_vars.contains_key(&n) {
+                    // `param.field` with a struct parameter
+                    self.advance(); // .
+                    let Token::Ident(first) = self.advance() else {
+                        self.errors.push(format!("line {}: expected field name after '.'", self.line));
+                        return Expr::Number(0);
+                    };
+                    let field_name = self.read_field_chain(first);
+                    match self.resolve_struct_field(&n, &field_name) {
+                        Some((off, kind, elem_size)) => Expr::StructGet {
+                            arr: n.clone(),
+                            idx: Box::new(Expr::Var(n)),
+                            field_offset: off,
+                            field_kind: kind,
+                            elem_size,
+                        },
+                        None => {
+                            self.errors.push(format!(
+                                "line {}: unknown field '{}' on struct parameter '{}'",
+                                self.line, field_name, n
+                            ));
+                            Expr::Number(0)
+                        }
+                    }
                 } else if self.peek() == &LBracket {
                     // arr[idx] expression
                     if !self.skip_var_check && !self.is_declared(&n) {
@@ -5024,7 +5207,7 @@ impl Parser {
                     if self.peek() == &Token::Dot && self.array_types.contains_key(&n) {
                         self.advance(); // .
                         let field_name = if let Token::Ident(fname) = self.advance() {
-                            fname
+                            self.read_field_chain(fname)
                         } else {
                             self.errors
                                 .push(format!("line {}: expected field name after '.'", self.line));
@@ -5049,6 +5232,12 @@ impl Parser {
                             field_kind: kind,
                             elem_size,
                         };
+                    }
+                    // a whole struct element: its address (for a struct parameter)
+                    if let Some(t) = self.array_types.get(&n).cloned() {
+                        let idx = indices.into_iter().next().unwrap_or(Expr::Number(0));
+                        let elem_size = self.struct_elem_size(&t);
+                        return Expr::StructAddr { arr: n, idx: Box::new(idx), elem_size };
                     }
                     let idx = self.fold_flat_index(&n, indices);
                     Expr::ArrayGet(n, Box::new(idx))

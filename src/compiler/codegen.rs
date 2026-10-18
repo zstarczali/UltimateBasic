@@ -2038,6 +2038,14 @@ impl Codegen {
         }
         match expr {
             Expr::PrintZone => {} // a print separator (BASIC spacing), no value
+            Expr::StructAddr { .. } => {
+                let t = self.tmp_zp;
+                self.tmp_zp += 2;
+                let e = expr.clone();
+                self.eval_expr_word(&e, t, t + 1);
+                self.emit(0xA5);
+                self.emit(t); // LDA lo
+            }
             Expr::BinOp(l, op @ (BinOp::Eq | BinOp::NotEq), r)
                 if self.is_string_expr(l) || self.is_string_expr(r) =>
             {
@@ -3526,6 +3534,8 @@ impl Codegen {
     /// (word variable, or a sub-expression that contains one, or large constant).
     fn can_be_word_result(&self, expr: &Expr) -> bool {
         match expr {
+            Expr::StructAddr { .. } => true,
+            Expr::StructGet { field_kind: FieldKind::Word | FieldKind::Float, .. } => true,
             Expr::Number(n) => *n > 255_i16 || *n < 0_i16,
             Expr::FixedLit(..) => true,
             Expr::Var(name) => matches!(
@@ -4445,6 +4455,56 @@ impl Codegen {
             Expr::BinOp(l, BinOp::Mod, r) if !self.is_float_like(l) && !self.is_float_like(r) => {
                 let (l, r) = ((**l).clone(), (**r).clone());
                 self.emit_word_divmod(&l, &r, lo, hi, false);
+            }
+            // a word / float struct field: both bytes (gen_word_assign's load)
+            Expr::StructGet { field_kind: FieldKind::Word | FieldKind::Float, .. } => {
+                let e = expr.clone();
+                if hi == lo + 1 {
+                    self.gen_word_assign(lo, &e);
+                } else {
+                    let t = self.tmp_zp;
+                    self.tmp_zp += 2;
+                    self.gen_word_assign(t, &e);
+                    self.emit(0xA5);
+                    self.emit(t);
+                    self.emit(0x85);
+                    self.emit(lo);
+                    self.emit(0xA5);
+                    self.emit(t + 1);
+                    self.emit(0x85);
+                    self.emit(hi);
+                }
+            }
+            // `arr[i]` of a struct array: base + i * elem_size
+            Expr::StructAddr { arr, idx, elem_size } => {
+                let base = self.arrays.get(arr).copied().unwrap_or(0xC000);
+                if let Expr::Number(n) = idx.as_ref() {
+                    let a = base.wrapping_add((*n as u16).wrapping_mul(*elem_size));
+                    self.emit(0xA9);
+                    self.emit(a as u8);
+                    self.emit(0x85);
+                    self.emit(lo);
+                    self.emit(0xA9);
+                    self.emit((a >> 8) as u8);
+                    self.emit(0x85);
+                    self.emit(hi);
+                } else {
+                    let prod = Expr::BinOp(idx.clone(), BinOp::Mul, Box::new(Expr::Number(*elem_size as i16)));
+                    self.eval_expr_word(&prod, lo, hi);
+                    self.emit(0x18); // CLC
+                    self.emit(0xA5);
+                    self.emit(lo);
+                    self.emit(0x69);
+                    self.emit(base as u8);
+                    self.emit(0x85);
+                    self.emit(lo);
+                    self.emit(0xA5);
+                    self.emit(hi);
+                    self.emit(0x69);
+                    self.emit((base >> 8) as u8);
+                    self.emit(0x85);
+                    self.emit(hi);
+                }
             }
             // a 16-bit, signed or negative divisor: 16÷16 (the 16÷8 arm below
             // would cut it to a byte)
@@ -9324,6 +9384,7 @@ impl Codegen {
             Expr::StrN(_) => true,
             Expr::Var(name) => matches!(self.var_types.get(name), Some(VarType::Str)),
             Expr::ArrayGet(name, _) => self.str_arrays.contains(name.as_str()),
+            Expr::StructGet { field_kind: FieldKind::Str(_), .. } => true,
             Expr::FnCall(f, _) => strings::is_builtin_str_fn(f),
             Expr::BinOp(l, BinOp::Add, r) => self.is_string_expr(l) || self.is_string_expr(r),
             _ => false,
@@ -9553,6 +9614,11 @@ impl Codegen {
                 } else if let Some(zp) = self.var_addr(&name) {
                     self.print_decimal(zp);
                 }
+            }
+            // StructGet with a string field → print its text
+            Expr::StructGet { field_kind: FieldKind::Str(_), .. } => {
+                let arg = arg.clone();
+                self.emit_str_print(&arg);
             }
             // StructGet with float field → print as Q8.8 fixed-point
             Expr::StructGet {
@@ -9869,9 +9935,14 @@ impl Codegen {
                                     return true;
                                 }
                             }
-                            // word + product: the product must be computed in 16 bits
-                            // (e.g. `score += 300 * level`), then added with full carry
-                            other if matches!(other, Expr::BinOp(_, BinOp::Mul, _)) => {
+                            // word + product / any 16-bit value (a word field, word-array
+                            // element, word function): computed in 16 bits, then added
+                            // with full carry (e.g. `score += 300 * level`)
+                            other
+                                if matches!(other, Expr::BinOp(_, BinOp::Mul, _))
+                                    || self.can_be_word_result(other)
+                                    || self.is_signed_expr(other) =>
+                            {
                                 let other = other.clone();
                                 let tl = self.tmp_zp;
                                 self.tmp_zp += 2;
@@ -9967,6 +10038,27 @@ impl Codegen {
                                     self.emit(dst_zp + 1); // STA hi
                                     return true;
                                 }
+                            }
+                            // word - 16-bit value: full borrow
+                            other if self.can_be_word_result(other) || self.is_signed_expr(other) => {
+                                let other = other.clone();
+                                let tl = self.tmp_zp;
+                                self.tmp_zp += 2;
+                                self.eval_expr_word(&other, tl, tl + 1);
+                                self.emit(0x38); // SEC
+                                self.emit(0xA5);
+                                self.emit(lzp); // LDA lo_l
+                                self.emit(0xE5);
+                                self.emit(tl); // SBC lo_r
+                                self.emit(0x85);
+                                self.emit(dst_zp);
+                                self.emit(0xA5);
+                                self.emit(lzp + 1); // LDA hi_l
+                                self.emit(0xE5);
+                                self.emit(tl + 1); // SBC hi_r
+                                self.emit(0x85);
+                                self.emit(dst_zp + 1);
+                                return true;
                             }
                             // word - 8-bit expr
                             other => {
@@ -10798,7 +10890,7 @@ impl Codegen {
                 field_offset,
                 field_kind,
                 elem_size,
-            } if field_kind.width() == 2 => {
+            } if matches!(field_kind, FieldKind::Word | FieldKind::Float) => {
                 let base = self.arrays.get(arr).copied().unwrap_or(0xC000);
                 if let Expr::Number(n) = idx.as_ref() {
                     let addr = base
@@ -10827,6 +10919,11 @@ impl Codegen {
                     self.emit(dst_zp + 1);
                 }
                 return true;
+            }
+            Expr::StructAddr { .. } => {
+                let expr = expr.clone();
+                self.eval_expr_word(&expr, dst_zp, dst_zp + 1);
+                true
             }
             // int * int (or const * int) assigned to a word: keep the full 16-bit product
             // (`shl` likewise: `w = b shl 3`)
@@ -16684,88 +16781,6 @@ impl Codegen {
 
     // ── Struct-array support (`Type X ... endType` + `arr[i].field`) ──────────
 
-    /// Emit inline code that leaves `A = A * k` for a compile-time constant `k`
-    /// in 1..=128. Uses shift-and-add so the cost scales with popcount(k), not
-    /// with k itself. Callers must have `A` set to the operand on entry.
-    fn emit_mul_a_by_const(&mut self, k: u16) {
-        // Special-cases first — these compile to the tightest possible sequences
-        // and cover the vast majority of realistic struct sizes.
-        match k {
-            0 => {
-                self.emit(0xA9);
-                self.emit(0x00); // LDA #0
-                return;
-            }
-            1 => return,
-            2 => {
-                self.emit(0x0A); // ASL A
-                return;
-            }
-            4 => {
-                self.emit(0x0A);
-                self.emit(0x0A);
-                return;
-            }
-            8 => {
-                self.emit(0x0A);
-                self.emit(0x0A);
-                self.emit(0x0A);
-                return;
-            }
-            16 => {
-                self.emit(0x0A);
-                self.emit(0x0A);
-                self.emit(0x0A);
-                self.emit(0x0A);
-                return;
-            }
-            _ => {}
-        }
-        // General shift-and-add: for each set bit b in k, add (A << b) to acc.
-        // Layout:
-        //   tmp_shift = A     ; running (A << 0), (A << 1), ...
-        //   tmp_acc   = 0     ; accumulator
-        //   for b in 0..msb:
-        //     if bit b of k set: tmp_acc += tmp_shift
-        //     ASL tmp_shift
-        //   if top bit set: tmp_acc += tmp_shift
-        //   A = tmp_acc
-        let tmp_shift = self.tmp_zp;
-        self.tmp_zp += 1;
-        let tmp_acc = self.tmp_zp;
-        self.tmp_zp += 1;
-
-        self.emit(0x85);
-        self.emit(tmp_shift); // STA tmp_shift
-        self.emit(0xA9);
-        self.emit(0x00);
-        self.emit(0x85);
-        self.emit(tmp_acc); // LDA #0 ; STA tmp_acc
-
-        let mut bit = 0u16;
-        while (1u16 << bit) <= k {
-            if (k >> bit) & 1 == 1 {
-                // tmp_acc += tmp_shift  (LDA tmp_shift; CLC; ADC tmp_acc; STA tmp_acc)
-                self.emit(0xA5);
-                self.emit(tmp_shift);
-                self.emit(0x18);
-                self.emit(0x65);
-                self.emit(tmp_acc);
-                self.emit(0x85);
-                self.emit(tmp_acc);
-            }
-            // ASL tmp_shift if there's a bit above us we still might need
-            if (1u16 << (bit + 1)) <= k {
-                self.emit(0x06);
-                self.emit(tmp_shift);
-            }
-            bit += 1;
-        }
-        // Result → A
-        self.emit(0xA5);
-        self.emit(tmp_acc);
-    }
-
     /// Build a 16-bit pointer `arr_base + idx * elem_size` in `ptr_zp / ptr_zp+1`.
     /// The Y register is left holding the byte offset within the element, i.e.
     /// the caller can immediately follow with `LDA (ptr_zp),Y` / `STA (ptr_zp),Y`.
@@ -16779,6 +16794,22 @@ impl Codegen {
         elem_size: u16,
         ptr_zp: u8,
     ) {
+        // a struct parameter: the variable holds the element's address
+        if !self.arrays.contains_key(arr) {
+            if let Some(v) = self.var_addr(arr) {
+                self.emit(0xA5);
+                self.emit(v);
+                self.emit(0x85);
+                self.emit(ptr_zp);
+                self.emit(0xA5);
+                self.emit(v + 1);
+                self.emit(0x85);
+                self.emit(ptr_zp + 1);
+                self.emit(0xA0);
+                self.emit(field_offset as u8); // LDY #field_offset
+                return;
+            }
+        }
         let base = self.arrays.get(arr).copied().unwrap_or(0xC000);
         // Constant index → fold to a fixed pointer.
         if let Expr::Number(n) = idx {
@@ -16797,19 +16828,21 @@ impl Codegen {
             self.emit(0x00); // LDY #0
             return;
         }
-        // Variable index: build ptr = base + idx*elem_size ; Y = field_offset.
-        self.eval_expr(idx); // A = idx
-        self.emit_mul_a_by_const(elem_size); // A = idx * elem_size
-        // ptr_lo = base_lo + A ; ptr_hi = base_hi + carry
+        // Variable index: ptr = base + idx*elem_size (16 bits: idx*elem_size passes
+        // 255 from element 256/elem_size on); Y = field_offset.
+        let prod = Expr::BinOp(Box::new(idx.clone()), BinOp::Mul, Box::new(Expr::Number(elem_size as i16)));
+        self.eval_expr_word(&prod, ptr_zp, ptr_zp + 1);
         self.emit(0x18); // CLC
+        self.emit(0xA5);
+        self.emit(ptr_zp);
         self.emit(0x69);
         self.emit(base as u8); // ADC #base_lo
         self.emit(0x85);
         self.emit(ptr_zp); // STA ptr_lo
-        self.emit(0xA9);
-        self.emit((base >> 8) as u8); // LDA #base_hi
+        self.emit(0xA5);
+        self.emit(ptr_zp + 1);
         self.emit(0x69);
-        self.emit(0x00); // ADC #0
+        self.emit((base >> 8) as u8); // ADC #base_hi
         self.emit(0x85);
         self.emit(ptr_zp + 1); // STA ptr_hi
         self.emit(0xA0);
@@ -16855,6 +16888,10 @@ impl Codegen {
         elem_size: u16,
         val_expr: &Expr,
     ) {
+        if let FieldKind::Str(len) = field_kind {
+            self.emit_struct_str_store(arr, idx, field_offset, elem_size, len, val_expr);
+            return;
+        }
         let field_width = field_kind.width();
         let base = self.arrays.get(arr).copied().unwrap_or(0xC000);
         // Constant-index fast path.
@@ -16996,7 +17033,7 @@ fn mhz_to_speed_index(mhz: i32) -> u8 {
     (if idx == 0 { 0 } else { idx - 1 }).min(15) as u8
 }
 
-fn ascii_to_petscii(c: char, lowercase_mode: bool) -> u8 {
+pub(crate) fn ascii_to_petscii(c: char, lowercase_mode: bool) -> u8 {
     // The C64 charset has no accented letters: fold them to the base letter
     // ("Üdvözöllek" → "Udvozollek") instead of printing '?'.
     let c = match c {
