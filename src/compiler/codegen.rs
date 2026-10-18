@@ -3557,6 +3557,15 @@ impl Codegen {
         self.is_signed_expr(l) || self.is_signed_expr(r) || neg(l) || neg(r)
     }
 
+    /// A divisor the 16÷8 division cannot take: 16-bit, signed or a negative
+    /// constant.
+    fn div_needs_16(&self, r: &Expr) -> bool {
+        match r {
+            Expr::Number(n) => *n < 0 || *n > 255,
+            _ => self.can_be_word_result(r) || self.is_signed_expr(r),
+        }
+    }
+
     /// One right shift of a word's high byte: `LSR hi`, or with `arith` the
     /// sign bit copied back in (`LDA hi; CMP #$80; ROR hi`).
     fn emit_shr_hi(&mut self, hi: u8, arith: bool) {
@@ -3573,9 +3582,11 @@ impl Codegen {
         }
     }
 
-    /// lo/hi = l mod r in 16 bits: the remainder of the magnitudes, with the
-    /// sign of the dividend when signed (`mod_is_signed`); `x mod 0` = x.
-    fn emit_word_mod(&mut self, l: &Expr, r: &Expr, lo: u8, hi: u8) {
+    /// lo/hi = l / r (`quotient`) or l mod r in 16 bits, from the magnitudes
+    /// when signed (`mod_is_signed`): the quotient truncates toward zero and is
+    /// negative when exactly one operand is, the remainder has the sign of the
+    /// dividend (QBasic). `x mod 0` = x, `x / 0` = $FFFF.
+    fn emit_word_divmod(&mut self, l: &Expr, r: &Expr, lo: u8, hi: u8, quotient: bool) {
         let t = self.tmp_zp;
         self.tmp_zp += 6;
         let (nlo, nhi, dlo, dhi, rlo, rhi) = (t, t + 1, t + 2, t + 3, t + 4, t + 5);
@@ -3599,10 +3610,22 @@ impl Codegen {
                 self.emit((v >> 8) as u8);
                 self.emit(0x85);
                 self.emit(dhi);
+                if signed && quotient && *n < 0 {
+                    self.emit(0x68); // PLA
+                    self.emit(0x49);
+                    self.emit(0x80); // EOR #$80: the quotient's sign flips
+                    self.emit(0x48); // PHA
+                }
             }
             _ => {
                 self.eval_expr_word(r, dlo, dhi);
                 if signed {
+                    if quotient {
+                        self.emit(0x68); // PLA
+                        self.emit(0x45);
+                        self.emit(dhi); // EOR dhi: quotient sign = sign(l) xor sign(r)
+                        self.emit(0x48); // PHA
+                    }
                     self.emit_negate_if_minus(dlo, dhi);
                 }
             }
@@ -3641,6 +3664,10 @@ impl Codegen {
         self.emit(rhi);
         self.emit(0x84);
         self.emit(rlo); // remainder -= divisor
+        if quotient {
+            self.emit(0xE6);
+            self.emit(nlo); // INC nlo: quotient bit (bit 0 is clear after ASL)
+        }
         let skip = self.current_addr();
         self.patch_bxx(bcc, skip);
         self.emit(0xCA); // DEX
@@ -3648,21 +3675,22 @@ impl Codegen {
         let bne = self.code.len();
         self.emit(0x00);
         self.patch_bxx(bne, top); // BNE loop
+        let (vlo, vhi) = if quotient { (nlo, nhi) } else { (rlo, rhi) };
         if signed {
             self.emit(0x68); // PLA
             self.emit(0x10); // BPL done
             let p = self.code.len();
             self.emit(0x00);
-            self.emit_negate(rlo, rhi);
+            self.emit_negate(vlo, vhi);
             let here = self.current_addr();
             self.patch_bxx(p, here);
         }
         self.emit(0xA5);
-        self.emit(rlo);
+        self.emit(vlo);
         self.emit(0x85);
         self.emit(lo);
         self.emit(0xA5);
-        self.emit(rhi);
+        self.emit(vhi);
         self.emit(0x85);
         self.emit(hi);
     }
@@ -4385,7 +4413,15 @@ impl Codegen {
             }
             Expr::BinOp(l, BinOp::Mod, r) if !self.is_float_like(l) && !self.is_float_like(r) => {
                 let (l, r) = ((**l).clone(), (**r).clone());
-                self.emit_word_mod(&l, &r, lo, hi);
+                self.emit_word_divmod(&l, &r, lo, hi, false);
+            }
+            // a 16-bit, signed or negative divisor: 16÷16 (the 16÷8 arm below
+            // would cut it to a byte)
+            Expr::BinOp(l, BinOp::Div, r)
+                if !self.is_float_like(l) && !self.is_float_like(r) && self.div_needs_16(r) =>
+            {
+                let (l, r) = ((**l).clone(), (**r).clone());
+                self.emit_word_divmod(&l, &r, lo, hi, true);
             }
             Expr::BinOp(l, BinOp::Div, r) => {
                 let dlo = self.tmp_zp;
@@ -10388,7 +10424,10 @@ impl Codegen {
                 self.gen_word_assign(dst_zp, &swapped)
             }
             // ── word / rhs (16-bit non-restoring division) ────────────────────────
-            Expr::BinOp(l, BinOp::Div, r) if matches!(l.as_ref(), Expr::Var(n) if matches!(self.var_types.get(n), Some(VarType::Word))) =>
+            Expr::BinOp(l, BinOp::Div, r)
+                if matches!(l.as_ref(), Expr::Var(n) if matches!(self.var_types.get(n), Some(VarType::Word)))
+                    && !self.mod_is_signed(l, r)
+                    && (matches!(r.as_ref(), Expr::Number(_) | Expr::Var(_)) || !self.can_be_word_result(r)) =>
             {
                 if let Expr::Var(lname) = l.as_ref() {
                     if let Some(lzp) = self.var_addr(lname) {
@@ -10779,6 +10818,16 @@ impl Codegen {
             Expr::BinOp(l, BinOp::Mod | BinOp::Shr, r)
                 if (self.can_be_word_result(expr) || self.is_signed_expr(expr) || self.mod_is_signed(l, r))
                     && !self.is_float_like(expr) =>
+            {
+                let expr = expr.clone();
+                self.eval_expr_word(&expr, dst_zp, dst_zp + 1);
+                true
+            }
+            // `/` with a 16-bit, signed or negative divisor (`i / j`, `700 / -7`)
+            Expr::BinOp(l, BinOp::Div, r)
+                if (self.div_needs_16(r) || self.is_signed_expr(l))
+                    && !self.is_float_like(l)
+                    && !self.is_float_like(r) =>
             {
                 let expr = expr.clone();
                 self.eval_expr_word(&expr, dst_zp, dst_zp + 1);

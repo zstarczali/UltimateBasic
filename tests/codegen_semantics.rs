@@ -1446,3 +1446,27 @@ fn word_and_signed_mod_and_shr() {
     assert_eq!(r.output(), "-1 -5 1\r");
     assert_eq!(r.byte("r8"), 200 % 7);
 }
+
+#[test]
+fn word_and_signed_division() {
+    let signed: [(i16, i16); 10] =
+        [(-700, -7), (-700, 7), (700, -7), (-700, 300), (-700, -3), (32767, -2), (-32768, 2), (-1, 1000), (12345, 123), (-9, 10)];
+    let words: [(u16, u16); 4] = [(50000, 300), (65535, 256), (40000, 7), (1000, 1001)];
+    let mut src = String::new();
+    let mut want = vec![];
+    for (k, (a, b)) in signed.iter().enumerate() {
+        src += &format!("dim sa{k} as integer = {a}\ndim sb{k} as integer = {b}\ndim sq{k} as integer, sc{k} as integer\nsq{k} = sa{k} / sb{k}\nsc{k} = sa{k} / {b}\n");
+        want.push((format!("sq{k}"), a.wrapping_div(*b) as u16));
+        want.push((format!("sc{k}"), a.wrapping_div(*b) as u16));
+    }
+    for (k, (a, b)) in words.iter().enumerate() {
+        src += &format!("dim wa{k} as word = {a}\ndim wb{k} as word = {b}\ndim wq{k} as word\nwq{k} = (wa{k} + 0) / (wb{k} + 0)\n");
+        want.push((format!("wq{k}"), a / b));
+    }
+    src += "dim i as integer = -700\nprint i / -7; \" \"; 700 / (i + 0)\n";
+    let r = run_src(&src);
+    for (name, w) in want {
+        assert_eq!(r.word(&name), w, "{name}");
+    }
+    assert_eq!(r.output(), "100 -1\r");
+}

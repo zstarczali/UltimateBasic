@@ -82,7 +82,8 @@ The three big items of the 1.6.3 roadmap are implemented:
   `(w + 5) mod 7` no longer drops to 8 bits; `x mod 0` = x) — `emit_word_mod`,
   `mod_is_signed`. `shr` of an INTEGER is arithmetic (`-8 shr 1` = -4, `emit_shr_hi`);
   WORD and byte `shr` stay logical. `gen_word_assign` sends these to `eval_expr_word`.
-  Still open: a signed `/` with a negative or 16-bit divisor uses the 8-bit divisor path.
+  `/` with a 16-bit, signed or negative divisor is a 16÷16 division (sign = xor of the
+  operand signs, truncated: `-700 / 300` = -2) — `emit_word_divmod`, `div_needs_16`.
 
 ---
 
