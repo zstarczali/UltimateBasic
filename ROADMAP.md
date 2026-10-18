@@ -139,7 +139,9 @@ All items of the 1.6.4 list are done (above); see *Smaller open items*.
 - **Bounds checks:** `mplot`, `rect` and `plot4` do not check coordinates (`plot` and
   `circle` clip); clipping like `plot` would avoid writes outside the bitmap.
 - **Struct arrays with several subscripts:** `var g: TCell = array(8, 8)` — struct arrays
-  take one index (use a computed flat index).
+  take one index (use a computed flat index). Also open: signed `integer` fields (they are
+  unsigned words), elements over 256 bytes (fields use an 8-bit Y offset; now a compile
+  error), and `dim e(9) as TEntity` (struct arrays are declared with `var … = array(n)`).
 - **`PRINT USING`:** no `**` (asterisk fill), `$$` (currency) or `^^^^` (exponent) fields;
   the format must be a string literal.
 - **Floating point in IRQ handlers set by address:** only a handler sub named in `irq` /

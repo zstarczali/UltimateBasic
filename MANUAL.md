@@ -2318,6 +2318,8 @@ Use `--asm` to see the generated code for your own program.
 | Zero page budget | Permanent zero page is `$02–$4F` (78 bytes): every variable and sub/fn parameter takes 2 bytes, every running `for` loop 2 more. Since 1.6.4 variables that do not fit move to RAM automatically (see *Variables in RAM*); only extreme cases still report `out of zero page` |
 | Binary literals | `%01010101` (since 1.6.4), `$hex` and decimal |
 | Subroutines | No recursion — ZP parameter slots are statically allocated (a recursive call is a compile error) |
+| `END` in QBasic routines | In a SUB / FUNCTION closed by `END SUB` / `END FUNCTION`, an `END` alone on its line ends the program; blocks in such a routine must be closed QBasic-style (`END IF`, `WEND`, …), a UB-style `if … ⏎ end` there reads as program end |
+| Struct types | One subscript per struct array (no `array(8, 8)` of a struct); an element is at most 256 bytes; `word` / `integer` fields are unsigned 16-bit; string fields are fixed-length (up to 254 characters); a struct parameter passes the element by reference |
 | Floating point | `single` / `double` are 5-byte floating point since 1.6.4 (the routines a program uses, ~2–5 KB, are added to it); `float` stays Q8.8 (0–255.99) |
 | Unary minus | Since 1.6.4 a leading `-` binds to its operand: `-5 - 3` is -8 (it was -(5 - 3) = -2) |
 | String vars | Computed values live in an 80-character buffer per variable (longer results are cut), string-array element values in 31-character slots — `option strings n, m` raises both (up to 255); no shared heap; `<` / `>` order is PETSCII byte order |

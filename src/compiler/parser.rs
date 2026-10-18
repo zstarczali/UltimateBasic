@@ -3569,6 +3569,14 @@ impl Parser {
                         (f.name.clone(), t)
                     })
                     .collect();
+                // fields are reached with an 8-bit Y offset from the element start
+                let size: u32 = layout.iter().map(|f| f.kind.width() as u32).sum();
+                if size > 256 {
+                    self.errors.push(format!(
+                        "line {}: type '{}' is {} bytes; an element can be at most 256 bytes (shorten its string fields)",
+                        self.line, type_name, size
+                    ));
+                }
                 self.types.insert(type_name.clone(), fields.clone());
                 self.struct_layouts.insert(type_name.clone(), layout);
                 Some(Stmt::TypeDef {

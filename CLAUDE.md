@@ -1899,10 +1899,12 @@ labels. The `.dbg` format does not yet include instruction-to-source-line mappin
 
 | Feature | Limitation |
 |---|---|
-| Integer arithmetic | `var`/`byte` 8-bit unsigned, wraps silently (`var c = a + b` stays a byte by design — see `can_be_word_result`); `integer` signed 16-bit (`signed_vars`), `word` unsigned 16-bit |
+| Integer arithmetic | `var`/`byte` 8-bit unsigned, wraps (`var c = a + b` stays a byte by design — see `can_be_word_result`); a constant that cannot fit warns (`check_byte_overflow`); `integer` signed 16-bit (`signed_vars`), `word` unsigned 16-bit |
 | Zero page budget | Permanent ZP is `$02–$4F` (78 bytes): every variable and sub/fn parameter takes 2 bytes, every running `for` loop 2 more (freed when the loop ends, if its body declared no variables). Since 1.6.4 `compile()` retries with variables spilled to RAM (`spill.rs`, `spill_enter`/`spill_exit` proxy slots); "out of zero page" only when even that fails |
 | Subroutines | No recursion — ZP parameter slots are statically allocated |
-| String vars | Computed values: 80-char buffer per variable (cut at 80); string-array element values: 31-char slots; ordering is PETSCII byte order (no locale) |
+| `END` in QBasic routines | In a routine closed by `END SUB` / `END FUNCTION` a bare `end` alone on its line is program end (`qb_routine`), so its blocks must close QBasic-style |
+| Struct types | One subscript per struct array; element ≤ 256 bytes (fields use an 8-bit Y offset; checked in the `type` parser); `word`/`integer` fields unsigned; string fields fixed-length (≤ 254); struct params by reference |
+| String vars | Computed values: 80-char buffer per variable (cut at 80), string-array element values: 31-char slots — `option strings n, m` (`str_cap` / `str_slot`); no heap; ordering is PETSCII byte order (no locale) |
 | `rnd()` | Simple LCG, not cryptographic; period = 256 |
 | `abs()` / `sgn()` / `min()` / `max()` | 8-bit values only; `abs`/`sgn` treat values as signed (bit 7 = negative → `abs` two's-complements, `sgn` returns `$FF`); `min`/`max` are unsigned (0–255) |
 | `plot` | Out-of-range pixels are silently clipped (CheckPlot: Y ≥ 200 or X ≥ 320 → skip) |

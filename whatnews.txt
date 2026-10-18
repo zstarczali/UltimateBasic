@@ -16,7 +16,8 @@ Ultimate Basic v1.6.6 – Release Notes
     contents at program start), nested struct fields (e[i].pos.x),
     fixed-length string fields (var name: string * 20), struct
     parameters (sub heal(p AS TEntity) ... heal(e[i])), and the QBasic
-    form TYPE ... name AS type ... END TYPE.
+    form TYPE ... name AS type ... END TYPE. A struct element can be at
+    most 256 bytes (a compile error says so).
   Changed
   - In a SUB / FUNCTION closed by END SUB / END FUNCTION, END alone on
     its line ends the program, as in QBasic (also inside IF ... END IF).

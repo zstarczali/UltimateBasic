@@ -67,6 +67,12 @@ ub build demo.ub --d64 disk.d64 --add music.prg   # embed extra files in the .d6
 | `--d64 [file]` | Also produce a `.d64` (default: `<output>.d64`) |
 | `--add <file>` | Add an extra file to the `.d64` (repeatable) |
 | `--explicit` | Require a `:type` annotation on every `var`, `sub`-param, and `fn`-param |
+| `--basic-print` | C64 BASIC PRINT spacing: spaces around numbers, `,` = 10-column zones, C64 `STR$` text |
+
+In the program itself, `option basic print` does the same as `--basic-print`, and
+`option strings n[, m]` sets the length of computed strings (default 80) and of string-array
+elements (default 31). Warnings (for example a byte variable that gets a value it cannot hold)
+are printed during the build but never stop it.
 
 With `--debug`, the compiler writes three files beside the program: an importable
 KickAssembler `.sym`, a C64Debugger/RetroDebugger `.dbg`, and a VICE monitor `.vs`.

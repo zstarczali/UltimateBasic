@@ -1634,3 +1634,12 @@ c = w + (v + 1)
     );
     assert_eq!((r.word("a"), r.word("b"), r.word("c")), (6000, 2300, 4001));
 }
+
+#[test]
+fn struct_element_at_most_256_bytes() {
+    let opts = ultimate_basic::compiler::CompileOptions { basic_stub: false, explicit: false, basic_print: false };
+    let ok = ultimate_basic::compiler::compile("type T\n  var a: string * 200\n  var b: string * 54\nendtype\nvar t: T = array(2)\n", &opts);
+    assert!(ok.errors.is_empty(), "{:?}", ok.errors);
+    let bad = ultimate_basic::compiler::compile("type T\n  var a: string * 200\n  var b: string * 60\nendtype\n", &opts);
+    assert!(bad.errors.iter().any(|e| e.contains("at most 256 bytes")), "{:?}", bad.errors);
+}
