@@ -1,6 +1,28 @@
 Ultimate Basic v1.6.6 – Release Notes
 ======================================
 
+2026-10-18 – Unreleased (after 1.6.6)
+------------------------------------------------------------------
+  New
+  - option strings n [, m]: a computed string variable holds up to n
+    characters (1-255, default 80), a string-array element up to m
+    (default 31). Each variable keeps its own buffer.
+  - Compile-time warnings: a byte variable that gets a constant it
+    cannot hold (b = 300, b = a + 1000) is reported with its line.
+    Warnings never stop the build.
+  - With --basic-print, STR$ gives the C64 BASIC text for every number
+    (" 7", "-42", " 3.5"); without it a byte keeps "007".
+  Changed
+  - In a SUB / FUNCTION closed by END SUB / END FUNCTION, END alone on
+    its line ends the program, as in QBasic (also inside IF ... END IF).
+    Blocks in such routines are closed QBasic-style.
+  Fixed
+  - / with a WORD, INTEGER or negative divisor used only the low byte
+    of the divisor: -700 / -7 gave 0, 50000 / (v + 0) was wrong. It is
+    a 16-bit division now, truncated toward zero.
+  - END and BYE inside a sub or function returned to the caller
+    instead of ending the program.
+
 2026-10-17 – Release 1.6.6: PRINT USING, string order, floats
 ------------------------------------------------------------------
   New

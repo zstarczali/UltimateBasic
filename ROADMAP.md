@@ -82,8 +82,32 @@ The three big items of the 1.6.3 roadmap are implemented:
   `(w + 5) mod 7` no longer drops to 8 bits; `x mod 0` = x) — `emit_word_mod`,
   `mod_is_signed`. `shr` of an INTEGER is arithmetic (`-8 shr 1` = -4, `emit_shr_hi`);
   WORD and byte `shr` stay logical. `gen_word_assign` sends these to `eval_expr_word`.
-  `/` with a 16-bit, signed or negative divisor is a 16÷16 division (sign = xor of the
-  operand signs, truncated: `-700 / 300` = -2) — `emit_word_divmod`, `div_needs_16`.
+
+---
+
+## Done after 1.6.6
+
+- **Division:** `/` with a 16-bit, signed or negative divisor is a 16÷16 division (sign =
+  xor of the operand signs, truncated: `-700 / 300` = -2) — `emit_word_divmod` (shared with
+  `mod`), `div_needs_16`. It used the divisor's low byte (`-700 / -7` gave 0).
+- **Byte overflow warning:** `CompileResult::warnings` (printed by the CLI, never fatal):
+  a byte variable given a constant outside -128…255, or an expression with such a constant
+  in its `+ - * shl` arithmetic (`b = a + 1000`) — `check_byte_overflow`. Masked results and
+  byte + byte are not reported.
+- **`END` in a QBasic routine:** in a SUB / FUNCTION closed by `END SUB` / `END FUNCTION`, an
+  `END` alone on its line ends the program (also inside an `IF` there). Lexer markers
+  `Token::EndRoutine` (`end sub|function`) and `Token::EndBlock` (`end if|select`, `wend`) look
+  like `End` to the grammar (`Parser::token_at`); `qb_routine` turns a bare `end` into
+  `EndProgramMark`. `END` / `bye` inside any routine now really leave the program: `$A659`
+  returns to the current return address, so the entry stack pointer is saved
+  (`exit_sp_zp`) and restored first.
+- **`STR$` with BASIC spacing:** with `--basic-print` / `option basic print`, `STR$` gives
+  the C64 text for every number type (`" 7"`, `"-42"`, `" 3.5"`) — `emit_basic_strn`. The
+  default keeps the byte form `"007"`.
+- **String length:** `option strings n[, m]` — n characters per computed string variable
+  (1-255, 80 by default), m per string-array element (slot rounded up to 32/64/128/256
+  bytes, 31 by default). `SourceOptions` carries all `option` settings to the code
+  generator. There is still no heap: every variable keeps its own fixed buffer.
 
 ---
 
@@ -95,12 +119,9 @@ All items of the 1.6.4 list are done (above); see *Smaller open items*.
 
 ## Smaller open items
 
-- **String size:** computed strings are capped at 80 characters per variable and 31 per
-  string-array element; there is no heap / garbage collection.
-- **`STR$` of a byte** keeps the old 3-digit form (`"007"`) for compatibility; 16-bit
-  and signed values print without padding.
-- **Byte arithmetic:** untyped `var` values are 8-bit and wrap silently
-  (`var c = a + b` with 200 + 100 gives 44) — by design; `DIM … AS INTEGER` avoids it.
-  A compile-time warning for likely overflow would help.
-- **`END` inside a SUB/FUNCTION** closes the routine (block syntax); use `bye` there to
-  stop the program.
+- **String heap:** strings live in fixed per-variable buffers (`option strings` sets their
+  size); a shared heap with garbage collection would save memory for many string
+  variables, but is a redesign of `codegen/strings.rs`.
+- **Mixed `END` styles:** inside a routine closed by `END SUB`, a UB-style block closed by
+  a bare `end` on its own line (`if … ⏎ end`) now reads as program end — such routines
+  must close their blocks QBasic-style (`END IF`) or close with a plain `end`.

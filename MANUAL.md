@@ -228,6 +228,8 @@ quotient. Division by zero is defined: `x / 0 = 255`, `x mod 0 = x` (before 1.6.
 `mod` with a `word` or `integer` operand (or a negative constant) is a 16-bit remainder with
 the sign of the dividend, as in QBasic: `-7 mod 3` = -1, `7 mod -3` = 1, `(w + 5) mod 7` keeps
 16 bits. With a SINGLE / DOUBLE operand it works in floating point (see *Floating point*).
+`/` with a `word` / `integer` or negative divisor is a 16-bit division, truncated toward zero
+(`-700 / 300` = -2, `-700 / -7` = 100).
 `shr` of an `integer` is an arithmetic shift (the sign is kept: `-8 shr 1` = -4); `word` and
 byte values shift logically.
 `x = x + 1` / `x = x - 1` (and ±2) compile to `INC` / `DEC`.
@@ -277,8 +279,9 @@ By default numbers are printed without extra spaces and `,` just separates the i
 (`print 1, 2` gives `12`). For C64 BASIC spacing build with `--basic-print`, or put a line
 `option basic print` in the program: a number then prints with a leading space (or its `-`)
 and a trailing space (`print 5` → ` 5 `), a `,` moves to the next 10-column print zone, and a
-trailing `,` keeps the cursor on the line like a trailing `;`. Strings, `spc`, `tab`, `hex`,
-`bin`, `dec`, `chr$` and `str$` print as before.
+trailing `,` keeps the cursor on the line like a trailing `;`. `STR$` then gives the C64 text
+too (`STR$(7)` = `" 7"`, `STR$(-42)` = `"-42"`). Strings, `spc`, `tab`, `hex`, `bin`, `dec` and
+`chr$` print as before.
 
 #### `PRINT USING`
 
@@ -525,6 +528,11 @@ CALL Koszont("Zsolt")
   returned at `END FUNCTION` / `EXIT FUNCTION`; `return expr` still works too.
 - `END SUB`, `END FUNCTION`, `END IF`, `END SELECT` are accepted (the second word is
   optional); `EXIT SUB` / `EXIT FUNCTION` return (plain `exit` is still `bye`).
+- In a SUB / FUNCTION closed by `END SUB` / `END FUNCTION`, an `END` alone on its line ends
+  the program, as in QBasic — also inside an `IF … END IF` there. Close the blocks of such a
+  routine QBasic-style (`END IF`, `END SELECT`, `WEND`, `LOOP`, `NEXT`); a routine closed by a
+  plain `end` keeps the old block rules. `END` and `bye` inside any routine leave the program
+  (before, they returned to the routine's caller).
 - A sub/fn can be called without parentheses: `Koszont "Zsolt"`, `Rajzol x, y`.
 - `PRINT a; b; c` — `;` joins items without spaces; a trailing `;` suppresses the newline.
   A `;` followed by a statement (`print x; y = 1`) still separates statements.
@@ -600,8 +608,14 @@ IF s = "ABC" OR t <> "" THEN PRINT "compare with = / <>"
   Assigning a literal still just points at it.
 - **String arrays:** elements that get a non-literal value (or `input`) get their own
   32-byte slot (31 characters), so `input nevek(i)` in a loop keeps every name.
+- **Longer strings:** a line `option strings 255` lets every computed string variable hold
+  up to 255 characters (C64 BASIC's limit); `option strings 200, 63` also gives string-array
+  elements 63 characters (the slot is rounded up to 32, 64, 128 or 256 bytes). Every variable
+  keeps its own buffer, so longer limits cost RAM: n + 1 bytes per string variable and slot
+  size × elements per string array.
 - **`STR$` / `VAL`:** `STR$` of a 16-bit or signed value has no leading zeros (`"-42"`). For
-  compatibility, `STR$` of a byte keeps the 3-digit form (`"007"`). `VAL` reads 16-bit
+  compatibility, `STR$` of a byte keeps the 3-digit form (`"007"`) unless C64 BASIC spacing
+  is on (`--basic-print`: `" 7"`). `VAL` reads 16-bit
   signed numbers (`VAL("1234") + 1` = 1235).
 - **Comparison:** `=` / `<>` (and `==` / `!=`), and `<` `>` `<=` `>=` in PETSCII order like C64
   BASIC; a string comes before every longer string it starts (`"AB" < "ABC"`, `"" < "A"`).
@@ -2080,6 +2094,17 @@ ub build <input.ub> [OPTIONS]
   -h, --help            Show help
 ```
 
+### Warnings
+
+The compiler prints warnings (they do not stop the build) for a byte variable that gets a
+value it cannot hold:
+
+```
+line 5: warning: 'b' is a byte (0-255) and 1000 does not fit — it wraps; declare it 'as integer' / 'as word' if that is not intended
+```
+
+A result masked with `and`, `mod`, `/` or `shr` is not reported, and neither is byte + byte.
+
 ### CRT export
 
 Ultimate Basic can also write a Magic Desk type-19 cartridge image when the output
@@ -2256,13 +2281,13 @@ Use `--asm` to see the generated code for your own program.
 
 | Feature | Limitation |
 |---|---|
-| Integer arithmetic | `var`/`byte` values are 8-bit unsigned (0–255) and wrap silently (`200 + 100` → 44 in a byte); `integer` is signed 16-bit, `word` unsigned 16-bit |
+| Integer arithmetic | `var`/`byte` values are 8-bit unsigned (0–255) and wrap (`200 + 100` → 44 in a byte); a constant that cannot fit (`b = 300`, `b = a + 1000`) gives a compile-time warning; `integer` is signed 16-bit, `word` unsigned 16-bit |
 | Zero page budget | Permanent zero page is `$02–$4F` (78 bytes): every variable and sub/fn parameter takes 2 bytes, every running `for` loop 2 more. Since 1.6.4 variables that do not fit move to RAM automatically (see *Variables in RAM*); only extreme cases still report `out of zero page` |
 | Binary literals | `%01010101` (since 1.6.4), `$hex` and decimal |
 | Subroutines | No recursion — ZP parameter slots are statically allocated (a recursive call is a compile error) |
 | Floating point | `single` / `double` are 5-byte floating point since 1.6.4 (the routines a program uses, ~2–5 KB, are added to it); `float` stays Q8.8 (0–255.99) |
 | Unary minus | Since 1.6.4 a leading `-` binds to its operand: `-5 - 3` is -8 (it was -(5 - 3) = -2) |
-| String vars | Computed values live in an 80-character buffer per variable (longer results are cut); string-array element values in 31-character slots; `<` / `>` order is PETSCII byte order |
+| String vars | Computed values live in an 80-character buffer per variable (longer results are cut), string-array element values in 31-character slots — `option strings n, m` raises both (up to 255); no shared heap; `<` / `>` order is PETSCII byte order |
 | `rnd()` / `rnd(n)` | Simple LCG, not cryptographic; period = 256 (the floating-point `rnd` is a 32-bit xorshift) |
 | `abs()` / `sgn()` / `min()` / `max()` | 8-bit values only; `abs`/`sgn` treat values as signed (bit 7 = negative → `abs` two's-complements, `sgn` returns `$FF`); `min`/`max` are unsigned (0–255) |
 | `plot` | Out-of-range pixels are silently clipped (Y ≥ 200 or X ≥ 320 → no-op) |

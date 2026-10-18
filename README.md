@@ -82,6 +82,16 @@ The output uses KickAssembler syntax and can be assembled again. Known data regi
 as `data`, maps, sprite/character definitions, lookup tables, SID/Koala payloads, and
 `incbin` content—are emitted as `.byte` blocks instead of being mistaken for instructions.
 
+## What's new since 1.6.6 (unreleased)
+
+- **Division** by a WORD / INTEGER or negative divisor is a real 16-bit division
+  (`-700 / -7` = 100, it gave 0).
+- **Warnings** for byte variables that get a value they cannot hold (`b = a + 1000`).
+- **`END` inside a QBasic SUB / FUNCTION** ends the program; `END` / `bye` in any routine no
+  longer just return to the caller.
+- **`STR$`** gives the C64 text (`" 7"`) with `--basic-print`.
+- **`option strings 255`** (and `option strings n, m` for string arrays): longer strings.
+
 ## What's new in 1.6.6
 
 - **`PRINT USING`** (QBasic subset): `PRINT USING "#,###.## Ft"; ar` — `#` digits, `.`,

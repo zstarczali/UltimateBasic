@@ -173,6 +173,18 @@ before; without the flag nothing changes. Implementation: `Parser::take_option_d
 `Expr::PrintZone` (parser, for `,`), `Codegen::print_basic_item` (number text via the string
 engine's `emit_number_text`; constants at compile time); `CompileOptions::basic_print`.
 
+`STR$` with BASIC spacing is the C64 text (`" 7"`, `"-42"`, `emit_basic_strn`); without it a byte
+keeps `"007"`. `option strings n[, m]` sets the string variable / array element length
+(`SourceOptions` → `Codegen::set_source_options`: `str_cap`, `str_slot`).
+
+Warnings: `CompileResult::warnings` (CLI prints them, never fatal) — `check_byte_overflow` in
+`gen_stmt`: a byte variable given a constant outside -128..255 or an expression with one.
+
+`END` in a QBasic routine: lexer `Token::EndRoutine` (`end sub|function`) / `Token::EndBlock`
+(`end if|select`, `wend`) are `End` for the grammar (`Parser::token_at`); in a routine closed by
+`EndRoutine` (`qb_routine`) a bare `end` alone on its line is `EndProgramMark` → `EndProgram`.
+`END` / `bye` inside any routine restore the entry SP first (`exit_sp_zp`, saved with `TSX`).
+
 `--explicit` is a CLI flag (not a source-level keyword). When passed to `ub build`,
 the parser refuses `var name = expr` and `sub foo(a, b)` / `fn foo(a, b)` without
 explicit `: int|word|float|string` annotations. Arrays (`array(N)`, `array_word(N)`)
@@ -305,7 +317,7 @@ n = x shr 2              # shift right 2 bits (unrolled LSR loop)
 loop (no longer proportional to the quotient). With a word / INTEGER operand (or a negative
 constant) `mod` is a 16-bit remainder with the sign of the dividend (`-7 mod 3` = -1,
 `emit_word_divmod`; `/` with a 16-bit / signed / negative divisor uses the same 16÷16 routine,
-`div_needs_16`), and `shr` of an INTEGER is arithmetic (`-8 shr 1` = -4, `emit_shr_hi`). Division by zero is defined: `x / 0 = 255`,
+`div_needs_16`; sign = xor of the operand signs), and `shr` of an INTEGER is arithmetic (`-8 shr 1` = -4, `emit_shr_hi`). Division by zero is defined: `x / 0 = 255`,
 `x mod 0 = x` (it hung before 1.6.0).
 
 ### Increment / Decrement
