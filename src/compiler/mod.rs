@@ -112,6 +112,8 @@ pub struct DataRegion {
 pub struct CompileResult {
     pub prg: Vec<u8>,
     pub errors: Vec<String>,
+    /// Non-fatal diagnostics (likely byte overflow).
+    pub warnings: Vec<String>,
     pub map: MemoryMap,
     pub asm: String,
 }
@@ -223,6 +225,7 @@ pub fn compile_with_path(
         }
     }
     errors.extend(cg.errors());
+    let warnings = cg.warnings();
     let map = cg.memory_map();
     let asm = asm_listing::generate(&map, source_path);
 
@@ -239,6 +242,7 @@ pub fn compile_with_path(
     CompileResult {
         prg,
         errors,
+        warnings,
         map,
         asm,
     }

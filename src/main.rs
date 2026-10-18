@@ -141,6 +141,9 @@ fn cmd_build(args: &[String]) {
     };
     let result = compile_with_path(&source, &opts, Some(&input));
 
+    for w in &result.warnings {
+        eprintln!("{w}");
+    }
     if !result.errors.is_empty() {
         eprintln!("Compilation errors:");
         for e in &result.errors {

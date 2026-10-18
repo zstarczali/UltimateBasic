@@ -1470,3 +1470,23 @@ fn word_and_signed_division() {
     }
     assert_eq!(r.output(), "100 -1\r");
 }
+
+#[test]
+fn byte_overflow_warnings() {
+    let res = compile_src(
+        "var a = 10
+var b = 0
+dim w as word
+b = 300
+b = a + 1000
+b = 200 * 2
+b = (a + 1000) and 255
+b = a * 3
+w = a + 1000
+b = -1
+",
+    );
+    let lines: Vec<&str> = res.warnings.iter().map(|w| w.split(':').next().unwrap()).collect();
+    assert_eq!(lines, ["line 4", "line 5", "line 6"], "{:?}", res.warnings);
+    assert!(res.warnings[0].contains("'b' is a byte") && res.warnings[0].contains("300"));
+}

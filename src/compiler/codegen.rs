@@ -656,6 +656,8 @@ pub struct Codegen {
     cur_routine: Option<String>,
     /// C64 BASIC PRINT spacing (`CompileOptions::basic_print`).
     basic_print: bool,
+    /// Compile-time warnings (`CompileResult::warnings`): likely byte overflow.
+    warnings: Vec<String>,
     cur_fn: Option<String>,
     rnd_seeded: bool,
     plot_zp: Option<u8>,              // base of 5-byte ZP block for plot helper
@@ -820,6 +822,7 @@ impl Codegen {
             flt_hooks: vec![],
             cur_routine: None,
             basic_print: false,
+            warnings: vec![],
             cur_fn: None,
             rnd_seeded: false,
             plot_zp: None,
@@ -11117,6 +11120,7 @@ impl Codegen {
             vec![]
         };
         self.gen_stmt_inner(stmt);
+        self.check_byte_overflow(stmt, source_line);
         if !frame.is_empty() {
             let store = !matches!(stmt, Stmt::Call(..) | Stmt::Gosub(..));
             self.spill_exit(frame, store);
@@ -16377,6 +16381,53 @@ impl Codegen {
         }
 
         self.code.clone()
+    }
+
+    /// Warnings found while generating code (they never stop a build).
+    pub fn warnings(&self) -> Vec<String> {
+        self.warnings.clone()
+    }
+
+    /// A byte variable that certainly or very likely overflows: a constant
+    /// outside -128..255, or an expression with such a constant in its
+    /// arithmetic (`x = a + 1000`). A masked result (`and`, `mod`, `/`, `shr`
+    /// at the top) is fine; byte + byte is by design and not reported.
+    fn check_byte_overflow(&mut self, stmt: &Stmt, line: usize) {
+        let (name, expr) = match stmt {
+            Stmt::Assign(n, e) | Stmt::VarDecl { name: n, expr: e, .. } => (n, e),
+            _ => return,
+        };
+        let is_byte = self.vars.contains_key(name.as_str())
+            && matches!(self.var_types.get(name.as_str()), None | Some(VarType::Int))
+            && !self.real_vars.contains_key(name.as_str())
+            && !self.signed_vars.contains(name.as_str())
+            && !name.contains("__");
+        if !is_byte || self.is_string_expr(expr) || self.is_real_expr(expr) {
+            return;
+        }
+        fn big_const(e: &Expr) -> Option<i16> {
+            match e {
+                Expr::Number(n) if !(-128..=255).contains(n) => Some(*n),
+                Expr::BinOp(l, op, r) if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Shl) => {
+                    big_const(l).or_else(|| big_const(r))
+                }
+                _ => None,
+            }
+        }
+        let value = match crate::compiler::ast::fold_int(expr) {
+            Some(n) if !(-128..=255).contains(&n) => Some(n),
+            Some(_) => None,
+            None => match expr {
+                Expr::BinOp(_, BinOp::And | BinOp::Mod | BinOp::Div | BinOp::Shr, _) => None,
+                _ => big_const(expr),
+            },
+        };
+        if let Some(n) = value {
+            self.warnings.push(format!(
+                "line {line}: warning: '{name}' is a byte (0-255) and {n} does not fit — it wraps; \
+                 declare it 'as integer' / 'as word' if that is not intended"
+            ));
+        }
     }
 
     pub fn errors(&self) -> Vec<String> {
