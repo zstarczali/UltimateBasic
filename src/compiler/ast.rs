@@ -645,6 +645,31 @@ pub fn fold_int(e: &Expr) -> Option<i16> {
 /// Splice every `Stmt::Block` into the statement list that contains it, at any
 /// depth. The parser uses `Block` to lower one source statement into several
 /// (e.g. `select case`); codegen and its pre-scans then only see plain lists.
+/// Entries of a statement in the parser's source-line list: its own and those of the statements
+/// nested in it.
+pub fn statement_line_count(stmt: &Stmt) -> usize {
+    fn sum(body: &[Stmt]) -> usize {
+        body.iter().map(statement_line_count).sum()
+    }
+    match stmt {
+        Stmt::Block(body) => sum(body),
+        Stmt::If(_, then_body, else_body) => {
+            1 + sum(then_body) + else_body.as_deref().map_or(0, sum)
+        }
+        Stmt::Loop(_, body)
+        | Stmt::ForLoop { body, .. }
+        | Stmt::WhileLoop(_, body)
+        | Stmt::RepeatLoop(body, _)
+        | Stmt::SubDef(_, _, body)
+        | Stmt::FnDef(_, _, _, body) => 1 + sum(body),
+        Stmt::Select { cases, else_body, .. } => {
+            1 + cases.iter().map(|(_, body)| sum(body)).sum::<usize>()
+                + else_body.as_deref().map_or(0, sum)
+        }
+        _ => 1,
+    }
+}
+
 pub fn flatten_blocks(stmts: Vec<Stmt>) -> Vec<Stmt> {
     let mut out = Vec::with_capacity(stmts.len());
     for s in stmts {

@@ -16017,10 +16017,20 @@ impl Codegen {
             self.emit(zp + 1); // STA data_ptr_hi
         }
 
-        // Pass 1: everything except SubDef
+        // The source lines are in source order, the code is generated main first and subs after:
+        // each top-level statement starts at its own place in the list.
+        let mut line_pos = Vec::with_capacity(stmts.len());
+        let mut next_line_pos = 0;
         for stmt in stmts {
+            line_pos.push(next_line_pos);
+            next_line_pos += super::ast::statement_line_count(stmt);
+        }
+
+        // Pass 1: everything except SubDef
+        for (index, stmt) in stmts.iter().enumerate() {
             if !matches!(stmt, Stmt::SubDef(..) | Stmt::FnDef(..) | Stmt::Org(..)) {
                 self.tmp_zp = TMP_BASE; // reset scratch ZP per statement (same as gen_stmts)
+                self.source_line_pos = line_pos[index];
                 self.gen_stmt(stmt);
             }
         }
@@ -16028,7 +16038,7 @@ impl Codegen {
         self.emit(0x60); // RTS — end of main program
 
         // Pass 2: subroutine definitions (after main, so they aren't executed at startup)
-        for stmt in stmts {
+        for (index, stmt) in stmts.iter().enumerate() {
             if let Stmt::Org(target) = stmt {
                 // Continue the subroutine code at `target`; subs never fall through into each
                 // other, so zero-filling the gap is safe.
@@ -16045,6 +16055,7 @@ impl Codegen {
                 }
             } else if matches!(stmt, Stmt::SubDef(..) | Stmt::FnDef(..)) {
                 self.tmp_zp = TMP_BASE; // reset scratch ZP per statement
+                self.source_line_pos = line_pos[index];
                 self.gen_stmt(stmt);
             }
         }
