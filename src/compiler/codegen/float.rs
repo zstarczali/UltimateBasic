@@ -1012,6 +1012,8 @@ impl Codegen {
     pub(super) fn gen_print_using_num(&mut self, e: &Expr, width: u8, decimals: u8, flags: u8) {
         if self.is_string_expr(e) {
             let e = e.clone();
+            // not in the source-line list: it shares the entry of this statement
+            self.source_line_pos = self.source_line_pos.saturating_sub(1);
             self.gen_stmt(&Stmt::Print { args: vec![e], no_newline: true });
             return;
         }
