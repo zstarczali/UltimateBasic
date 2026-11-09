@@ -1,4 +1,4 @@
-# Ultimate Basic v1.6.6 — Language Manual
+# Ultimate Basic v1.6.7 — Language Manual
 
 Complete language and CLI reference for Ultimate Basic, a BASIC-like language that
 compiles directly to 6502 machine code for the Commodore 64. Output: `.prg` files
@@ -144,7 +144,7 @@ is used for the `dec(n, width)` print format)
 **Screen & text**
 `cls`, `fast`, `color`, `text`, `border`, `bg`, `screen`, `cursor`,
 `lowercase`, `uppercase`, `display`, `on`, `off`, `scroll`,
-`speed`, `badlines`, `turbo`
+`speed`, `badlines`, `turbo`, `palette`
 
 **Bitmap & block graphics**
 `graphics`, `gcls`, `flip`, `plot`, `plot4`, `mplot`,
@@ -724,7 +724,7 @@ var f: float = balls[0].vel       # read float field into float variable
 print balls[0].vel                # prints "1.50"
 ```
 
-**Defaults, strings, nested types, parameters** (after 1.6.6):
+**Defaults, strings, nested types, parameters** (1.6.7):
 
 ```basic
 TYPE TPoint                        ' QBasic form: TYPE … END TYPE, "name AS type"
@@ -1010,6 +1010,33 @@ Variable values are treated as a raw speed index (0–15) and OR'd into bits 0-3
 
 Requires **U64 Turbo Control** set to `U64 Turbo Registers` or `Turbo Enable Bit` in the U64 config menu.
 On a regular C64 or emulator without the register, the `poke` to `$D031` is silently ignored.
+
+### Ultimate 64 — Palette
+
+```basic
+palette "colodore.vpl"   # all 16 colours from a palette file (read at compile time)
+palette 6, $3050C0       # one colour: index 0-15, $RRGGBB
+palette i, r, g, 0       # one colour from values: index and red / green / blue 0-255
+palette reset            # back to the palette of the Ultimate menu
+```
+
+Sets the **video palette of an Ultimate 64 / C64 Ultimate** through the Ultimate Command Interface
+(`$DF1C`–`$DF1F`): needs firmware 3.15 or newer and the Command Interface switched on in the menu
+(C64 and Cartridge Settings → Command Interface). Without the interface (VICE, a plain C64, older
+firmware) every `palette` statement skips itself, so the same program runs everywhere.
+
+- The file of `palette "file"` is found next to the source, like `incbin`. It can be a VICE `.vpl`
+  (`RR GG BB dither` per line, `#` comments), a GIMP `.gpl`, any text with at least 16
+  `#RRGGBB` / `$RRGGBB` / `0xRRGGBB` values, or a Photoshop `.act` (binary, 768 bytes or more); the
+  first 16 colours are used. The colours are stored in the generated code.
+- `palette index, $RRGGBB` takes the colour as one literal; `palette index, r, g, b` takes three
+  values, which can be variables or expressions (fades, colour cycling). The index can be a
+  variable too (only its low 4 bits count).
+- Each statement is a 59-byte routine plus the command (`$04` target, `$52` all colours, `$53` one,
+  `$54` reset); it waits for the interface and destroys A and X. It is the routine of the
+  VisualAssembler / VMA macros `.u64_palette`, `.u64_palette_color` and `.u64_palette_reset`.
+
+See `examples/u64_palette_demo.ub` (with `u64-palette-sunset.vpl` and `u64-palette-green.vpl`).
 
 ### Keyboard
 
@@ -2107,6 +2134,7 @@ The result pointer is stored in a permanent ZP pair allocated at compile time.
 | `examples/dim_demo.ub` | `DIM … AS …` scalars and arrays of every type |
 | `examples/qbasic_demo.ub` | QBasic-style FUNCTION / SUB / ELSEIF / DO-LOOP / SELECT CASE / strings |
 | `examples/float_demo.ub` | SINGLE / DOUBLE floating point: `^`, SQR, SIN, ATN, EXP, LOG, `FOR … STEP 0.5`, `AS DOUBLE` function |
+| `examples/u64_palette_demo.ub` | Ultimate 64 palette: `palette "file.vpl"`, a fade with `palette 0, r, g, b`, `palette reset` |
 
 ## CLI reference
 

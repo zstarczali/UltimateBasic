@@ -2,7 +2,7 @@
 
 <img src="assets/logo.png" alt="Ultimate Basic C64 banner" width="30%">
 
-Current version: **1.6.6**
+Current version: **1.6.7**
 
 A modern BASIC-like language that compiles directly to 6502 machine code for the
 **Commodore 64** and **Commodore 64 Ultimate**. It produces `.prg` files that run in
@@ -88,7 +88,7 @@ The output uses KickAssembler syntax and can be assembled again. Known data regi
 as `data`, maps, sprite/character definitions, lookup tables, SID/Koala payloads, and
 `incbin` content—are emitted as `.byte` blocks instead of being mistaken for instructions.
 
-## What's new since 1.6.6 (unreleased)
+## What's new in 1.6.7
 
 - **Division** by a WORD / INTEGER or negative divisor is a real 16-bit division
   (`-700 / -7` = 100, it gave 0).
@@ -100,6 +100,11 @@ as `data`, maps, sprite/character definitions, lookup tables, SID/Koala payloads
 - **Struct types:** default values, nested types (`e[i].pos.x`), fixed-length string fields
   (`name AS STRING * 20`), struct parameters (`sub heal(p AS TEntity)` … `heal(e[i])`) and
   QBasic `TYPE … END TYPE`.
+- **`palette`** sets the video palette of an Ultimate 64 / C64 Ultimate through the Ultimate
+  Command Interface (firmware 3.15+): `palette "colodore.vpl"` (VICE / GIMP / hex / `.act` file),
+  `palette 6, $3050C0`, `palette i, r, g, b` (values can be variables) and `palette reset`. Without
+  the interface it skips itself. See `examples/u64_palette_demo.ub`.
+- **`$` literals over `$FFFF`** (`$3050C0`) are read as numbers; they were silently 0.
 
 ## What's new in 1.6.6
 

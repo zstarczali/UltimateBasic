@@ -548,6 +548,22 @@ pub enum Stmt {
     Speed(Expr),
     /// `badlines on/off` — enable/disable badline timing via bit 7 of $D031
     Badlines(bool),
+    /// `palette "f.vpl"` — the 16 colours of a palette file (read at compile time) to the
+    /// Ultimate 64 / C64U through the Ultimate Command Interface (target $04, command $52).
+    PaletteLoad {
+        path: String,
+        colors: Vec<u32>,
+    },
+    /// `palette i, $RRGGBB` / `palette i, r, g, b` — one colour (command $53); a constant
+    /// colour is split into three `Number` bytes, other operands are evaluated at run time.
+    PaletteColor {
+        index: Expr,
+        r: Expr,
+        g: Expr,
+        b: Expr,
+    },
+    /// `palette reset` — back to the palette of the Ultimate menu (command $54).
+    PaletteReset,
     /// `fill screen val` — fill screen RAM ($0400–$07FF, 4 pages) with val (fast shorthand)
     FillScreen(Expr),
     /// `fill color val` — fill color RAM ($D800–$DBFF, 4 pages) with val (fast shorthand)

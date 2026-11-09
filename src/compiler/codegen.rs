@@ -1970,6 +1970,34 @@ impl Codegen {
         });
     }
 
+    /// The Ultimate Command Interface routine (`u64pal::uci_bytes`) with its command bytes;
+    /// `runtime` operands (offset in `data`, value) are evaluated first and stored into the
+    /// command (the index of `palette i, ...` at offset 2 is masked to 0-15).
+    fn emit_uci(&mut self, data: &[u8], runtime: &[(usize, Expr)], name: &str) {
+        let mut stores = Vec::new();
+        for (offset, expr) in runtime {
+            self.eval_expr(expr);
+            if *offset == 2 {
+                self.emit(0x29);
+                self.emit(0x0F); // AND #$0F
+            }
+            self.emit(0x8D); // STA command byte (patched below)
+            stores.push((self.code.len(), *offset));
+            self.emit16(0);
+        }
+        let start = self.current_addr();
+        let bytes = crate::compiler::u64pal::uci_bytes(start, data);
+        let data_addr = start.wrapping_add(crate::compiler::u64pal::UCI_CODE as u16);
+        for (pos, offset) in stores {
+            self.patch_abs(pos, data_addr.wrapping_add(offset as u16));
+        }
+        let code_end = bytes.len() - data.len();
+        self.code.extend_from_slice(&bytes[..code_end]);
+        let data_start = self.code.len();
+        self.code.extend_from_slice(&bytes[code_end..]);
+        self.listing_data(data_start, name);
+    }
+
     fn listing_data(&mut self, start: usize, name: &str) {
         if self.code.len() > start {
             self.data_regions.push(crate::compiler::DataRegion {
@@ -12294,6 +12322,25 @@ impl Codegen {
                 }
                 self.emit(0x8D);
                 self.emit16(0xD031); // STA $D031
+            }
+            Stmt::PaletteLoad { path, colors } => {
+                let data = crate::compiler::u64pal::palette_data(colors);
+                self.emit_uci(&data, &[], &format!("u64_palette_{}", path));
+            }
+            Stmt::PaletteColor { index, r, g, b } => {
+                // constant operands go straight into the command, the others are stored there
+                let mut data = vec![0x04, 0x53, 0, 0, 0, 0];
+                let mut runtime = Vec::new();
+                for (k, e) in [index, r, g, b].into_iter().enumerate() {
+                    match e {
+                        Expr::Number(n) => data[2 + k] = if k == 0 { (*n as u8) & 0x0F } else { *n as u8 },
+                        _ => runtime.push((2 + k, e.clone())),
+                    }
+                }
+                self.emit_uci(&data, &runtime, "u64_palette_color");
+            }
+            Stmt::PaletteReset => {
+                self.emit_uci(&[0x04, 0x54], &[], "u64_palette_reset");
             }
             Stmt::Lowercase => {
                 // CHR$(14) → KERNAL CHROUT: switches VIC-II to lowercase/uppercase charset

@@ -85,8 +85,10 @@ The three big items of the 1.6.3 roadmap are implemented:
 
 ---
 
-## Done after 1.6.6
+## Done in 1.6.7
 
+- **`palette`** (Ultimate 64 / C64U palette through the Ultimate Command Interface):
+  `compiler/u64pal.rs`, the routine of the VisualAssembler / VMA `.u64_palette*` macros.
 - **Division:** `/` with a 16-bit, signed or negative divisor is a 16÷16 division (sign =
   xor of the operand signs, truncated: `-700 / 300` = -2) — `emit_word_divmod` (shared with
   `mod`), `div_needs_16`. It used the divisor's low byte (`-700 / -7` gave 0).
