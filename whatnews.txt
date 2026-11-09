@@ -1,7 +1,7 @@
-Ultimate Basic v1.6.6 – Release Notes
+Ultimate Basic v1.6.7 – Release Notes
 ======================================
 
-2026-10-18 – Unreleased (after 1.6.6)
+2026-11-09 – Release 1.6.7: Ultimate 64 palette, struct types, 16-bit division
 ------------------------------------------------------------------
   New
   - option strings n [, m]: a computed string variable holds up to n
@@ -18,11 +18,20 @@ Ultimate Basic v1.6.6 – Release Notes
     parameters (sub heal(p AS TEntity) ... heal(e[i])), and the QBasic
     form TYPE ... name AS type ... END TYPE. A struct element can be at
     most 256 bytes (a compile error says so).
+  - palette: the video palette of an Ultimate 64 / C64 Ultimate through
+    the Ultimate Command Interface (firmware 3.15+, switched on in the
+    menu). palette "colodore.vpl" loads all 16 colours from a VICE .vpl,
+    GIMP .gpl, hex list or .act file; palette 6, $3050C0 and palette i,
+    r, g, b set one colour (the values can be variables); palette reset
+    goes back to the menu's palette. Without the interface it skips
+    itself. Example: examples/u64_palette_demo.ub.
   Changed
   - In a SUB / FUNCTION closed by END SUB / END FUNCTION, END alone on
     its line ends the program, as in QBasic (also inside IF ... END IF).
     Blocks in such routines are closed QBasic-style.
   Fixed
+  - A $ literal over $FFFF ($3050C0) was silently 0; it is a number now
+    (like a decimal literal of that size).
   - / with a WORD, INTEGER or negative divisor used only the low byte
     of the divisor: -700 / -7 gave 0, 50000 / (v + 0) was wrong. It is
     a 16-bit division now, truncated toward zero.

@@ -742,6 +742,102 @@ impl Parser {
         }
     }
 
+    /// `palette "f.vpl"` / `palette reset` / `palette i, $RRGGBB` / `palette i, r, g, b`
+    /// (after the keyword).
+    fn parse_palette(&mut self) -> Option<Stmt> {
+        let at_end = |t: &Token| matches!(t, Token::Newline | Token::Colon | Token::Eof);
+        match self.peek().clone() {
+            Token::StringLit(filename) => {
+                self.advance();
+                let path = self
+                    .base_dir
+                    .as_ref()
+                    .map(|base| base.join(&filename))
+                    .unwrap_or_else(|| std::path::PathBuf::from(&filename));
+                let bytes = match std::fs::read(&path) {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        self.errors.push(format!(
+                            "line {}: palette: cannot read '{}': {}",
+                            self.line,
+                            path.display(),
+                            error
+                        ));
+                        return None;
+                    }
+                };
+                match crate::compiler::u64pal::palette_colors(&bytes) {
+                    Some(colors) => Some(Stmt::PaletteLoad { path: filename, colors }),
+                    None => {
+                        self.errors.push(format!(
+                            "line {}: palette: '{}' has no 16 colours (VICE .vpl, GIMP .gpl, #RRGGBB list or .act)",
+                            self.line, filename
+                        ));
+                        None
+                    }
+                }
+            }
+            Token::Ident(word) if word.eq_ignore_ascii_case("reset") => {
+                self.advance();
+                Some(Stmt::PaletteReset)
+            }
+            _ => {
+                let index = self.parse_expr();
+                if let Expr::Number(n) = index {
+                    if !(0..=15).contains(&n) {
+                        self.errors.push(format!("line {}: palette: colour index {} is not 0-15", self.line, n));
+                    }
+                }
+                if self.peek() != &Token::Comma {
+                    self.errors.push(format!(
+                        "line {}: palette: use palette \"file.vpl\", palette index, $RRGGBB, palette index, r, g, b or palette reset",
+                        self.line
+                    ));
+                    return None;
+                }
+                self.advance();
+                // a lone literal is the whole colour, $RRGGBB
+                let rgb = match self.peek().clone() {
+                    Token::Number(n) if n >= 0 => Some(n as u32),
+                    Token::Addr(a) => Some(a as u32),
+                    Token::FixedLit(_, v, _) if v.fract() == 0.0 && (0.0..=16_777_215.0).contains(&v) => Some(v as u32),
+                    Token::FixedLit(_, v, _) if v.fract() == 0.0 && v > 16_777_215.0 => {
+                        self.errors.push(format!("line {}: palette: colour ${:X} is not $000000-$FFFFFF", self.line, v as u64));
+                        Some(0)
+                    }
+                    _ => None,
+                };
+                if let Some(rgb) = rgb.filter(|_| self.tokens.get(self.pos + 1).is_none_or(at_end)) {
+                    self.advance();
+                    let byte = |shift: u32| Expr::Number(((rgb >> shift) & 0xFF) as i16);
+                    return Some(Stmt::PaletteColor { index, r: byte(16), g: byte(8), b: byte(0) });
+                }
+                let r = self.parse_expr();
+                if self.peek() != &Token::Comma {
+                    self.errors.push(format!(
+                        "line {}: palette: the colour is a $RRGGBB literal or three values r, g, b",
+                        self.line
+                    ));
+                    return None;
+                }
+                self.advance();
+                let g = self.parse_expr();
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
+                let b = self.parse_expr();
+                for (name, e) in [("red", &r), ("green", &g), ("blue", &b)] {
+                    if let Expr::Number(n) = e {
+                        if !(0..=255).contains(n) {
+                            self.errors.push(format!("line {}: palette: {} {} is not 0-255", self.line, name, n));
+                        }
+                    }
+                }
+                Some(Stmt::PaletteColor { index, r, g, b })
+            }
+        }
+    }
+
     /// Read and validate the compact UltimateBasic character-map format.
     fn parse_map_file(&mut self, filename: &str) -> Option<Stmt> {
         let path = self
@@ -4628,6 +4724,12 @@ impl Parser {
                 } else {
                     Some(Stmt::ScrollY(val))
                 }
+            }
+            Token::Palette => {
+                self.advance();
+                let stmt = self.parse_palette();
+                self.expect_newline();
+                stmt
             }
             Token::Speed => {
                 self.advance();

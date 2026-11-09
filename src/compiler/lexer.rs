@@ -191,6 +191,7 @@ pub enum Token {
     Scroll,    // scroll x n / scroll y n — fine scroll ($D016/$D011 bits 0-2)
     Speed,     // speed N / speed max / speed off — U64 CPU speed ($D031 bits 0-3)
     Badlines,  // badlines on / badlines off  — U64 badline timing ($D031 bit 7)
+    Palette,   // palette "f.vpl" / palette i, $RRGGBB / palette i, r, g, b / palette reset — U64 palette (UCI)
     Turbo,     // turbo() — 1 if U64 turbo is active (bits 0-3 of $D031 != 0), else 0
     Lowercase, // lowercase — switch VIC-II to lowercase/uppercase charset (CHR$(14))
     Uppercase, // uppercase — switch VIC-II to uppercase/graphics charset (CHR$(142))
@@ -537,7 +538,12 @@ impl Lexer {
         while matches!(self.peek(), Some(c) if c.is_ascii_hexdigit()) {
             s.push(self.advance().unwrap());
         }
-        let val = u16::from_str_radix(&s, 16).unwrap_or(0);
+        let wide = u64::from_str_radix(&s, 16).unwrap_or(u64::MAX);
+        if wide > 0xFFFF {
+            // like a decimal literal: only floating point (or `palette`'s $RRGGBB) can hold it
+            return Token::FixedLit(0xFFFF, wide as f64, true);
+        }
+        let val = wide as u16;
         if val > 0x7FFF {
             Token::Addr(val)
         } else {
@@ -605,6 +611,7 @@ impl Lexer {
             "scroll" => Token::Scroll,
             "speed" => Token::Speed,
             "badlines" => Token::Badlines,
+            "palette" => Token::Palette,
             "turbo" => Token::Turbo,
             "lowercase" => Token::Lowercase,
             "uppercase" => Token::Uppercase,
@@ -1058,6 +1065,8 @@ mod tests {
     #[test]
     fn kw_badlines() {
         assert_eq!(tokenize("badlines")[0], Token::Badlines);
+        assert_eq!(tokenize("palette")[0], Token::Palette);
+        assert_eq!(tokenize("$3050C0")[0], Token::FixedLit(0xFFFF, 3166400.0, true));
     }
     #[test]
     fn kw_turbo() {

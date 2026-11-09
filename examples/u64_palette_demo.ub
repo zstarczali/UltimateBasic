@@ -1,0 +1,56 @@
+# Ultimate 64 / C64 Ultimate palette demo (UltimateBasic 1.6.7)
+#
+# palette "file.vpl"      all 16 colours from a palette file (read at compile time)
+# palette i, $RRGGBB      one colour, constant
+# palette i, r, g, b      one colour, the values can be variables
+# palette reset           back to the palette of the Ultimate menu
+#
+# Needs the Ultimate Command Interface: firmware 3.15 or newer, switched on in the
+# menu (C64 and Cartridge Settings -> Command Interface). On VICE or a plain C64 the
+# palette commands skip themselves and the bars keep their normal colours.
+
+var c = 0
+var row = 0
+var v = 0
+var w = 0
+var k = 0
+
+cls
+color border 0
+color bg 0
+print "ULTIMATE 64 PALETTE DEMO"
+print
+print "PRESS A KEY: SUNSET, GREEN, FADE, RESET"
+
+# the 16 colours as bars of reverse spaces
+for c = 0 to 15
+  for row = 5 to 21
+    screen c * 2 + 4, row, 160, c
+    screen c * 2 + 5, row, 160, c
+  next
+next
+
+k = getch()
+palette "u64-palette-sunset.vpl"
+
+k = getch()
+palette "u64-palette-green.vpl"
+
+# fade colour 0 (border, background and the first bar) to blue and back, until a key
+k = getch()
+palette reset
+do
+  for v = 0 to 63
+    palette 0, 0, v, v * 4
+    delay 1
+  next
+  for v = 0 to 63
+    w = 63 - v
+    palette 0, 0, w, w * 4
+    delay 1
+  next
+  k = inkey()
+loop until k <> 0
+
+palette reset
+bye

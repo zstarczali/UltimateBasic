@@ -1,6 +1,6 @@
 # NUltimate Basic
 
-Current version: **1.6.6** (1.6.6 = `PRINT USING` (`parse_using_format`, `f_using`), string `<` `>` (`Helper::Order`), float `RND` / `MOD`, floats in IRQ/NMI handlers (`emit_flt_handler_state`), on-demand float runtime (`float_lib::prune`), unsigned 32768-65535 literals in float statements (`stmt_is_real`), 16-bit / signed `mod` (`emit_word_mod`), arithmetic `shr`, opt-in `--basic-print`; 1.6.5 = 16-bit address expressions: `eval_addr16` / `split_const_plus_byte` in codegen.rs used by peek/poke/peek16/poke16/fill/memcopy/drawmem/save/reu, `const + byte` → `LDA/STA base,Y`; 1.6.4 = SINGLE/DOUBLE real 5-byte floating point (`codegen/float.rs` codegen, `codegen/float_lib.rs` runtime assembled by `codegen/rtasm.rs`), variables spilled to RAM when zero page runs out (`compiler/spill.rs`), 12 KB arrays at `$A000-$CFFF` with BASIC banked out, `%` binary literals, unary-minus precedence fix; 1.6.3 = QBasic-style syntax: `dim … as …` scalars and arrays of every type, `function`/`sub` with `as` types, return-by-name, `end sub`/`end if`, bare sub calls, `print a; b`, ELSEIF / DO-LOOP / WHILE-WEND / SELECT CASE, runtime strings (`codegen/strings.rs`), signed INTEGER, 16-bit for loops, recursion check; deferred work in `ROADMAP.md`; 1.6.2 = `tune` instrument modulation: `imod` / `ifilt` / `igate` / `itab`, frame-based player in `compiler/tune.rs`; 1.6.1 = `map view` smooth scrolling, `compiler/map_view.rs`, `map load` of Level Editor projects and to an address; 1.6.0 = optimised 6502 codegen, `codegen/opt.rs`; release notes in `whatnews.txt`, user docs in `README.md` / `MANUAL.md`).
+Current version: **1.6.7** (1.6.7 = `palette` for the Ultimate 64 palette (`compiler/u64pal.rs`), struct defaults / nested types / struct parameters, `option strings`, byte-overflow warnings, 16-bit signed division, `$` literals over `$FFFF`; 1.6.6 = `PRINT USING` (`parse_using_format`, `f_using`), string `<` `>` (`Helper::Order`), float `RND` / `MOD`, floats in IRQ/NMI handlers (`emit_flt_handler_state`), on-demand float runtime (`float_lib::prune`), unsigned 32768-65535 literals in float statements (`stmt_is_real`), 16-bit / signed `mod` (`emit_word_mod`), arithmetic `shr`, opt-in `--basic-print`; 1.6.5 = 16-bit address expressions: `eval_addr16` / `split_const_plus_byte` in codegen.rs used by peek/poke/peek16/poke16/fill/memcopy/drawmem/save/reu, `const + byte` → `LDA/STA base,Y`; 1.6.4 = SINGLE/DOUBLE real 5-byte floating point (`codegen/float.rs` codegen, `codegen/float_lib.rs` runtime assembled by `codegen/rtasm.rs`), variables spilled to RAM when zero page runs out (`compiler/spill.rs`), 12 KB arrays at `$A000-$CFFF` with BASIC banked out, `%` binary literals, unary-minus precedence fix; 1.6.3 = QBasic-style syntax: `dim … as …` scalars and arrays of every type, `function`/`sub` with `as` types, return-by-name, `end sub`/`end if`, bare sub calls, `print a; b`, ELSEIF / DO-LOOP / WHILE-WEND / SELECT CASE, runtime strings (`codegen/strings.rs`), signed INTEGER, 16-bit for loops, recursion check; deferred work in `ROADMAP.md`; 1.6.2 = `tune` instrument modulation: `imod` / `ifilt` / `igate` / `itab`, frame-based player in `compiler/tune.rs`; 1.6.1 = `map view` smooth scrolling, `compiler/map_view.rs`, `map load` of Level Editor projects and to an address; 1.6.0 = optimised 6502 codegen, `codegen/opt.rs`; release notes in `whatnews.txt`, user docs in `README.md` / `MANUAL.md`).
 
 A custom BASIC-like language compiler targeting the Commodore 64 and Commodore 64 Ultimate. Produces `.prg` files runnable in VICE or on real hardware.
 
@@ -34,6 +34,7 @@ src/
     codegen/float.rs   – SINGLE/DOUBLE codegen: typing (is_real_expr), eval into FAC, hooks into the integer paths
     codegen/float_lib.rs – floating-point runtime (6502 assembly source, MFLPT format) + to_mflpt/from_mflpt
     codegen/rtasm.rs   – strict two-pass 6502 assembler used for the float runtime
+    u64pal.rs          – Ultimate 64 palette: UCI routine + palette-file reader (`palette`)
     spill.rs           – which variables move to RAM when zero page runs out (SpillPlan)
 examples/
   features.ub          – original feature demo
@@ -58,6 +59,7 @@ examples/
   dim_demo.ub         – DIM … AS … scalars and arrays (integer, string, double)
   qbasic_demo.ub      – QBasic-style FUNCTION / SUB / IF-ELSEIF / DO-LOOP / SELECT CASE / strings / signed INTEGER
   float_demo.ub       – SINGLE / DOUBLE floating point: ^, SQR, SIN, ATN, EXP, LOG, FOR STEP 0.5, AS DOUBLE function
+  u64_palette_demo.ub – Ultimate 64 palette: palette "file.vpl", run-time fade, palette reset
 ```
 
 ## Architecture
@@ -780,7 +782,7 @@ Float fields store Q8.8 fixed-point values (hi byte = integer part, lo byte =
 fraction × 256). Reading a float field into a `float` variable works via
 `gen_word_assign`; printing a float field uses `print_fixed`.
 
-After 1.6.6: the parser keeps `struct_layouts` (`StructField`: flattened name, `FieldKind`,
+1.6.7: the parser keeps `struct_layouts` (`StructField`: flattened name, `FieldKind`,
 default bytes); `parse_struct_field` reads `int|byte|word|integer|float|string [* n]` or a
 nested struct type (fields `pos.x`, …) and `= default`; QBasic field lines `name AS type` and
 `END TYPE` (lexer `End TypeKw` → `EndType`) work. Defaults become a `Stmt::ArrayData` image after
@@ -922,6 +924,29 @@ For variable values: raw index (0–15) OR'd into bits 0-3 via read-modify-write
 
 Requires U64 Turbo Control mode set to `U64 Turbo Registers` or `Turbo Enable Bit` in the U64 config menu.
 On a plain C64, writes to `$D031` are harmless (open bus / ignored).
+
+### Ultimate 64 — Palette
+
+```basic
+palette "colodore.vpl"   # 16 colours from a palette file (compile time)
+palette 6, $3050C0       # one colour, constant
+palette i, r, g, b       # one colour, run-time values
+palette reset            # the Ultimate menu's palette
+```
+
+Ultimate Command Interface (`$DF1C` control / status, `$DF1D` command / id `$C9`, firmware 3.15+),
+`compiler/u64pal.rs`: `uci_bytes` (59-byte routine + command, byte-identical to VisualAssembler
+`_u64UciBytes` / VMA `src/u64pal.rs`: skip when `$DF1D` != `$C9`, wait for idle accepting leftover
+data, write, push, wait while busy, accept), `palette_data` (`$04 $52` + 16 × RGB), `palette_colors`
+(the VA / VMA `_u64PalColors` reader: GIMP `.gpl`, `#`/`$`/`0x` RRGGBB list, VICE `.vpl`, `.act`).
+Lexer `Token::Palette`; `Parser::parse_palette` reads the file (base dir, errors `cannot read` /
+`has no 16 colours`) and splits a lone `$RRGGBB` literal into three `Expr::Number` bytes
+(`Stmt::PaletteColor { index, r, g, b }`, so no `FixedLit` reaches the AST and floats stay off);
+`Stmt::PaletteLoad` / `PaletteReset`. Codegen `emit_uci`: run-time operands are evaluated first and
+stored (`STA`, patched) into the command bytes, the index masked with `AND #$0F`. `read_hex` turns a
+`$` literal over `$FFFF` into `FixedLit(_, v, true)` like a decimal one (it was 0). Tests
+`tests/u64_palette.rs`; the test CPU models the interface (`Cpu::uci`, `Uci`) and has a GETIN key
+queue (`Cpu::keys`).
 
 `graphics on` and `graphics on multi` leave the display **blanked** (DEN=0). Call `display on`
 screen 10, 5, ch         # col 10, row 5 — col/row can be variables

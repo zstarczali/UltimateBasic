@@ -7,6 +7,7 @@ pub mod parser;
 pub mod spill;
 pub mod map_view;
 pub mod tune;
+pub mod u64pal;
 
 use codegen::Codegen;
 use lexer::Lexer;

@@ -31,9 +31,23 @@ pub struct Cpu {
     pub output: Vec<u8>,
     /// Keys returned by BASIN ($FFCF), in order; CR once empty.
     pub input: std::collections::VecDeque<u8>,
+    /// Keys returned by GETIN ($FFE4), in order; 0 (no key) once empty.
+    pub keys: std::collections::VecDeque<u8>,
     call_depth: usize,
     /// Simulated IRQs in progress (`irq()`), ended by `JMP $EA81`.
     in_irq: usize,
+    /// Ultimate Command Interface at $DF1C/$DF1D (None: open bus, no interface).
+    pub uci: Option<Uci>,
+}
+
+/// A model of the Ultimate Command Interface: $DF1D reads $C9, command bytes are written to
+/// $DF1D, bit 0 of $DF1C pushes the command (it ends at once with an empty answer: state $20),
+/// bit 1 accepts the data (state back to idle).
+#[derive(Default)]
+pub struct Uci {
+    pub state: u8,
+    pub pending: Vec<u8>,
+    pub commands: Vec<Vec<u8>>,
 }
 
 impl Cpu {
@@ -63,8 +77,10 @@ impl Cpu {
             steps: 0,
             output: Vec::new(),
             input: std::collections::VecDeque::new(),
+            keys: std::collections::VecDeque::new(),
             call_depth: 0,
             in_irq: 0,
+            uci: None,
         }
     }
 
@@ -111,8 +127,8 @@ impl Cpu {
         match addr {
             CHROUT => self.output.push(self.a),
             GETIN => {
-                self.a = 0;
-                self.set_zn(0);
+                self.a = self.keys.pop_front().unwrap_or(0);
+                self.set_zn(self.a);
             }
             // PLOT with C=1 (read): Y = column since the last CR
             0xFFF0 if self.c => {
@@ -141,10 +157,23 @@ impl Cpu {
             0xA000..=0xBFFF if self.basic_visible() => 0xAA,
             0xD012 => self.raster_line() as u8,
             0xD011 => (self.mem[0xD011] & 0x7F) | if self.raster_line() > 255 { 0x80 } else { 0 },
+            0xDF1C if self.uci.is_some() => self.uci.as_ref().unwrap().state,
+            0xDF1D if self.uci.is_some() => 0xC9,
             _ => self.mem[addr as usize],
         }
     }
     fn wr(&mut self, addr: u16, v: u8) {
+        if let (Some(uci), 0xDF1C..=0xDF1D) = (self.uci.as_mut(), addr) {
+            if addr == 0xDF1D {
+                uci.pending.push(v);
+            } else if v & 1 != 0 {
+                uci.commands.push(std::mem::take(&mut uci.pending));
+                uci.state = 0x20;
+            } else if v & 2 != 0 {
+                uci.state = 0;
+            }
+            return;
+        }
         self.mem[addr as usize] = v;
     }
     fn fetch(&mut self) -> u8 {
