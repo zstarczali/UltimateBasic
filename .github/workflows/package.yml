@@ -5,6 +5,11 @@ env:
 
 on:
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish a GitHub release (tag <Cargo.toml version>)"
+        type: boolean
+        default: false
   push:
     branches:
       - main
@@ -128,3 +133,35 @@ jobs:
           name: ultimate-basic-linux-rpm
           path: target/generate-rpm/*.rpm
           if-no-files-found: error
+
+  release:
+    name: GitHub release
+    needs: [zip-examples, linux-packages]
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Version
+        run: echo "VERSION=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')" >> "$GITHUB_ENV"
+
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ultimate-basic-*
+          path: dist
+          merge-multiple: true
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.VERSION }}
+          target_commitish: ${{ github.sha }}
+          name: UltimateBasic ${{ env.VERSION }}
+          generate_release_notes: true
+          files: dist/*
+          fail_on_unmatched_files: true
