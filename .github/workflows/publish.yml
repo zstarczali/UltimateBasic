@@ -1,0 +1,52 @@
+# Uploads ultimate-basic-<platform>.zip of a successful "Build and Publish UltimateBasic64" run
+# (package.yml) to www.c64va.pro/downloads/UB/ (FTPS); the same names replace the previous upload.
+# Manual only: Actions → Publish → Run workflow, with that run's ID (from its Actions URL).
+# Secret: FTP_PASSWORD.
+name: Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Successful "Build and Publish UltimateBasic64" run ID (from its Actions URL)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: publish-ub-ftp
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish packages to FTP
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Validate source build
+        run: python3 scripts/publish-artifacts.py --validate-run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+          BUILD_RUN_ID: ${{ inputs.run_id }}
+
+      # download-artifact extracts the artifact ZIPs; each artifact keeps its own directory.
+      - uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.run_id }}
+          pattern: ultimate-basic-*
+          path: publish-artifacts
+
+      - name: Upload packages
+        run: python3 scripts/publish-artifacts.py publish-artifacts
+        env:
+          FTP_HOST: ftpx.forpsi.com
+          FTP_USERNAME: www.c64va.pro
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+          FTP_DIRECTORY: /www/downloads/UB/
