@@ -1,6 +1,8 @@
 # Ultimate Basic
 
-<img src="assets/logo.png" alt="Ultimate Basic C64 banner" width="30%">
+<p align="center">
+  <img src="assets/logo.png" alt="Ultimate Basic C64 banner" width="30%">
+</p>
 
 <!-- badges:start -->
 <p align="center">
