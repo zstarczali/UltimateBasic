@@ -2,6 +2,30 @@
 
 <img src="assets/logo.png" alt="Ultimate Basic C64 banner" width="30%">
 
+<!-- badges:start -->
+<p align="center">
+  <a href="https://www.c64va.tech"><img src="https://img.shields.io/badge/website-c64va.tech-e05d44?style=flat" alt="Website"></a>
+  <a href="https://github.com/zstarczali/UltimateBasic/releases/latest"><img src="https://img.shields.io/github/v/release/zstarczali/UltimateBasic?label=version&color=4c1" alt="Version"></a>
+  <a href="https://github.com/zstarczali/UltimateBasic/actions/workflows/package.yml"><img src="https://img.shields.io/github/actions/workflow/status/zstarczali/UltimateBasic/package.yml?branch=main&label=build" alt="Build"></a>
+  <a href="https://github.com/zstarczali/UltimateBasic/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-GPLv3-blue" alt="License: GPLv3"></a>
+  <a href="https://www.c64va.pro/register/donate.php"><img src="https://img.shields.io/badge/donate-PayPal-00457C?logo=paypal&logoColor=white" alt="Donate"></a>
+</p>
+<p align="center">
+  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-compiler-B7410E?logo=rust&logoColor=white" alt="Rust"></a>
+  <a href="https://en.wikipedia.org/wiki/Commodore_64"><img src="https://img.shields.io/badge/target-C64%20%2F%206502-6c5eb5?logo=commodore&logoColor=white" alt="Target: C64 / 6502"></a>
+  <a href="https://www.rust-lang.org/tools/install"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-555" alt="Platforms"></a>
+  <a href="https://github.com/zstarczali/UltimateBasic/commits/main"><img src="https://img.shields.io/github/last-commit/zstarczali/UltimateBasic/main" alt="Last commit"></a>
+  <a href="https://github.com/zstarczali/UltimateBasic/graphs/commit-activity"><img src="https://img.shields.io/github/commit-activity/m/zstarczali/UltimateBasic" alt="Commit activity"></a>
+  <a href="https://github.com/zstarczali/UltimateBasic/issues"><img src="https://img.shields.io/github/issues/zstarczali/UltimateBasic" alt="Issues"></a>
+  <a href="https://github.com/zstarczali/UltimateBasic/stargazers"><img src="https://img.shields.io/github/stars/zstarczali/UltimateBasic?style=flat" alt="Stars"></a>
+</p>
+<p align="center">
+  <a href="https://github.com/zstarczali/UltimateBasic/blob/main/MANUAL.md"><img src="https://img.shields.io/badge/manual-English-ddd" alt="Manual"></a>
+  <a href="https://www.c64va.pro/"><img src="https://img.shields.io/badge/used%20by-C64%20Visual%20Assembler-8a2be2" alt="C64 Visual Assembler"></a>
+  <a href="https://github.com/zstarczali/VMA"><img src="https://img.shields.io/badge/sibling-VMA-8a2be2" alt="VMA"></a>
+</p>
+<!-- badges:end -->
+
 Current version: **1.6.7**
 
 A modern BASIC-like language that compiles directly to 6502 machine code for the
