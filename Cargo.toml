@@ -3,7 +3,7 @@ name = "ultimate-basic"
 version = "1.6.7"
 edition = "2024"
 description = "Ultimate Basic – C64 BASIC compiler to 6502 machine code"
-license = "GPL-3.0-only"
+license = "MIT"
 authors = ["Zsolt Tarczali (c) - 2026"]
 
 [[bin]]
