@@ -9,7 +9,7 @@
   <a href="https://www.c64va.tech"><img src="https://img.shields.io/badge/website-c64va.tech-e05d44?style=flat" alt="Website"></a>
   <a href="https://github.com/zstarczali/UltimateBasic/releases/latest"><img src="https://img.shields.io/github/v/release/zstarczali/UltimateBasic?label=version&color=4c1" alt="Version"></a>
   <a href="https://github.com/zstarczali/UltimateBasic/actions/workflows/package.yml"><img src="https://img.shields.io/github/actions/workflow/status/zstarczali/UltimateBasic/package.yml?branch=main&label=build" alt="Build"></a>
-  <a href="https://github.com/zstarczali/UltimateBasic/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-GPLv3-blue" alt="License: GPLv3"></a>
+  <a href="https://github.com/zstarczali/UltimateBasic/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
   <a href="https://www.c64va.pro/register/donate.php"><img src="https://img.shields.io/badge/donate-PayPal-00457C?logo=paypal&logoColor=white" alt="Donate"></a>
 </p>
 <p align="center">
@@ -534,3 +534,7 @@ multiplexing, plasma and orbit effects, a flicker-free double-buffered 3D cube
 (`cube_demo.ub`), REU stash/fetch, SID music playback, scrollers, QBasic-style
 `DIM` / `FUNCTION` / `SUB` (`dim_demo.ub`, `qbasic_demo.ub`), floating point
 (`float_demo.ub`), and more.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
