@@ -17,6 +17,31 @@ ub build demo.ub --d64          # auto: demo.d64
 ub build demo.ub --d64 disk.d64 --add music.prg --add loader.prg
 ```
 
+## IMPORTANT: regenerate MANUAL.pdf whenever MANUAL.md changes
+
+`MANUAL.pdf` is committed and copied as-is into the release packages (`package.yml`); nothing
+rebuilds it. **Every change to `MANUAL.md` must be followed by regenerating `MANUAL.pdf`** and
+both files go into the same commit. Pipeline (same as LZ80N's `release.yml`): pandoc 3.5 →
+HTML5 with `pdf.css` → WeasyPrint 63.1. Neither tool is installed locally, so run it in Docker
+(from Git Bash, in the repo root):
+
+```bash
+MSYS_NO_PATHCONV=1 docker run --rm -e DEBIAN_FRONTEND=noninteractive -v "$(pwd -W):/src" python:3.12-slim bash -c '
+set -e
+apt-get update -qq >/dev/null && apt-get install -y -qq curl fonts-dejavu-core libpango-1.0-0 libpangoft2-1.0-0 >/dev/null
+curl -fsSL https://github.com/jgm/pandoc/releases/download/3.5/pandoc-3.5-linux-amd64.tar.gz | tar xz -C /tmp
+pip install --quiet --root-user-action=ignore weasyprint==63.1
+cd /tmp && cp /src/MANUAL.md /src/pdf.css .
+/tmp/pandoc-3.5/bin/pandoc MANUAL.md -f gfm-tex_math_dollars-tex_math_gfm -t html5 --standalone \
+  --metadata pagetitle="Ultimate Basic manual" --css pdf.css -o MANUAL.html
+weasyprint MANUAL.html MANUAL.pdf && cp MANUAL.pdf /src/MANUAL.pdf'
+```
+
+- `-f gfm-tex_math_dollars-tex_math_gfm` is required: plain `gfm` treats text between two `$`
+  (e.g. `$FFBD … $FFBA`) as TeX math and mangles the KERNAL addresses.
+- The WeasyPrint warnings about `gap`, `overflow-x`, `user-select` come from pandoc's built-in
+  stylesheet and are harmless.
+
 ## Project Structure
 
 ```
