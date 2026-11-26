@@ -4937,7 +4937,18 @@ impl Parser {
                         self.expect_newline();
                         Some(Stmt::SpriteColor { id, color })
                     }
+                    // `sprite multi` and `sprite multicolor` (the manual's spelling)
                     Token::Multi => {
+                        self.advance();
+                        let id = self.parse_expr();
+                        if self.peek() == &Token::Comma {
+                            self.advance();
+                        }
+                        let on = matches!(self.advance(), Token::On);
+                        self.expect_newline();
+                        Some(Stmt::SpriteMulticolor { id, on })
+                    }
+                    Token::Ident(word) if word == "multicolor" => {
                         self.advance();
                         let id = self.parse_expr();
                         if self.peek() == &Token::Comma {

@@ -1,5 +1,18 @@
-Ultimate Basic v1.6.7 – Release Notes
+Ultimate Basic v1.6.8 – Release Notes
 ======================================
+
+2026-11-26 – Release 1.6.8: sprite multicolor, compile checks
+------------------------------------------------------------------
+  New
+  - sprite multicolor id, on|off works as the manual writes it (the
+    long form crashed the compiler, only sprite multi worked).
+  Changed
+  - A sprite command whose sprite number is a variable, an expression
+    or over 7 is a compile error (it stopped the compiler with an
+    internal error).
+  - Inside asm { }, a branch further than 128 bytes and a label that
+    is not defined in the block are compile errors; both used to
+    assemble silently to a wrong address.
 
 2026-11-09 – Release 1.6.7: Ultimate 64 palette, struct types, 16-bit division
 ------------------------------------------------------------------

@@ -85,6 +85,12 @@ The three big items of the 1.6.3 roadmap are implemented:
 
 ---
 
+## Done in 1.6.8
+
+- `sprite multicolor` = `sprite multi` (parser); `sprite_const_id` turns the old `panic!` on a
+  non-constant / >7 sprite number into a compile error; `assemble_inline_checked` reports an
+  inline-asm branch out of range and an undefined label (`check_errors`); `tests/compile_checks.rs`.
+
 ## Done in 1.6.7
 
 - **`palette`** (Ultimate 64 / C64U palette through the Ultimate Command Interface):
