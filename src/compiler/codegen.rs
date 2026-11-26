@@ -450,7 +450,14 @@ fn asm_parse_operand(mnem: &str, s: &str) -> (AMode, Option<u16>, Option<String>
 ///   - Backward and forward branches / jumps
 ///   - Raw byte fallback: lines starting with `$`, `%`, or a digit are emitted as bytes
 pub(crate) fn assemble_inline(src: &str, base_addr: u16) -> Vec<u8> {
+    assemble_inline_checked(src, base_addr).0
+}
+
+/// `assemble_inline` with its errors: a branch whose target is more than 128 bytes away and a
+/// label that is not defined in the block (both used to assemble silently to a wrong address).
+pub(crate) fn assemble_inline_checked(src: &str, base_addr: u16) -> (Vec<u8>, Vec<String>) {
     use AMode::*;
+    let mut errors: Vec<String> = Vec::new();
 
     struct AsmItem {
         offset: u16,
@@ -546,8 +553,11 @@ pub(crate) fn assemble_inline(src: &str, base_addr: u16) -> Vec<u8> {
             let key = lab.trim_start_matches(|c| c == '<' || c == '>').trim();
             let target = if key == "*" {
                 base_addr + item.offset
+            } else if let Some(addr) = labels.get(key) {
+                *addr
             } else {
-                *labels.get(key).unwrap_or(&0)
+                errors.push(format!("asm: undefined label '{key}' ({})", item.mnem.to_uppercase()));
+                0
             };
 
             if item.mode == Imm {
@@ -559,8 +569,15 @@ pub(crate) fn assemble_inline(src: &str, base_addr: u16) -> Vec<u8> {
                 (Imm, byte)
             } else if asm_is_branch(&item.mnem) {
                 let pc = base_addr + item.offset + 2;
-                let rel = (target as i32 - pc as i32) as i8;
-                (Rel, rel as u8 as u16)
+                let dist = target as i32 - pc as i32;
+                if labels.contains_key(key) && !(-128..=127).contains(&dist) {
+                    errors.push(format!(
+                        "asm: {} {key}: branch target is {} bytes away (range -128..127); use the inverted branch over a JMP",
+                        item.mnem.to_uppercase(),
+                        dist
+                    ));
+                }
+                (Rel, dist as i8 as u8 as u16)
             } else {
                 // Keep indexed / indirect modes for label operands (`label,X`, `label,Y`, `JMP (label)`).
                 (if matches!(item.mode, Abx | Aby | Ind) { item.mode } else { Abs }, target)
@@ -569,8 +586,14 @@ pub(crate) fn assemble_inline(src: &str, base_addr: u16) -> Vec<u8> {
             // Numeric branch operand is an absolute target address
             let target = item.value.unwrap_or(0);
             let pc = base_addr + item.offset + 2;
-            let rel = (target as i32 - pc as i32) as i8;
-            (Rel, rel as u8 as u16)
+            let dist = target as i32 - pc as i32;
+            if !(-128..=127).contains(&dist) {
+                errors.push(format!(
+                    "asm: {} ${target:04X}: branch target is {dist} bytes away (range -128..127)",
+                    item.mnem.to_uppercase()
+                ));
+            }
+            (Rel, dist as i8 as u8 as u16)
         } else {
             (item.mode, item.value.unwrap_or(0))
         };
@@ -589,7 +612,7 @@ pub(crate) fn assemble_inline(src: &str, base_addr: u16) -> Vec<u8> {
         }
     }
 
-    out
+    (out, errors)
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -625,6 +648,7 @@ pub struct Codegen {
     /// ROM): BASIC is banked out at program start and back in on every exit.
     basic_rom_out: bool,
     array_errors: Vec<String>,
+    check_errors: Vec<String>,
     /// Bytes reserved in the array area besides arrays (spilled variable homes).
     extra_array_bytes: u16,
     // variables in RAM (compiler/spill.rs): second pass when zero page runs out
@@ -811,6 +835,7 @@ impl Codegen {
             array_ptr: 0xC000,
             basic_rom_out: false,
             array_errors: vec![],
+            check_errors: vec![],
             extra_array_bytes: 0,
             spill_plan: None,
             spill_set: std::collections::HashSet::new(),
@@ -12414,7 +12439,8 @@ impl Codegen {
             }
             Stmt::AsmSource(src) => {
                 let base = self.load_addr + self.code.len() as u16;
-                let bytes = assemble_inline(src, base);
+                let (bytes, asm_errors) = assemble_inline_checked(src, base);
+                self.check_errors.extend(asm_errors);
                 for b in bytes {
                     self.emit(b);
                 }
@@ -14867,11 +14893,7 @@ impl Codegen {
                 //   $D000+id*2 = X low,  $D001+id*2 = Y
                 //   $D010 bit id = X bit 8 (MSB) — read-modify-write
                 //   $07F8+id = sprite data pointer (screen_ram+$3F8+id; value = data_addr >> 6)
-                let sprite_id = match id {
-                    Expr::Number(n) => *n as u16,
-                    _ => panic!("sprite: id must be a compile-time constant 0-7"),
-                };
-                assert!(sprite_id <= 7, "sprite: id must be 0-7");
+                let sprite_id = self.sprite_const_id(id, "sprite");
                 let x_reg = 0xD000u16 + sprite_id * 2;
                 let y_reg = 0xD001u16 + sprite_id * 2;
                 let msb_bit = 1u8 << (sprite_id as u8);
@@ -14996,10 +15018,7 @@ impl Codegen {
             }
             Stmt::SpriteOn { id } => {
                 // $D015: sprite enable register — set bit for this sprite
-                let sprite_id = match id {
-                    Expr::Number(n) => *n as u16,
-                    _ => panic!("sprite_on: id must be a compile-time constant 0-7"),
-                };
+                let sprite_id = self.sprite_const_id(id, "sprite on");
                 let bit = 1u8 << (sprite_id as u8);
                 self.emit(0xAD);
                 self.emit16(0xD015); // LDA $D015
@@ -15010,10 +15029,7 @@ impl Codegen {
             }
             Stmt::SpriteOff { id } => {
                 // $D015: sprite enable register — clear bit for this sprite
-                let sprite_id = match id {
-                    Expr::Number(n) => *n as u16,
-                    _ => panic!("sprite_off: id must be a compile-time constant 0-7"),
-                };
+                let sprite_id = self.sprite_const_id(id, "sprite off");
                 let bit = !(1u8 << (sprite_id as u8));
                 self.emit(0xAD);
                 self.emit16(0xD015); // LDA $D015
@@ -15024,10 +15040,7 @@ impl Codegen {
             }
             Stmt::SpriteColor { id, color } => {
                 // $D027+id: sprite color register
-                let sprite_id = match id {
-                    Expr::Number(n) => *n as u16,
-                    _ => panic!("sprite_color: id must be a compile-time constant 0-7"),
-                };
+                let sprite_id = self.sprite_const_id(id, "sprite color");
                 let color = color.clone();
                 self.eval_expr(&color);
                 self.emit(0x8D);
@@ -15035,10 +15048,7 @@ impl Codegen {
             }
             Stmt::SpriteMulticolor { id, on } => {
                 // $D01C: sprite multicolor enable register
-                let sprite_id = match id {
-                    Expr::Number(n) => *n as u16,
-                    _ => panic!("sprite_multicolor: id must be a compile-time constant 0-7"),
-                };
+                let sprite_id = self.sprite_const_id(id, "sprite multicolor");
                 let on = *on;
                 let bit = 1u8 << (sprite_id as u8);
                 self.emit(0xAD);
@@ -15055,10 +15065,7 @@ impl Codegen {
             }
             Stmt::SpriteExpandX { id, on } => {
                 // $D01D: sprite X-expand register — set/clear bit for this sprite
-                let sprite_id = match id {
-                    Expr::Number(n) => *n as u16,
-                    _ => panic!("sprite_expand_x: id must be a compile-time constant 0-7"),
-                };
+                let sprite_id = self.sprite_const_id(id, "sprite expand x");
                 let on = *on;
                 let bit = 1u8 << (sprite_id as u8);
                 self.emit(0xAD);
@@ -15075,10 +15082,7 @@ impl Codegen {
             }
             Stmt::SpriteExpandY { id, on } => {
                 // $D017: sprite Y-expand register — set/clear bit for this sprite
-                let sprite_id = match id {
-                    Expr::Number(n) => *n as u16,
-                    _ => panic!("sprite_expand_y: id must be a compile-time constant 0-7"),
-                };
+                let sprite_id = self.sprite_const_id(id, "sprite expand y");
                 let on = *on;
                 let bit = 1u8 << (sprite_id as u8);
                 self.emit(0xAD);
@@ -15095,10 +15099,7 @@ impl Codegen {
             }
             Stmt::SpritePriority { id, on } => {
                 // $D01B: sprite priority — 1=behind background, 0=in front
-                let sprite_id = match id {
-                    Expr::Number(n) => *n as u16,
-                    _ => panic!("sprite_priority: id must be a compile-time constant 0-7"),
-                };
+                let sprite_id = self.sprite_const_id(id, "sprite priority");
                 let on = *on;
                 let bit = 1u8 << (sprite_id as u8);
                 self.emit(0xAD);
@@ -16637,6 +16638,27 @@ impl Codegen {
         }
     }
 
+    /// The sprite number of a sprite command: a constant 0-7. Anything else is a compile error
+    /// (the registers and bit masks are chosen at compile time), reported once per command.
+    fn sprite_const_id(&mut self, id: &Expr, cmd: &str) -> u16 {
+        match id {
+            Expr::Number(n) if (0..=7).contains(n) => *n as u16,
+            Expr::Number(n) => {
+                self.check_errors.push(format!("{cmd}: sprite number {n} is out of range (0-7)"));
+                0
+            }
+            _ => {
+                let msg = format!(
+                    "{cmd}: the sprite number must be a constant 0-7, not a variable or expression"
+                );
+                if !self.check_errors.contains(&msg) {
+                    self.check_errors.push(msg);
+                }
+                0
+            }
+        }
+    }
+
     pub fn errors(&self) -> Vec<String> {
         let mut errs = vec![];
         for (_, name, src_line) in &self.sub_patches {
@@ -16671,6 +16693,7 @@ impl Codegen {
         errs.extend(self.array_init_errors.iter().cloned());
         errs.extend(self.str_errors.iter().cloned());
         errs.extend(self.array_errors.iter().cloned());
+        errs.extend(self.check_errors.iter().cloned());
         // Generated code must not sit where the program later writes the charset
         // (`charset on` copies/uses a 2 KB set, `chardef` writes 8 bytes).
         let code_start = self.load_addr as u32;

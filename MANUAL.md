@@ -1,4 +1,4 @@
-# Ultimate Basic v1.6.7 — Language Manual
+# Ultimate Basic v1.6.8 — Language Manual
 
 Complete language and CLI reference for Ultimate Basic, a BASIC-like language that
 compiles directly to 6502 machine code for the Commodore 64. Output: `.prg` files
@@ -1264,6 +1264,7 @@ sprite off 0             # disable sprite 0 ($D015 &= ~bit0)
 sprite color 0, 7        # sprite 0 color = yellow ($D027)
 sprite multicolor 0, on  # enable multicolor mode for sprite 0 ($D01C |= bit0)
 sprite multicolor 0, off # disable multicolor mode ($D01C &= ~bit0)
+sprite multi 0, on       # short form of sprite multicolor
 sprite expand x 0, on    # double width ($D01D |= bit0)
 sprite expand x 0, off   # normal width ($D01D &= ~bit0)
 sprite expand y 0, on    # double height ($D017 |= bit0)
@@ -1279,6 +1280,9 @@ sprite_frame 0, $2000, frame   # select an animation frame from a frame sequence
 ```
 
 X supports full 9-bit range (0–319): use a `word` variable for runtime values > 255.
+The sprite number of every sprite command is a constant 0–7 (the registers and bit masks are
+chosen at compile time); a variable, an expression or a number over 7 is a compile error. For
+all eight sprites in a loop, write the eight lines out or use `poke` with `$D027 + i` and friends.
 Sprite data pointer: `data_addr` must be 64-byte aligned; stored as `addr >> 6` at `$07F8+id`.
 
 #### Sprite animation with `sprite_frame`
@@ -2068,6 +2072,8 @@ done:
 - `*` yields the current instruction address, so `JMP *` assembles as a self-loop.
 - Lines starting with `$`, `%`, or a digit are emitted as raw bytes (backward-compatible).
 - Inside `asm { }`, comments are `;` or `//` to end of line. (`#` is the immediate prefix, not a comment.)
+- A branch whose target is more than 128 bytes away is a compile error (1.6.8): invert it over a
+  `JMP` (`BNE skip` / `JMP far` / `skip:`). A label that is not defined in the block is an error too.
 
 **Mixing `asm { }` with subroutine parameters**
 

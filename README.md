@@ -28,7 +28,7 @@
 </p>
 <!-- badges:end -->
 
-Current version: **1.6.7**
+Current version: **1.6.8**
 
 A modern BASIC-like language that compiles directly to 6502 machine code for the
 **Commodore 64** and **Commodore 64 Ultimate**. It produces `.prg` files that run in
@@ -113,6 +113,14 @@ bytes. Compiler-generated helper routines are included in the same listing.
 The output uses KickAssembler syntax and can be assembled again. Known data regions—such
 as `data`, maps, sprite/character definitions, lookup tables, SID/Koala payloads, and
 `incbin` content—are emitted as `.byte` blocks instead of being mistaken for instructions.
+
+## What's new in 1.6.8
+
+- **`sprite multicolor id, on|off`** works as the manual writes it (only `sprite multi` did;
+  the long form crashed the compiler).
+- **Compile errors instead of a crash or wrong code:** a sprite number that is not a constant
+  0–7, an inline-asm branch further than 128 bytes, an undefined inline-asm label (the last two
+  used to assemble silently to a wrong address).
 
 ## What's new in 1.6.7
 

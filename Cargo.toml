@@ -1,6 +1,6 @@
 [package]
 name = "ultimate-basic"
-version = "1.6.7"
+version = "1.6.8"
 edition = "2024"
 description = "Ultimate Basic – C64 BASIC compiler to 6502 machine code"
 license = "MIT"
