@@ -1,5 +1,13 @@
-Ultimate Basic v1.6.8 – Release Notes
+Ultimate Basic v1.6.9 – Release Notes
 ======================================
+
+2026-11-27 – Release 1.6.9: let
+------------------------------------------------------------------
+  New
+  - let x = 5 works like var x = 5 (same types, same code; a second
+    let of the same name assigns again).
+  Changed
+  - let is now a keyword, so it can no longer be a variable name.
 
 2026-11-26 – Release 1.6.8: sprite multicolor, compile checks
 ------------------------------------------------------------------

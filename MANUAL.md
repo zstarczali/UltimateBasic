@@ -1,4 +1,4 @@
-# Ultimate Basic v1.6.8 — Language Manual
+# Ultimate Basic v1.6.9 — Language Manual
 
 Complete language and CLI reference for Ultimate Basic, a BASIC-like language that
 compiles directly to 6502 machine code for the Commodore 64. Output: `.prg` files
@@ -28,6 +28,7 @@ var s: string = "TEXT"   # string with explicit type
 var scores = array(10)   # byte array, 10 elements stored at $C000+
 var moments  = array_word(8) # word array, 8 word elements stored at $C000+
 const BORDER_ADDR = $D020 # compile-time constant (substituted inline, no ZP slot)
+let y = 5                # `let` is another spelling of `var` (same types, same code)
 ```
 
 Keywords and identifiers are **case-insensitive**: `PRINT`, `Print`, and `print` are all valid.
