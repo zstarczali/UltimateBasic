@@ -583,6 +583,7 @@ impl Lexer {
                 Token::Print
             }
             "var" => Token::Var,
+            "let" => Token::Var, // BASIC spelling: `let x = 5` is `var x = 5`
             "dim" => Token::Dim,
             "sub" => Token::Sub,
             "fn" => Token::Fn,
@@ -931,6 +932,7 @@ mod tests {
     #[test]
     fn kw_var() {
         assert_eq!(tokenize("var")[0], Token::Var);
+        assert_eq!(tokenize("LET")[0], Token::Var);
         assert_eq!(tokenize("DIM")[0], Token::Dim);
         assert_eq!(tokenize("FUNCTION")[0], Token::Fn);
         assert_eq!(tokenize("end sub"), vec![Token::EndRoutine, Token::Eof]);

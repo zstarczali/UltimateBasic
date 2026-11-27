@@ -823,6 +823,22 @@ fn string_var_reassignment() {
     assert!(out.contains("ZSOLTX"), "{out:?}");
 }
 
+/// `let` is another spelling of `var`: types, word values, strings, and a
+/// second `let` of the same name assigns again.
+#[test]
+fn let_is_var() {
+    let r = run_src(
+        "LET a = 7\n\
+         let w: word = 1000\n\
+         let s = \"HI\"\n\
+         let a = a + 3\n\
+         w = w + a\n\
+         print a; \" \"; w; \" \"; s\n",
+    );
+    let out = r.output();
+    assert!(out.contains("10 1010 HI"), "{out:?}");
+}
+
 
 /// QBasic-style FUNCTION / SUB: `AS` types, return by assigning the function
 /// name, `END FUNCTION` / `END SUB`, calls with and without parentheses,

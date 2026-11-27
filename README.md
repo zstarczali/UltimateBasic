@@ -28,7 +28,7 @@
 </p>
 <!-- badges:end -->
 
-Current version: **1.6.8**
+Current version: **1.6.9**
 
 A modern BASIC-like language that compiles directly to 6502 machine code for the
 **Commodore 64** and **Commodore 64 Ultimate**. It produces `.prg` files that run in
@@ -113,6 +113,12 @@ bytes. Compiler-generated helper routines are included in the same listing.
 The output uses KickAssembler syntax and can be assembled again. Known data regions—such
 as `data`, maps, sprite/character definitions, lookup tables, SID/Koala payloads, and
 `incbin` content—are emitted as `.byte` blocks instead of being mistaken for instructions.
+
+## What's new in 1.6.9
+
+- **`let`** is another spelling of `var`: `let x = 5` works like `var x = 5` (same types,
+  same code; a second `let` of the same name assigns again). `let` is now a keyword, so it
+  can no longer be a variable name.
 
 ## What's new in 1.6.8
 

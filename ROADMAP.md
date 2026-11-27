@@ -85,6 +85,10 @@ The three big items of the 1.6.3 roadmap are implemented:
 
 ---
 
+## Done in 1.6.9
+
+- `let` = `var` (lexer `"let" => Token::Var`); tests `kw_var`, `let_is_var`.
+
 ## Done in 1.6.8
 
 - `sprite multicolor` = `sprite multi` (parser); `sprite_const_id` turns the old `panic!` on a
